@@ -192,14 +192,16 @@ export default function HeadroomPage() {
 													<Line
 														dataKey="before"
 														name="Before (estimated)"
-														stroke="var(--chart-1)"
+														stroke="var(--chart-token-input)"
+														dot={{ r: 3 }}
 														strokeWidth={2}
 														isAnimationActive={false}
 													/>
 													<Line
 														dataKey="after"
 														name="After (estimated)"
-														stroke="var(--chart-2)"
+														stroke="var(--chart-token-output)"
+														dot={{ r: 3 }}
 														strokeWidth={2}
 														isAnimationActive={false}
 													/>
