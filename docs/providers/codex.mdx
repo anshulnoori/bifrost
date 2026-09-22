@@ -153,6 +153,25 @@ The browser test mocks onboarding responses and checks pending, connected, disco
 Provider-harness folder `104 - codex-oauth` adds opt-in live protocol cases.
 Do not run live cases without account authorization and a usage limit.
 
+## Live Codex and Headroom check
+
+Connect an account and enable the Headroom plugin and local sidecar first.
+Load the deployment's private environment files into your shell, then run:
+
+```sh
+export CODEX_TEST_MODEL=codex/gpt-5.6-luna
+bash tests/codex/live_test.sh
+```
+
+Select a model from your account catalog if this model is unavailable.
+The script requires `CODEX_GATEWAY_KEY`, `CODEX_ADMIN_PASSWORD`, and `HEADROOM_METRICS_TOKEN`.
+Set `CODEX_GATEWAY_URL` for a gateway outside the default local port.
+It makes four small subscription requests: Chat and Responses, each with unary and streaming output.
+Each request includes synthetic tool logs with a planted transaction ID and amount.
+The checks require the correct answer, provider usage, and Headroom compression events for all four requests.
+Temporary responses are private and deleted on exit; the script never prints credentials.
+Compression token estimates are not billed savings or a general answer-quality evaluation.
+
 The September 22, 2026 verification passed the offline harness, provider/lifecycle race tests, full config-store/governance/HTTP-handler/lib suites, and targeted Go vet.
 The frontend build/typecheck, API tests, and browser contract test cover multiple account rows and independent usage bars.
 The full core test run was not green: MCP fixture servers were missing, and an SSRF TEST-NET reachability assumption failed in this orb.

@@ -163,6 +163,11 @@ func providerUsage(resp *schemas.BifrostResponse) json.RawMessage {
 			return nil
 		}
 		usage = resp.ResponsesResponse.Usage
+	case resp.ResponsesStreamResponse != nil:
+		if resp.ResponsesStreamResponse.Response == nil || resp.ResponsesStreamResponse.Response.Usage == nil {
+			return nil
+		}
+		usage = resp.ResponsesStreamResponse.Response.Usage
 	case resp.PassthroughResponse != nil:
 		// Prefer provider-native fields, including unknown extensions.
 		u := gjson.GetBytes(resp.PassthroughResponse.Body, "usage")

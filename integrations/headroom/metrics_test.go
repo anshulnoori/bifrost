@@ -6,8 +6,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
+
+func TestResponsesStreamUsage(t *testing.T) {
+	response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted}}
+	if providerUsage(response) != nil {
+		t.Fatal("missing usage must not invent accounting")
+	}
+	response.ResponsesStreamResponse.Response = &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{InputTokens: 112, OutputTokens: 12, TotalTokens: 124}}
+	usage := providerUsage(response)
+	if gjson.GetBytes(usage, "input_tokens").Int() != 112 || gjson.GetBytes(usage, "output_tokens").Int() != 12 {
+		t.Fatalf("stream accounting lost: %s", usage)
+	}
+}
 
 func TestMonitorReload(t *testing.T) {
 	t.Setenv("TEST_MONITOR_TOKEN", strings.Repeat("m", 32))

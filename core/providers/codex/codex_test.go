@@ -78,6 +78,41 @@ func admitted(t *testing.T) *schemas.BifrostContext {
 
 const terminal = `{"type":"response.completed","sequence_number":4,"response":{"id":"resp_fixture","object":"response","created_at":123,"model":"gpt-5.3-codex","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_7","name":"weather","arguments":"{\"city\":\"Oslo\"}","status":"completed"}],"usage":{"input_tokens":123,"output_tokens":17,"total_tokens":140,"input_tokens_details":{"cached_tokens":31},"output_tokens_details":{"reasoning_tokens":9}}}}`
 
+func TestUnaryCollectsItemsWhenTerminalOutputIsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"TX-731 1949.37\"}],\"future\":42}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"r1\",\"summary\":[]}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"output\":[],\"usage\":{\"input_tokens\":24,\"output_tokens\":12,\"total_tokens\":36}}}\n\n")
+	}))
+	defer server.Close()
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) { return "access", "account", nil }}, testLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.url = server.URL
+	response, bfErr := p.Responses(admitted(t), schemas.Key{}, &schemas.BifrostResponsesRequest{Model: "gpt-5.3-codex", Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}})
+	if bfErr != nil {
+		t.Fatal(bfErr)
+	}
+	wire, _ := schemas.MarshalSorted(response)
+	if gjson.GetBytes(wire, "output.1.content.0.text").String() != "TX-731 1949.37" || gjson.GetBytes(wire, "output.0.id").String() != "r1" {
+		t.Fatalf("missing/unsorted completed items: %s", wire)
+	}
+	chat := response.ToBifrostChatResponse()
+	wire, _ = schemas.MarshalSorted(chat)
+	if !strings.Contains(string(wire), "TX-731 1949.37") {
+		t.Fatalf("missing Chat answer: %s", wire)
+	}
+	raw, bfErr := p.Passthrough(admitted(t), schemas.Key{}, &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/responses", Model: "gpt-5.3-codex", Body: []byte(`{"model":"gpt-5.3-codex","input":"hi"}`)})
+	if bfErr != nil {
+		t.Fatal(bfErr)
+	}
+	if gjson.GetBytes(raw.Body, "output.1.future").Int() != 42 || gjson.GetBytes(raw.Body, "output.1.content.0.text").String() != "TX-731 1949.37" {
+		t.Fatalf("raw items lost: %s", raw.Body)
+	}
+}
+
 func TestResponsesUsesSubscriptionAndPreservesTools(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" || r.Header.Get("Authorization") != "Bearer owner-access" || r.Header.Get("ChatGPT-Account-ID") != "owner-account" {

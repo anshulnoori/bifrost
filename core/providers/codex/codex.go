@@ -4,9 +4,11 @@ package codex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -191,9 +193,13 @@ func (p *Provider) Responses(ctx *schemas.BifrostContext, key schemas.Key, reque
 	}
 	var result *schemas.BifrostResponsesResponse
 	var streamErr *schemas.BifrostError
+	items := make(map[int]schemas.ResponsesMessage)
 	for chunk := range ch {
 		if chunk.BifrostError != nil {
 			streamErr = chunk.BifrostError
+		}
+		if r := chunk.BifrostResponsesStreamResponse; r != nil && r.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && r.Item != nil && r.OutputIndex != nil {
+			items[*r.OutputIndex] = *r.Item
 		}
 		if r := chunk.BifrostResponsesStreamResponse; r != nil && (r.Type == schemas.ResponsesStreamResponseTypeCompleted || r.Type == schemas.ResponsesStreamResponseTypeIncomplete) {
 			result = r.Response
@@ -207,6 +213,13 @@ func (p *Provider) Responses(ctx *schemas.BifrostContext, key schemas.Key, reque
 	}
 	if result == nil {
 		return nil, failure("codex stream ended without a terminal response")
+	}
+	// Codex can omit output from the terminal event after emitting completed
+	// items. Reconstruct by output index, not event arrival order.
+	if len(result.Output) == 0 {
+		for _, index := range slices.Sorted(maps.Keys(items)) {
+			result.Output = append(result.Output, items[index])
+		}
 	}
 	result.ExtraFields.RequestType = schemas.ResponsesRequest
 	return result, nil
@@ -351,6 +364,7 @@ func (p *Provider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req
 		return &result, nil
 	}
 	reader := utils.GetSSEDataReader(ctx, bytes.NewReader(body.Bytes()))
+	items := make(map[int]json.RawMessage)
 	for {
 		data, readErr := reader.ReadDataLine()
 		if readErr == io.EOF {
@@ -360,6 +374,11 @@ func (p *Provider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req
 			return nil, failure("invalid codex event stream")
 		}
 		switch gjson.GetBytes(data, "type").String() {
+		case "response.output_item.done":
+			index, item := gjson.GetBytes(data, "output_index"), gjson.GetBytes(data, "item")
+			if index.Exists() && item.IsObject() {
+				items[int(index.Int())] = json.RawMessage(item.Raw)
+			}
 		case "response.failed", "error":
 			return nil, failure("codex response failed")
 		case "response.completed", "response.incomplete":
@@ -368,6 +387,13 @@ func (p *Provider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req
 				return nil, failure("invalid codex terminal response")
 			}
 			result.Body = []byte(response.Raw)
+			if len(response.Get("output").Array()) == 0 && len(items) > 0 {
+				output := make([]json.RawMessage, 0, len(items))
+				for _, index := range slices.Sorted(maps.Keys(items)) {
+					output = append(output, items[index])
+				}
+				result.Body, _ = sjson.SetBytes(result.Body, "output", output)
+			}
 			result.Headers = map[string]string{"Content-Type": "application/json"}
 			result.ExtraFields.RequestType = schemas.PassthroughRequest
 			return &result, nil
