@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { HeadroomReport, readHeadroomReport } from "@/lib/store/apis/headroomApi";
 
 export default function HeadroomPage() {
@@ -33,19 +35,24 @@ export default function HeadroomPage() {
 	}
 	return (
 		<div className="mx-auto flex w-full max-w-7xl flex-col gap-6" data-testid="headroom-page">
-			<div className="flex items-start justify-between gap-4">
+			<div className="flex flex-wrap items-start justify-between gap-4">
 				<div>
 					<h1 className="text-2xl font-semibold">Headroom</h1>
 					<p className="text-muted-foreground mt-1 text-sm">Tool-result compression · external service · experimental</p>
 				</div>
-				<a className="text-sm underline" href="/workspace/plugins?plugin=headroom" data-testid="headroom-configure">
-					Configure plugin
-				</a>
+				<Button variant="outline" asChild>
+					<a href="/workspace/plugins?plugin=headroom" data-testid="headroom-configure">
+						Configure plugin
+					</a>
+				</Button>
 			</div>
-			<div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4 text-sm" data-testid="headroom-quality-warning">
-				<strong>Answer quality has not been evaluated.</strong> Token reduction is not proof of cost savings or unchanged answers.
-				CCR/redrive is unsupported; raw streaming and provider-managed cache/state lanes bypass compression.
-			</div>
+			<Alert variant="warning" data-testid="headroom-quality-warning">
+				<AlertTitle className="line-clamp-none">Answer quality has not been evaluated.</AlertTitle>
+				<AlertDescription>
+					Token reduction is not proof of cost savings or unchanged answers. CCR/redrive is unsupported; raw streaming and provider-managed
+					cache/state lanes bypass compression.
+				</AlertDescription>
+			</Alert>
 			<form
 				className="flex max-w-2xl flex-wrap items-end gap-3"
 				onSubmit={(e) => {
@@ -161,44 +168,42 @@ export default function HeadroomPage() {
 						events.
 					</p>
 					<div className="overflow-x-auto rounded-md border">
-						<table className="w-full text-left text-sm">
-							<thead className="bg-muted/50">
-								<tr>
+						<Table>
+							<TableHeader>
+								<TableRow>
 									{["Provider / model", "Project / thread", "Outcome", "Compression / attempt", "Provider-reported usage"].map((title) => (
-										<th className="p-3 font-medium" key={title}>
-											{title}
-										</th>
+										<TableHead key={title}>{title}</TableHead>
 									))}
-								</tr>
-							</thead>
-							<tbody>
+								</TableRow>
+							</TableHeader>
+							<TableBody>
 								{events.map((event) => (
-									<tr key={`${event.started}-${event.thread_hash}-${event.provider}-${event.model}`} className="border-t">
-										<td className="p-3">
+									<TableRow key={`${event.started}-${event.thread_hash}-${event.provider}-${event.model}`}>
+										<TableCell>
 											{event.provider}
 											<div className="text-muted-foreground">{event.model}</div>
-										</td>
-										<td className="p-3">
+										</TableCell>
+										<TableCell>
 											{event.project || "Unknown"}
 											<div className="font-mono text-xs">{event.thread_hash.slice(0, 12) || "Unknown"}</div>
-										</td>
-										<td className="p-3">
+										</TableCell>
+										<TableCell>
 											{event.status}
 											<div className="text-muted-foreground text-xs">{event.reason}</div>
-										</td>
-										<td className="p-3">
+										</TableCell>
+										<TableCell>
 											{event.compression_ms.toFixed(1)} / {event.plugin_attempt_ms.toFixed(1)} ms
 											<div className="text-muted-foreground text-xs">{event.network_retries} retries; intermediate usage unknown</div>
-										</td>
-										<td className="max-w-80 p-3">
+										</TableCell>
+										<TableCell className="max-w-80">
 											<pre className="text-xs break-all whitespace-pre-wrap">
 												{event.provider_usage ? JSON.stringify(event.provider_usage, null, 2) : "Unknown (not reported)"}
 											</pre>
-										</td>
-									</tr>
+										</TableCell>
+									</TableRow>
 								))}
-							</tbody>
-						</table>
+							</TableBody>
+						</Table>
 						{events.length === 0 && <p className="text-muted-foreground p-6">No retained events match this filter.</p>}
 					</div>
 				</>
