@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { HeadroomReport, readHeadroomReport } from "@/lib/store/apis/headroomApi";
 
@@ -38,7 +37,7 @@ export default function HeadroomPage() {
 			<div className="flex flex-wrap items-start justify-between gap-4">
 				<div>
 					<h1 className="text-2xl font-semibold">Headroom</h1>
-					<p className="text-muted-foreground mt-1 text-sm">Tool-result compression · external service · experimental</p>
+					<p className="text-muted-foreground mt-1 text-sm">Tool-result compression and usage</p>
 				</div>
 				<Button variant="outline" asChild>
 					<a href="/workspace/plugins?plugin=headroom" data-testid="headroom-configure">
@@ -46,13 +45,6 @@ export default function HeadroomPage() {
 					</a>
 				</Button>
 			</div>
-			<Alert variant="warning" data-testid="headroom-quality-warning">
-				<AlertTitle className="line-clamp-none">Answer quality has not been evaluated.</AlertTitle>
-				<AlertDescription>
-					Token reduction is not proof of cost savings or unchanged answers. CCR/redrive is unsupported; raw streaming and provider-managed
-					cache/state lanes bypass compression.
-				</AlertDescription>
-			</Alert>
 			<form
 				className="flex max-w-2xl flex-wrap items-end gap-3"
 				onSubmit={(e) => {
@@ -91,8 +83,7 @@ export default function HeadroomPage() {
 				</Button>
 			</form>
 			<p className="text-muted-foreground -mt-3 text-xs">
-				The token and snapshot stay in this page’s memory. No automatic polling. Counts cover retained plugin attempts, not every network
-				retry.
+				The token stays in this page’s memory. Load a snapshot to refresh the retained plugin attempts.
 			</p>
 			{error && (
 				<p role="alert" className="text-destructive" data-testid="headroom-error">
@@ -101,7 +92,7 @@ export default function HeadroomPage() {
 			)}
 			{!report ? (
 				<div className="text-muted-foreground rounded-md border border-dashed p-10 text-center" data-testid="headroom-empty">
-					Load a snapshot to inspect compression outcomes. Missing measurements are unknown, not zero.
+					Load a snapshot to view compression and usage.
 				</div>
 			) : (
 				<>
@@ -137,9 +128,7 @@ export default function HeadroomPage() {
 								<div className="text-2xl font-semibold">
 									{estimated.length ? `${before.toLocaleString()} → ${after.toLocaleString()}` : "Unknown"}
 								</div>
-								<p className="text-muted-foreground mt-2 text-xs">
-									{estimated.length} measured attempts. Not full-prompt or billed tokens.
-								</p>
+								<p className="text-muted-foreground mt-2 text-xs">Tool-result estimates across {estimated.length} attempts.</p>
 							</CardContent>
 						</Card>
 						<Card>
@@ -147,25 +136,19 @@ export default function HeadroomPage() {
 								<CardTitle className="text-sm">Actual cost / modeled savings</CardTitle>
 							</CardHeader>
 							<CardContent>
-								Unknown / not modeled
-								<p className="text-muted-foreground mt-2 text-xs">
-									Use Bifrost billing logs for provider cost. Cache effects and extra attempts are not priced here.
-								</p>
+								Not measured
+								<p className="text-muted-foreground mt-2 text-xs">View provider costs in Bifrost billing logs.</p>
 							</CardContent>
 						</Card>
 						<Card>
 							<CardHeader>
-								<CardTitle className="text-sm">Evaluation / CCR</CardTitle>
+								<CardTitle className="text-sm">Evaluation</CardTitle>
 							</CardHeader>
-							<CardContent>
-								Not evaluated / unsupported
-								<p className="text-muted-foreground mt-2 text-xs">No quality-loss or CCR hit-rate claim is available.</p>
-							</CardContent>
+							<CardContent>No results yet</CardContent>
 						</Card>
 					</div>
 					<p className="text-muted-foreground text-xs">
-						Up to 1,000 events on this replica · retention {report.retention_seconds}s · restart clears history · {events.length} matching
-						events.
+						Up to 1,000 events on this replica · retention {report.retention_seconds}s · {events.length} matching events.
 					</p>
 					<div className="overflow-x-auto rounded-md border">
 						<Table>
