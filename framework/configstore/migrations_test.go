@@ -44,6 +44,21 @@ type namedDB struct {
 	db   *gorm.DB
 }
 
+func TestCodexConnectionMigrationIsIdempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	defer sqlDB.Close()
+	for i := 0; i < 2; i++ {
+		require.NoError(t, migrationAddCodexConnections(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasTable("codex_connections"))
+	for _, column := range []string{"id", "owner", "secret", "version", "state", "operation_until"} {
+		require.True(t, db.Migrator().HasColumn("codex_connections", column), column)
+	}
+}
+
 // setupTestDB creates an in-memory SQLite database for testing
 func setupTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

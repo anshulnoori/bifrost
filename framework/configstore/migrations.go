@@ -495,6 +495,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_use_openai_endpoints_column"}, run: migrationAddUseOpenAIEndpointsColumn},
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
+	{IDs: []string{"add_codex_connections"}, run: migrationAddCodexConnections},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -13771,4 +13772,3 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	}
 	return nil
 }
-
