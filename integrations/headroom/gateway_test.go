@@ -147,6 +147,7 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		t.Fatalf("monitor=%d %s", status, events)
 	}
 	settings["config"].(map[string]any)["enabled"] = false
+	delete(settings, "path") // The UI omits an unchanged native path.
 	if status, data := call("PUT", "/api/plugins/headroom", settings); status != 200 {
 		t.Fatalf("disable=%d %s", status, data)
 	}
