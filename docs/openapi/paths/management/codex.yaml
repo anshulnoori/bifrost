@@ -26,6 +26,7 @@ connections:
                   required: [state]
                   properties:
                     id: { type: string, format: uuid }
+                    email: { type: string, description: 'OAuth display metadata only; not an authorization identity.' }
                     state:
                       type: string
                       enum: [disconnected, pending, polling, connected, refreshing, expired, reconnect_required]

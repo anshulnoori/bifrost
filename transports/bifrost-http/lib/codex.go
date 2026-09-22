@@ -48,6 +48,47 @@ func codexCredential(store configstore.ConfigStore) func(*schemas.BifrostContext
 		if err != nil {
 			return "", "", err
 		}
+		// Also enforce explicit/sticky account selection, which bypasses the pool
+		// filter. Re-read policy above so stale replica config cannot bypass it.
+		if key.CodexReservePercent != nil {
+			usage, err := s.Usage(ctx, owner)
+			if err != nil || !usage.AboveReserve(*key.CodexReservePercent) {
+				return "", "", schemas.ErrCodexReserve
+			}
+		}
 		return s.Credential(ctx, owner, row.ID)
+	}
+}
+
+// Filter only the already-admitted pool. Never fail open: the core's generic
+// filter error path intentionally uses unfiltered keys, so failed checks omit
+// that account and return a nil error. Credential resolution rechecks policy.
+func CodexKeyPoolFilter(store configstore.ConfigStore) schemas.KeyPoolFilter {
+	return func(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, keys []schemas.Key) ([]schemas.Key, error) {
+		if provider != schemas.Codex {
+			return keys, nil
+		}
+		eligible := make([]schemas.Key, 0, len(keys))
+		if store == nil {
+			return eligible, nil
+		}
+		s, err := codex.NewStore(store.DB)
+		if err != nil {
+			return eligible, nil
+		}
+		for _, candidate := range keys {
+			key, err := store.GetProviderKey(ctx, provider, candidate.ID)
+			if err != nil || key == nil || key.Enabled != nil && !*key.Enabled {
+				continue
+			}
+			if key.CodexReservePercent != nil {
+				usage, err := s.Usage(ctx, "provider:codex:"+key.ID)
+				if err != nil || !usage.AboveReserve(*key.CodexReservePercent) {
+					continue
+				}
+			}
+			eligible = append(eligible, candidate)
+		}
+		return eligible, nil
 	}
 }

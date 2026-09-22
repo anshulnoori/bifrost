@@ -342,6 +342,37 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
+			{effectiveProvider === "codex" && (
+				<FormField
+					control={control}
+					name="key.codex_reserve_percent"
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Remaining allowance reserve (%)</FormLabel>
+							<FormControl>
+								<Input
+									type="number"
+									min={0}
+									max={100}
+									step="any"
+									className="w-[260px]"
+									placeholder="No reserve"
+									value={field.value ?? ""}
+									onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
+									onBlur={field.onBlur}
+									name={field.name}
+									ref={field.ref}
+								/>
+							</FormControl>
+							<p className="text-muted-foreground text-xs">
+								Pause this account when either window reaches this percentage remaining. Resume automatically after recovery. Leave blank
+								for no reserve.
+							</p>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			)}
 			{effectiveProvider !== "codex" && !isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
 				<FormField
 					control={control}

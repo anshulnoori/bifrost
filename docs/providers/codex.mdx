@@ -182,6 +182,29 @@ The dependency update to `golang.org/x/crypto v0.56.0` fixes `GO-2026-6354` and 
 The completed binary scan reported zero reachable vulnerabilities.
 The source scan stalled under memory pressure; the completed scan used `govulncheck -mode=binary`.
 
+## Account labels and usage reserves
+
+The table uses the email supplied by OpenAI during OAuth. Email remains encrypted with the tokens, not in a plaintext account column.
+Existing connections read email from their stored access token when available. If OpenAI supplies no email, the table uses the editable account alias.
+Routing and authorization always use the stable account ID, never the email.
+
+Under **Edit connection**, set **Remaining allowance reserve (%)** independently for each subscription.
+For example, 25 pauses the account at 25% remaining in either standard allowance window.
+To stop after using 25%, set 75. Leave the field blank to disable the reserve.
+The equivalent key configuration field is `codex_reserve_percent`, a number from 0 through 100 or `null`.
+
+Normal routing uses weighted random selection among eligible accounts, not round-robin.
+The gateway checks OpenAI usage before selection and again before credential use.
+Accounts with a reserve fail closed when usage cannot be checked. They automatically return when reported allowance exceeds the reserve.
+Pinned and sticky sessions remain pinned and return an error at their reserve instead of silently switching accounts.
+The same credential check also applies to account catalog refreshes.
+An empty eligible pool fails the request. Accounts without a reserve retain their existing behavior.
+
+These checks add usage-service latency and require no shared usage cache between replicas.
+Provider reporting delays and requests already in flight can cross the threshold; this is not an exact consumption cap.
+Feature-specific additional windows remain visible but do not govern the general account pool.
+Reserve policy adds a nullable config-store column. Older binaries do not enforce this policy, so do not mix old and new replicas.
+
 ## Upgrade and rollback
 
 1. Back up the config database and encryption secret before upgrade.

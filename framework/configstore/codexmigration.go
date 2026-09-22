@@ -5,6 +5,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/codex"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
 )
@@ -16,5 +17,17 @@ func migrationAddCodexConnections(ctx context.Context, db *gorm.DB, logger schem
 		// Explicit rollback removes subscription credentials. A binary downgrade
 		// should instead leave this additive table intact for a later upgrade.
 		Rollback: func(tx *gorm.DB) error { return tx.WithContext(ctx).Migrator().DropTable(&codex.Connection{}) },
+	}}).Migrate()
+}
+
+func migrationAddCodexReserve(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_codex_reserve_percent",
+		Migrate: func(tx *gorm.DB) error {
+			if tx.Migrator().HasColumn(&tables.TableKey{}, "CodexReservePercent") {
+				return nil
+			}
+			return tx.WithContext(ctx).Migrator().AddColumn(&tables.TableKey{}, "CodexReservePercent")
+		},
 	}}).Migrate()
 }

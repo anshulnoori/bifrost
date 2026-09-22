@@ -3,6 +3,7 @@ package tables
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -22,6 +23,7 @@ type TableKey struct {
 	ModelsJSON            string            `gorm:"type:text" json:"-"` // JSON serialized []string
 	BlacklistedModelsJSON string            `gorm:"type:text" json:"-"` // JSON serialized []string
 	Weight                *float64          `json:"weight"`
+	CodexReservePercent   *float64          `json:"codex_reserve_percent,omitempty"`
 	Enabled               *bool             `gorm:"default:true" json:"enabled,omitempty"`
 	CreatedAt             time.Time         `gorm:"index;not null" json:"created_at"`
 	UpdatedAt             time.Time         `gorm:"index;not null" json:"updated_at"`
@@ -140,6 +142,9 @@ func (TableKey) TableName() string { return "config_keys" }
 // batch S3 config) before writing to the database. Encryption runs last to ensure it
 // operates on the final serialized values.
 func (k *TableKey) BeforeSave(tx *gorm.DB) error {
+	if p := k.CodexReservePercent; p != nil && (math.IsNaN(*p) || *p < 0 || *p > 100 || k.Provider != string(schemas.Codex)) {
+		return fmt.Errorf("codex_reserve_percent must be 0..100 and only applies to Codex")
+	}
 	if err := k.Models.Validate(); err != nil {
 		return err
 	}

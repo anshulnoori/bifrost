@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"time"
 )
@@ -34,6 +35,28 @@ type Usage struct {
 		Limits  *UsageLimits `json:"rate_limit"`
 	} `json:"additional_rate_limits,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
+}
+
+// AboveReserve requires a current, known primary/secondary allowance. Unknown
+// usage fails closed. Feature-specific limits do not govern all model traffic.
+func (u *Usage) AboveReserve(reserve float64) bool {
+	if u == nil || u.Limits == nil || !u.Limits.Allowed || u.Limits.LimitReached || math.IsNaN(reserve) || reserve < 0 || reserve > 100 {
+		return false
+	}
+	known := false
+	for _, window := range []*UsageWindow{u.Limits.Primary, u.Limits.Secondary} {
+		if window == nil {
+			continue
+		}
+		if window.UsedPercent == nil || math.IsNaN(*window.UsedPercent) || *window.UsedPercent < 0 || *window.UsedPercent > 100 {
+			return false
+		}
+		known = true
+		if 100-*window.UsedPercent <= reserve {
+			return false
+		}
+	}
+	return known
 }
 
 func (s *Store) Usage(ctx context.Context, owner string) (*Usage, error) {

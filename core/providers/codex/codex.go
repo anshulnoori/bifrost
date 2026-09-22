@@ -79,6 +79,9 @@ func (p *Provider) auth(ctx *schemas.BifrostContext, key schemas.Key, model stri
 	}
 	access, account, err := p.resolve(ctx, key)
 	if err != nil {
+		if errors.Is(err, schemas.ErrCodexReserve) {
+			return nil, failure(schemas.ErrCodexReserve.Error())
+		}
 		return nil, failure("codex credential unavailable; check connection status or reconnect")
 	}
 	if access == "" || account == "" || strings.ContainsAny(access+account, "\r\n") {

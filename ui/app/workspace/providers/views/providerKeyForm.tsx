@@ -44,7 +44,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		defaultValues: {
 			key: (currentKey as ProviderKeyFormValues) ?? {
 				id: uuid(),
-				name: "",
+				name: provider.name === "codex" ? `Codex ${uuid().slice(0, 8)}` : "",
 				models: ["*"],
 				blacklisted_models: [],
 				weight: 1.0,
@@ -74,11 +74,11 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		if (!form.formState.isValid && form.formState.errors.root?.message) {
 			return form.formState.errors.root?.message;
 		}
-		if (!form.formState.isDirty) {
+		if (!form.formState.isDirty && (isEditing || provider.name !== "codex")) {
 			return "No changes made";
 		}
 		return null;
-	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess]);
+	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess, isEditing, provider.name]);
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
@@ -161,7 +161,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 									<span>
 										<Button
 											type="submit"
-											disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
+											disabled={(!form.formState.isDirty && (isEditing || provider.name !== "codex")) || !hasUpdateProviderAccess}
 											isLoading={form.formState.isSubmitting || isCreatingProviderKey || isUpdatingProviderKey}
 											data-testid="key-save-btn"
 										>

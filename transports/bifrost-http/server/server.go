@@ -2819,6 +2819,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	account := lib.NewBaseAccount(s.Config)
 	s.Client, err = bifrost.Init(ctx, schemas.BifrostConfig{
 		Account:            account,
+		KeyPoolFilter:      lib.CodexKeyPoolFilter(s.Config.ConfigStore),
 		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
 		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),

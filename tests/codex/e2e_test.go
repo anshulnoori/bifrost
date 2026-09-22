@@ -51,9 +51,11 @@ func TestOAuthThroughGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
-	claims := fmt.Sprintf(`{"exp":%d,"https://api.openai.com/auth":{"chatgpt_account_id":"fixture-account"}}`, time.Now().Add(time.Hour).Unix())
+	claims := fmt.Sprintf(`{"exp":%d,"email":"fixture@example.test","https://api.openai.com/auth":{"chatgpt_account_id":"fixture-account"}}`, time.Now().Add(time.Hour).Unix())
 	token := "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".fixture"
 	var refreshes, inference atomic.Int32
+	var used atomic.Int32
+	used.Store(23)
 	fixture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -78,7 +80,11 @@ func TestOAuthThroughGateway(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("ChatGPT-Account-Id") != "fixture-account" {
 				t.Error("usage credential isolation failed")
 			}
-			fmt.Fprint(w, `{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":23,"limit_window_seconds":18000,"reset_at":1900000000},"secondary_window":null}}`)
+			if used.Load() < 0 {
+				w.WriteHeader(503)
+				return
+			}
+			fmt.Fprintf(w, `{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":%d,"limit_window_seconds":18000,"reset_at":1900000000},"secondary_window":null}}`, used.Load())
 		case "/backend-api/codex/models":
 			if r.Header.Get("Authorization") != "Bearer "+token {
 				t.Error("catalog credential isolation failed")
@@ -151,6 +157,7 @@ func TestOAuthThroughGateway(t *testing.T) {
 	config = strings.Replace(config, `"keys":[]`, `"keys":[{"id":"owner-a","name":"Account A","models":["*"],"weight":1},{"id":"owner-b","name":"Account B","models":["*"],"weight":1}]`, 1)
 	config = strings.Replace(config, `"key_ids":["*"]`, `"key_ids":["owner-a"]`, 1)
 	config = strings.Replace(config, `"key_ids":["*"]`, `"key_ids":["owner-b"]`, 1)
+	config = strings.Replace(config, `"virtual_keys":[`, `"virtual_keys":[{"id":"pool","name":"pool","value":"sk-bf-fixture-pool","is_active":true,"provider_configs":[{"provider":"codex","allowed_models":["*"],"key_ids":["*"],"weight":1}]},`, 1)
 	if plugin != "" {
 		config = strings.Replace(config, `"plugins":[`, fmt.Sprintf(`"plugins":[{"name":"headroom","enabled":true,"path":%q,"placement":"post_builtin","config":{"enabled":false}},`, plugin), 1)
 	}
@@ -257,6 +264,10 @@ func TestOAuthThroughGateway(t *testing.T) {
 	if status != 200 || !bytes.Contains(data, []byte(`"state":"connected"`)) {
 		t.Fatalf("poll=%d %s", status, data)
 	}
+	status, data = call("GET", "/api/codex/connections/current", "owner-a", "")
+	if status != 200 || !bytes.Contains(data, []byte(`"email":"fixture@example.test"`)) {
+		t.Fatalf("email metadata missing: %d %s", status, data)
+	}
 	request := `{"model":"codex/gpt-5.3-codex","input":"hello"}`
 	for _, owner := range []string{"", "owner-b"} {
 		status, data = call("POST", "/v1/responses", owner, request)
@@ -322,6 +333,64 @@ func TestOAuthThroughGateway(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("second poll=%d %s", status, data)
 	}
+	// Policy survives API/database round trips. A restricted single-account
+	// route must not evade the pool filter, including when usage is unavailable.
+	status, data = call("PUT", "/api/providers/codex/keys/owner-a", "owner-a", `{"name":"Account A","models":["*"],"weight":1,"codex_reserve_percent":25}`)
+	if status != 200 || !bytes.Contains(data, []byte(`"codex_reserve_percent":25`)) {
+		t.Fatalf("reserve save: %d %s", status, data)
+	}
+	for _, invalid := range []string{"-1", "101"} {
+		status, data = call("PUT", "/api/providers/codex/keys/owner-a", "owner-a", `{"name":"Account A","models":["*"],"weight":1,"codex_reserve_percent":`+invalid+`}`)
+		if status != 400 {
+			t.Fatalf("invalid reserve accepted: %d %s", status, data)
+		}
+	}
+	status, data = call("PUT", "/api/providers/codex/keys/owner-b", "owner-b", `{"name":"Account B","models":["*"],"weight":0}`)
+	if status != 200 {
+		t.Fatalf("zero weight save: %d %s", status, data)
+	}
+	for _, percentage := range []int32{75, 76, -1} {
+		used.Store(percentage)
+		before := inference.Load()
+		status, data = call("POST", "/v1/responses", "owner-a", request)
+		if status < 400 || inference.Load() != before || !bytes.Contains(data, []byte("reserve")) {
+			t.Fatalf("reserve bypass at %d: %d %s", percentage, status, data)
+		}
+		// Without pre-selection filtering the weighted selector always chooses
+		// reserved A (weight 1), never B (weight 0). Remaining B must serve.
+		status, data = call("POST", "/v1/responses", "pool", request)
+		if status != 200 {
+			t.Fatalf("pool failed to skip reserved A: %d %s", status, data)
+		}
+	}
+	status, data = call("PUT", "/api/providers/codex/keys/owner-b", "owner-b", `{"name":"Account B","models":["*"],"weight":1,"codex_reserve_percent":25}`)
+	if status != 200 {
+		t.Fatalf("B reserve save: %d %s", status, data)
+	}
+	beforePool := inference.Load()
+	status, data = call("POST", "/v1/responses", "pool", request)
+	if status < 400 || inference.Load() != beforePool {
+		t.Fatalf("empty eligible pool failed open: %d %s", status, data)
+	}
+	status, data = call("PUT", "/api/providers/codex/keys/owner-b", "owner-b", `{"name":"Account B","models":["*"],"weight":1,"codex_reserve_percent":null}`)
+	if status != 200 {
+		t.Fatalf("B clear reserve: %d %s", status, data)
+	}
+	used.Store(74)
+	status, data = call("POST", "/v1/responses", "owner-a", request)
+	if status != 200 {
+		t.Fatalf("reserve recovery: %d %s", status, data)
+	}
+	status, data = call("PUT", "/api/providers/codex/keys/owner-a", "owner-a", `{"name":"Account A","models":["*"],"weight":1,"codex_reserve_percent":null}`)
+	if status != 200 {
+		t.Fatalf("clear reserve: %d %s", status, data)
+	}
+	used.Store(-1)
+	status, data = call("POST", "/v1/responses", "owner-a", request)
+	if status != 200 {
+		t.Fatalf("cleared reserve still active: %d %s", status, data)
+	}
+	used.Store(23)
 	status, data = call("DELETE", "/api/codex/connections/"+login.ID, "owner-a", "")
 	if status != 200 {
 		t.Fatalf("disconnect=%d %s", status, data)
@@ -349,7 +418,7 @@ func TestOAuthThroughGateway(t *testing.T) {
 	}
 	for _, name := range []string{"config.db", "config.db-wal", "gateway.log"} {
 		data, _ := os.ReadFile(filepath.Join(dir, name))
-		if bytes.Contains(data, []byte(token)) || bytes.Contains(data, []byte("fixture-refresh")) {
+		if bytes.Contains(data, []byte(token)) || bytes.Contains(data, []byte("fixture-refresh")) || bytes.Contains(data, []byte("fixture@example.test")) {
 			t.Fatalf("plaintext credential persisted in %s", name)
 		}
 		if name == "gateway.log" && plugin != "" && !bytes.Contains(data, []byte("plugin status: headroom - active")) {

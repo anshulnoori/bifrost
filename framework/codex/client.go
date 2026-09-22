@@ -55,6 +55,7 @@ type tokens struct {
 	ID        string    `json:"id_token"`
 	ExpiresIn int64     `json:"expires_in"`
 	Account   string    `json:"account"`
+	Email     string    `json:"email,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -138,6 +139,9 @@ func (c *Client) refresh(ctx context.Context, old tokens) (tokens, error) {
 	if err == nil && t.Account != old.Account {
 		return tokens{}, errors.New("codex account changed during refresh")
 	}
+	if err == nil && t.Email == "" {
+		t.Email = old.Email
+	}
 	return t, err
 }
 
@@ -177,6 +181,40 @@ func (c *Client) exchange(ctx context.Context, values url.Values, previousRefres
 	if t.ExpiresIn > 0 && time.Now().Add(time.Duration(t.ExpiresIn)*time.Second).Before(t.ExpiresAt) {
 		t.ExpiresAt = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
 	}
-	t.ID = "" // No ID token is needed for inference or persistence.
+	t.Email = tokenEmail(t.ID)
+	if t.Email == "" {
+		t.Email = tokenEmail(t.Access)
+	}
+	t.ID = "" // Keep only the display email, not the ID token.
 	return t, nil
+}
+
+// Display metadata only; never used to authorize a gateway user or select a
+// subscription. Tokens come from the fixed TLS-authenticated issuer, not callers.
+func tokenEmail(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Email   string `json:"email"`
+		Profile struct {
+			Email string `json:"email"`
+		} `json:"https://api.openai.com/profile"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	email := claims.Email
+	if email == "" {
+		email = claims.Profile.Email
+	}
+	if len(email) > 254 || strings.ContainsAny(email, "\r\n\t <>") || !strings.Contains(email, "@") {
+		return ""
+	}
+	return email
 }

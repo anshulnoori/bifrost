@@ -1624,6 +1624,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					Models:                 dbKey.Models,
 					BlacklistedModels:      dbKey.BlacklistedModels,
 					Weight:                 dbKey.Weight,
+					CodexReservePercent:    dbKey.CodexReservePercent,
 					AzureKeyConfig:         dbKey.AzureKeyConfig,
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -1709,6 +1710,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					Models:                 dbKey.Models,
 					BlacklistedModels:      dbKey.BlacklistedModels,
 					Weight:                 dbKey.Weight,
+					CodexReservePercent:    dbKey.CodexReservePercent,
 					AzureKeyConfig:         dbKey.AzureKeyConfig,
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -6900,14 +6902,15 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				blacklisted = []string{}
 			}
 			configStoreKey := configstoreTables.TableKey{
-				KeyID:             key.ID,
-				Name:              key.Name,
-				Value:             *key.Value.Redacted(),
-				Models:            models,
-				BlacklistedModels: blacklisted,
-				Weight:            bifrost.Ptr(key.Weight),
-				Provider:          string(providerKey),
-				ConfigHash:        key.ConfigHash,
+				KeyID:               key.ID,
+				Name:                key.Name,
+				Value:               *key.Value.Redacted(),
+				Models:              models,
+				BlacklistedModels:   blacklisted,
+				Weight:              bifrost.Ptr(key.Weight),
+				CodexReservePercent: key.CodexReservePercent,
+				Provider:            string(providerKey),
+				ConfigHash:          key.ConfigHash,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

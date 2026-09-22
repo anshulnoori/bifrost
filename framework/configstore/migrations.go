@@ -496,6 +496,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_time_of_day_pricing_columns"}, run: migrationAddTimeOfDayPricingColumns},
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 	{IDs: []string{"add_codex_connections"}, run: migrationAddCodexConnections},
+	{IDs: []string{"add_codex_reserve_percent"}, run: migrationAddCodexReserve},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.
@@ -13592,13 +13593,13 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 
 			// Find all budgets owned directly by a VK (old config.json flow).
 			type standaloneVKBudget struct {
-				ID           string
-				VirtualKeyID string
-				MaxLimit     float64
+				ID            string
+				VirtualKeyID  string
+				MaxLimit      float64
 				ResetDuration string
-				CurrentUsage float64
-				LastReset    time.Time
-				ConfigHash   string
+				CurrentUsage  float64
+				LastReset     time.Time
+				ConfigHash    string
 			}
 			var standaloneBudgets []standaloneVKBudget
 			if err := tx.Raw(`

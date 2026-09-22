@@ -543,12 +543,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			blacklistedModels = []string{} // Match models: empty JSON array, not null
 		}
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:                key.ID,
-			Name:              key.Name,
-			Models:            models,
-			BlacklistedModels: blacklistedModels,
-			Weight:            key.Weight,
-			ConfigHash:        key.ConfigHash,
+			ID:                  key.ID,
+			Name:                key.Name,
+			Models:              models,
+			BlacklistedModels:   blacklistedModels,
+			Weight:              key.Weight,
+			CodexReservePercent: key.CodexReservePercent,
+			ConfigHash:          key.ConfigHash,
 		}
 		if key.Enabled != nil {
 			enabled := *key.Enabled
@@ -873,6 +874,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		return "", err
 	}
 	hash.Write(data)
+	if key.CodexReservePercent != nil {
+		data, err := sonic.Marshal(key.CodexReservePercent)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("codexReservePercent:"))
+		hash.Write(data)
+	}
 	// Hash AzureKeyConfig
 	if key.AzureKeyConfig != nil {
 		data, err := sonic.Marshal(key.AzureKeyConfig)

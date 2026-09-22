@@ -21,6 +21,7 @@ type Connection struct {
 	ID             string    `gorm:"primaryKey;size:36" json:"id"`
 	Owner          string    `gorm:"uniqueIndex;not null" json:"-"`
 	State          string    `json:"state"`
+	Email          string    `gorm:"-" json:"email,omitempty"`
 	Secret         string    `gorm:"type:text" json:"-"`
 	Version        uint64    `json:"-"`
 	ExpiresAt      time.Time `json:"expires_at"`
@@ -193,6 +194,17 @@ func (s *Store) Status(ctx context.Context, owner, id string) (Connection, error
 		}
 		row.State, row.Secret = state, ""
 		row.Version++
+	}
+	if row.Secret != "" && (row.State == "connected" || row.State == "refreshing") {
+		e, err := unseal(row)
+		if err != nil {
+			return row, err
+		}
+		row.Email = e.Tokens.Email
+		// Existing connections can obtain their display email without reconnecting.
+		if row.Email == "" {
+			row.Email = tokenEmail(e.Tokens.Access)
+		}
 	}
 	return row, nil
 }

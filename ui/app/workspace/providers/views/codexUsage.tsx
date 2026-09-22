@@ -34,6 +34,7 @@ export default function CodexUsage({
 	const [updateKey, { isLoading: updating }] = useUpdateProviderKeyMutation();
 	const [usage, setUsage] = useState<Usage>();
 	const [status, setStatus] = useState("Loading…");
+	const [email, setEmail] = useState<string>();
 	const [refresh, setRefresh] = useState(0);
 	useEffect(() => {
 		const controller = new AbortController();
@@ -43,6 +44,7 @@ export default function CodexUsage({
 				const connection = await codexAction(keyId, "status", undefined, controller.signal);
 				if (controller.signal.aborted) return;
 				setStatus(connection.state.replaceAll("_", " "));
+				setEmail(connection.email);
 				if (connection.state === "connected" || connection.state === "refreshing") {
 					const result = await codexUsage(keyId, controller.signal);
 					if (!controller.signal.aborted) setUsage(result);
@@ -80,6 +82,16 @@ export default function CodexUsage({
 		? Math.max(0, Math.min(100, ...primaryWindows.map(({ window }) => 100 - window.used_percent!)))
 		: undefined;
 	const enabled = account.enabled ?? true;
+	const label = email ?? account.name;
+	const reserve = account.codex_reserve_percent;
+	const reserveStatus =
+		reserve == null || (status !== "connected" && status !== "refreshing")
+			? undefined
+			: headline === undefined
+				? "Usage unavailable"
+				: headline <= reserve || !usage?.rate_limit?.allowed || usage?.rate_limit?.limit_reached
+					? "Reserve reached"
+					: undefined;
 	return (
 		<TableRow data-testid={`key-row-${account.name}`} className="hover:bg-transparent">
 			<TableCell colSpan={4} className="p-0 whitespace-normal">
@@ -88,9 +100,9 @@ export default function CodexUsage({
 						<button
 							type="button"
 							className="hover:bg-muted/50 flex w-full flex-wrap items-center gap-3 px-5 py-4 text-left"
-							aria-label={`${account.name} subscription details`}
+							aria-label={`${label} subscription details`}
 						>
-							<span className="min-w-0 flex-1 font-medium break-words">{account.name}</span>
+							<span className="min-w-0 flex-1 font-medium break-words">{label}</span>
 							<span className="text-muted-foreground text-xs capitalize">ChatGPT {usage?.plan_type ?? "subscription"}</span>
 							{headline !== undefined && (
 								<span className="flex items-center gap-2 text-xs tabular-nums">
@@ -99,7 +111,7 @@ export default function CodexUsage({
 								</span>
 							)}
 							<Badge variant="secondary" className="capitalize">
-								{!enabled ? "Inactive" : status}
+								{!enabled ? "Inactive" : (reserveStatus ?? status)}
 							</Badge>
 							<ChevronDown className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
 						</button>
@@ -108,7 +120,7 @@ export default function CodexUsage({
 						<dl className="grid grid-cols-[auto_1fr] items-start gap-x-6 gap-y-4 text-sm">
 							<dt className="text-muted-foreground pt-1">Account</dt>
 							<dd className="flex flex-wrap items-center gap-3">
-								<span>{account.name}</span>
+								<span>{label}</span>
 								<Button variant="outline" size="sm" disabled={!canUpdate || checking || !enabled} onClick={onCheck}>
 									{checking ? "Checking…" : "Check access"}
 								</Button>
@@ -122,6 +134,8 @@ export default function CodexUsage({
 							</dd>
 							<dt className="text-muted-foreground">Billing</dt>
 							<dd>Uses your ChatGPT subscription allowance</dd>
+							<dt className="text-muted-foreground">Routing reserve</dt>
+							<dd>{reserve == null ? "No reserve" : `Pause at ${reserve}% remaining in either window`}</dd>
 							<dt className="text-muted-foreground">Usage</dt>
 							<dd className="space-y-3">
 								<div className="flex flex-wrap items-center gap-2">

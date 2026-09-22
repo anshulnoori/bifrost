@@ -766,6 +766,9 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 // a key missing them (a masked update against a stored key lacking the section
 // would otherwise only surface later as a downstream 500).
 func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) error {
+	if p := key.CodexReservePercent; p != nil && (*p < 0 || *p > 100 || provider != schemas.Codex) {
+		return fmt.Errorf("codex_reserve_percent must be 0..100 and only applies to Codex")
+	}
 	switch provider {
 	case schemas.Ollama:
 		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsSet() {

@@ -2,8 +2,8 @@ import { test, expect } from '../../core/fixtures/base.fixture'
 
 test('Codex accounts use provider table, isolated usage bars and dashboard onboarding', async ({ page }) => {
   const accounts = [
-    { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true },
-    { id: 'work', name: 'Work', models: ['*'], weight: 1, enabled: true },
+    { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: null as number | null },
+    { id: 'work', name: 'Work', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 },
   ]
   const provider = { name: 'codex', keys: accounts, network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
   const states: Record<string, string> = { personal: 'connected', work: 'connected' }
@@ -17,7 +17,7 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   })
   await page.route('**/api/providers/codex/keys/personal', route => {
     expect(route.request().method()).toBe('PUT')
-    accounts[0].enabled = route.request().postDataJSON().enabled
+    Object.assign(accounts[0], route.request().postDataJSON())
     return route.fulfill({ json: accounts[0] })
   })
   await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
@@ -50,7 +50,7 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
       if (polls === 1) return route.fulfill({ status: 409, json: { error: 'another replica owns polling' } })
     } else if (route.request().method() === 'POST') states[key] = 'pending'
     const state = states[key]
-    return route.fulfill({ json: { state, ...(state === 'disconnected' ? {} : { id: `connection-${key}` }),
+    return route.fulfill({ json: { state, ...(state === 'connected' ? { email: `${key}@example.test` } : {}), ...(state === 'disconnected' ? {} : { id: `connection-${key}` }),
       ...(state === 'pending' ? { user_code: 'TEST-ONLY', verification_url: 'https://auth.openai.com/codex/device', interval_seconds: 1 } : {}),
     } })
   })
@@ -62,9 +62,21 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   const work = page.getByTestId('codex-usage-work')
   await expect(personal.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '32')
   await expect(work.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '0')
-  await expect(personal.getByRole('button', { name: 'Personal subscription details' })).toHaveAttribute('aria-expanded', 'false')
-  await personal.getByRole('button', { name: 'Personal subscription details' }).click()
-  await work.getByRole('button', { name: 'Work subscription details' }).click()
+  await expect(personal.getByRole('button', { name: 'personal@example.test subscription details' })).toHaveAttribute('aria-expanded', 'false')
+  await personal.getByRole('button', { name: 'personal@example.test subscription details' }).click()
+  await work.getByRole('button', { name: 'work@example.test subscription details' }).click()
+  await expect(work).toContainText('Reserve reached')
+  await expect(work).toContainText('Pause at 25% remaining in either window')
+  await personal.getByRole('button', { name: 'Edit connection' }).click()
+  await page.getByLabel('Remaining allowance reserve (%)').fill('40')
+  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-reserve-edit.png` })
+  await page.getByTestId('key-save-btn').click()
+  await expect.poll(() => accounts[0].codex_reserve_percent).toBe(40)
+  await expect(personal).toContainText('Reserve reached')
+  await personal.getByRole('button', { name: 'Edit connection' }).click()
+  await page.getByLabel('Remaining allowance reserve (%)').fill('')
+  await page.getByTestId('key-save-btn').click()
+  await expect.poll(() => accounts[0].codex_reserve_percent).toBeNull()
   await expect(personal.getByRole('button', { name: 'Check access' })).toBeVisible()
   await personal.getByRole('button', { name: 'Check access' }).click()
   await expect.poll(() => checked).toBe(true)
@@ -80,10 +92,11 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   await expect(work.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '0')
   await expect(work.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '5')
   await expect(page.getByText(/not endorsed|permitted coding|Bifrost virtual key/i)).toHaveCount(0)
+  await expect(page.getByText('Model list refreshed', { exact: true })).toHaveCount(0, { timeout: 10000 })
   if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-accounts.png` })
   await page.getByTestId('add-key-btn').click()
   const form = page.getByTestId('key-form')
-  await form.getByLabel('Name', { exact: true }).fill('Travel')
+  await expect(form.getByLabel('Name', { exact: true })).toHaveValue(/^Codex /)
   await expect(form.getByLabel('API Key', { exact: true })).toHaveCount(0)
   await page.getByTestId('key-save-btn').click()
   await expect(page.getByTestId('codex-onboarding')).toBeVisible()

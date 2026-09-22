@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const codexConnectionSchema = z.object({
 	id: z.string().optional(),
+	email: z.string().optional(),
 	state: z.enum(["disconnected", "pending", "polling", "connected", "refreshing", "expired", "reconnect_required"]),
 	expires_at: z.string().optional(),
 	verification_url: z.literal("https://auth.openai.com/codex/device").optional(),

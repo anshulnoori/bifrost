@@ -266,6 +266,7 @@ export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
 export interface ModelProviderKey {
 	id: string;
 	name: string;
+	codex_reserve_percent?: number | null;
 	value?: SecretVar;
 	models?: string[];
 	blacklisted_models?: string[];

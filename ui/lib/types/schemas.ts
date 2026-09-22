@@ -436,6 +436,7 @@ export const aliasConfigSchema = z.preprocess(
 export const modelProviderKeyFieldsSchema = z.object({
 	id: z.string().min(1, "Id is required"),
 	name: z.string().min(1, "Name is required"),
+	codex_reserve_percent: z.number().min(0).max(100).nullable().optional(),
 	value: secretVarSchema.optional(),
 	models: z.array(z.string()).optional().default(["*"]),
 	blacklisted_models: z.array(z.string()).default([]).optional(),
