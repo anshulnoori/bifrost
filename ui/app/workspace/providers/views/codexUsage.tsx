@@ -84,12 +84,19 @@ export default function CodexUsage({
 	const enabled = account.enabled ?? true;
 	const label = email ?? account.name;
 	const reserve = account.codex_reserve_percent;
+	const weekly = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window].filter(
+		(window) => window?.limit_window_seconds === 604800,
+	);
+	const weeklyRemaining =
+		weekly.length && weekly.every((window) => window?.used_percent != null && window.used_percent >= 0 && window.used_percent <= 100)
+			? Math.min(...weekly.map((window) => 100 - window!.used_percent!))
+			: undefined;
 	const reserveStatus =
 		reserve == null || (status !== "connected" && status !== "refreshing")
 			? undefined
-			: headline === undefined
+			: weeklyRemaining === undefined
 				? "Usage unavailable"
-				: headline <= reserve || !usage?.rate_limit?.allowed || usage?.rate_limit?.limit_reached
+				: weeklyRemaining <= reserve
 					? "Reserve reached"
 					: undefined;
 	return (
@@ -135,7 +142,7 @@ export default function CodexUsage({
 							<dt className="text-muted-foreground">Billing</dt>
 							<dd>Uses your ChatGPT subscription allowance</dd>
 							<dt className="text-muted-foreground">Routing reserve</dt>
-							<dd>{reserve == null ? "No reserve" : `Pause at ${reserve}% remaining in either window`}</dd>
+							<dd>{reserve == null ? "No reserve" : `Pause at ${reserve}% weekly allowance remaining`}</dd>
 							<dt className="text-muted-foreground">Usage</dt>
 							<dd className="space-y-3">
 								<div className="flex flex-wrap items-center gap-2">

@@ -189,7 +189,8 @@ Existing connections read email from their stored access token when available. I
 Routing and authorization always use the stable account ID, never the email.
 
 Under **Edit connection**, set **Remaining allowance reserve (%)** independently for each subscription.
-For example, 25 pauses the account at 25% remaining in either standard allowance window.
+For example, 25 pauses the account at 25% weekly allowance remaining. The five-hour window does not affect this reserve.
+OpenAI still enforces its own rate limits. If the weekly window is unavailable, accounts with a reserve fail closed.
 To stop after using 25%, set 75. Leave the field blank to disable the reserve.
 The equivalent key configuration field is `codex_reserve_percent`, a number from 0 through 100 or `null`.
 

@@ -12,18 +12,20 @@ func TestAboveReserve(t *testing.T) {
 		used, secondary, reserve float64
 		want                     bool
 	}{
-		{"above", 74.9, 10, 25, true},
-		{"equal", 75, 10, 25, false},
-		{"below", 75.1, 10, 25, false},
+		{"above", 100, 74.9, 25, true},
+		{"equal", 10, 75, 25, false},
+		{"below", 10, 75.1, 25, false},
 		{"weekly", 10, 76, 25, false},
 		{"recovered", 10, 74, 25, true},
-		{"zero reserve exhausted", 100, 0, 0, false},
+		{"five hour exhausted", 100, 10, 25, true},
+		{"zero reserve exhausted", 0, 100, 0, false},
 		{"full reserve", 0, 0, 100, false},
-		{"invalid usage", math.NaN(), 0, 25, false},
+		{"invalid weekly usage", 0, math.NaN(), 25, false},
+		{"invalid short usage ignored", math.NaN(), 0, 25, true},
 		{"invalid reserve", 10, 0, -1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			u := &Usage{Limits: &UsageLimits{Allowed: true, Primary: &UsageWindow{UsedPercent: &tc.used}, Secondary: &UsageWindow{UsedPercent: &tc.secondary}}}
+			u := &Usage{Limits: &UsageLimits{Allowed: true, Primary: &UsageWindow{UsedPercent: &tc.used, WindowSeconds: 18000}, Secondary: &UsageWindow{UsedPercent: &tc.secondary, WindowSeconds: 604800}}}
 			if got := u.AboveReserve(tc.reserve); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -35,13 +37,13 @@ func TestAboveReserve(t *testing.T) {
 		}
 	}
 	used := 1.0
-	u := &Usage{Limits: &UsageLimits{Allowed: false, Primary: &UsageWindow{UsedPercent: &used}}}
-	if u.AboveReserve(25) {
-		t.Fatal("disallowed usage accepted")
+	u := &Usage{Limits: &UsageLimits{Allowed: false, LimitReached: true, Primary: &UsageWindow{UsedPercent: &used, WindowSeconds: 604800}}}
+	if !u.AboveReserve(25) {
+		t.Fatal("weekly allowance in primary slot blocked by short-window flags")
 	}
-	u.Limits.Allowed, u.Limits.LimitReached = true, true
+	u.Limits.Primary.WindowSeconds = 18000
 	if u.AboveReserve(25) {
-		t.Fatal("exhausted usage accepted")
+		t.Fatal("missing weekly window accepted")
 	}
 }
 

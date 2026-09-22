@@ -4549,7 +4549,7 @@
           "type": ["number", "null"],
           "minimum": 0,
           "maximum": 100,
-          "description": "Codex only: stop routing when either subscription window reaches this percentage remaining. Null disables the reserve."
+          "description": "Codex only: stop routing when the weekly subscription window reaches this percentage remaining. The five-hour window is ignored. Null disables the reserve."
         },
         "use_for_batch_api": {
           "type": "boolean",

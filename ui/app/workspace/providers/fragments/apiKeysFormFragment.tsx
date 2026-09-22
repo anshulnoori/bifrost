@@ -365,8 +365,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								/>
 							</FormControl>
 							<p className="text-muted-foreground text-xs">
-								Pause this account when either window reaches this percentage remaining. Resume automatically after recovery. Leave blank
-								for no reserve.
+								Pause this account when the weekly allowance reaches this percentage remaining. Resume automatically after recovery. Leave
+								blank for no reserve.
 							</p>
 							<FormMessage />
 						</FormItem>

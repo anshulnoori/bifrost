@@ -84,7 +84,8 @@ func TestOAuthThroughGateway(t *testing.T) {
 				w.WriteHeader(503)
 				return
 			}
-			fmt.Fprintf(w, `{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":%d,"limit_window_seconds":18000,"reset_at":1900000000},"secondary_window":null}}`, used.Load())
+			// Short-window exhaustion must not influence the weekly reserve.
+			fmt.Fprintf(w, `{"plan_type":"plus","rate_limit":{"allowed":false,"limit_reached":true,"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_at":1900000000},"secondary_window":{"used_percent":%d,"limit_window_seconds":604800,"reset_at":1900100000}}}`, used.Load())
 		case "/backend-api/codex/models":
 			if r.Header.Get("Authorization") != "Bearer "+token {
 				t.Error("catalog credential isolation failed")

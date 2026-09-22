@@ -2,7 +2,7 @@ import { test, expect } from '../../core/fixtures/base.fixture'
 
 test('Codex accounts use provider table, isolated usage bars and dashboard onboarding', async ({ page }) => {
   const accounts = [
-    { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: null as number | null },
+    { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 as number | null },
     { id: 'work', name: 'Work', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 },
   ]
   const provider = { name: 'codex', keys: accounts, network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
@@ -39,8 +39,8 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
     if (path.endsWith('/usage')) {
       if (fail && key === 'work') return route.fulfill({ status: 502, json: { error: 'unavailable' } })
       return route.fulfill({ json: { plan_type: key === 'work' ? 'pro' : 'plus', checked_at: new Date().toISOString(), rate_limit: {
-        allowed: key !== 'work', limit_reached: key === 'work',
-        primary_window: { used_percent: key === 'work' ? 100 : 23, limit_window_seconds: 18000, reset_at: 1900000000 },
+        allowed: false, limit_reached: true,
+        primary_window: { used_percent: 100, limit_window_seconds: 18000, reset_at: 1900000000 },
         secondary_window: { used_percent: key === 'work' ? 95 : 68, limit_window_seconds: 604800, reset_at: 1900100000 },
       } } })
     }
@@ -60,13 +60,15 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   if (await closeSetup.isVisible()) await closeSetup.click()
   const personal = page.getByTestId('codex-usage-personal')
   const work = page.getByTestId('codex-usage-work')
-  await expect(personal.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '32')
+  await expect(personal.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '0')
   await expect(work.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '0')
   await expect(personal.getByRole('button', { name: 'personal@example.test subscription details' })).toHaveAttribute('aria-expanded', 'false')
   await personal.getByRole('button', { name: 'personal@example.test subscription details' }).click()
   await work.getByRole('button', { name: 'work@example.test subscription details' }).click()
   await expect(work).toContainText('Reserve reached')
-  await expect(work).toContainText('Pause at 25% remaining in either window')
+  await expect(work).toContainText('Pause at 25% weekly allowance remaining')
+  await expect(personal).not.toContainText('Reserve reached')
+  await expect(personal).toContainText('Pause at 25% weekly allowance remaining')
   await personal.getByRole('button', { name: 'Edit connection' }).click()
   await page.getByLabel('Remaining allowance reserve (%)').fill('40')
   if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-reserve-edit.png` })
@@ -87,7 +89,7 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   await personal.getByRole('button', { name: 'Activate', exact: true }).click()
   await expect(personal.getByRole('button', { name: 'Check access' })).toBeEnabled()
   await expect(personal.getByRole('link', { name: 'ChatGPT usage' })).toHaveAttribute('href', 'https://chatgpt.com/codex/settings/usage')
-  await expect(personal.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '77')
+  await expect(personal.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '0')
   await expect(personal.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '32')
   await expect(work.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '0')
   await expect(work.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '5')
@@ -115,5 +117,5 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   await work.getByRole('button', { name: 'Refresh usage' }).click()
   await expect(work).toContainText('Usage unavailable')
   await expect(work.getByRole('progressbar')).toHaveCount(0)
-  await expect(personal.getByRole('progressbar', { name: '5h remaining', exact: true })).toHaveAttribute('aria-valuenow', '77')
+  await expect(personal.getByRole('progressbar', { name: '5h remaining', exact: true })).toHaveAttribute('aria-valuenow', '0')
 })

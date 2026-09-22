@@ -37,15 +37,16 @@ type Usage struct {
 	CheckedAt time.Time `json:"checked_at"`
 }
 
-// AboveReserve requires a current, known primary/secondary allowance. Unknown
-// usage fails closed. Feature-specific limits do not govern all model traffic.
+// AboveReserve checks only the standard weekly allowance, identified by duration
+// rather than position. Overall allowed/limit_reached can reflect the five-hour
+// window and do not govern this reserve; OpenAI still enforces its own limits.
 func (u *Usage) AboveReserve(reserve float64) bool {
-	if u == nil || u.Limits == nil || !u.Limits.Allowed || u.Limits.LimitReached || math.IsNaN(reserve) || reserve < 0 || reserve > 100 {
+	if u == nil || u.Limits == nil || math.IsNaN(reserve) || reserve < 0 || reserve > 100 {
 		return false
 	}
 	known := false
 	for _, window := range []*UsageWindow{u.Limits.Primary, u.Limits.Secondary} {
-		if window == nil {
+		if window == nil || window.WindowSeconds != 7*24*60*60 {
 			continue
 		}
 		if window.UsedPercent == nil || math.IsNaN(*window.UsedPercent) || *window.UsedPercent < 0 || *window.UsedPercent > 100 {
