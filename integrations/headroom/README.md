@@ -6,8 +6,13 @@ The native Bifrost plugin runs after governance and routing (`post_builtin`). He
 
 ## Supported boundary
 
-The plugin requires a settled governance grant, a configured project, a principal, a session, and a thread label.
-Clients supply `x-bf-session-id` and `x-headroom-thread`. These labels cannot grant access or replace the authenticated project.
+The plugin runs after governance admission. `scope: "gateway"` applies to all admitted requests in a single-tenant gateway.
+`scope: "restricted"` requires a matching project or virtual key ID. Omitting `scope` preserves restricted behavior.
+Existing caller identities remain separate attribution partitions in either mode. Unauthenticated requests share the explicitly configured gateway scope.
+The plugin uses Bifrost's resolved session ID, including supported client session headers or `x-bf-session-id`.
+`x-headroom-thread` optionally separates threads within a session. Otherwise, the session ID is also the thread label.
+Requests without a session use their request ID as a separate marker-free compression partition.
+These labels cannot grant access or replace the authenticated project or virtual key.
 
 Only text tool results cross the sidecar boundary. System prompts, tool definitions, reasoning, strict schemas, and multimedia remain in Bifrost.
 The plugin patches selected text fields without changing admitted model, provider, account, tool IDs, or request order.
@@ -15,11 +20,11 @@ The plugin patches selected text fields without changing admitted model, provide
 | Lane | Behavior |
 | --- | --- |
 | Typed Chat and Responses | Compress eligible text tool results, including streaming requests |
-| Raw Chat, Responses, Anthropic POST | Compress known string tool-result fields |
-| Raw SSE, unknown endpoints, query parameters | Bypass |
+| Raw Chat, Responses, Anthropic POST, including SSE | Compress known string tool-result fields; preserve response bytes |
+| Unknown endpoints, query parameters | Bypass |
 | Provider-managed state or explicit prefix cache controls | Bypass |
 | Multimedia tool results | Preserve unchanged |
-| Missing governance/project/session/thread | Bypass |
+| Missing governance/configured scope/session/thread | Bypass |
 | CCR or internal retrieval obligations | Reject configuration or sidecar response |
 
 Responses and SSE chunks remain unchanged. The plugin never executes client tools or makes provider calls.
@@ -60,9 +65,36 @@ handlers.NewHeadroomHandler().RegisterRoutes(s.Router, middlewares...)
 ```
 
 The Codex integration owns this registration. This patch intentionally does not modify `server.go`.
-Open `/workspace/headroom` after the UI build. The route is not in shared navigation.
+Open **Headroom** in the sidebar after the UI build. Save the configuration on that page.
+Choose **All admitted requests on this gateway** to use normal provider configuration, including Codex, without a virtual key.
+Optional virtual-key restrictions use the ID from Governance, not the virtual key secret.
+An optional project ID further restricts the scope. Both must match when both are configured.
+New native-plugin installation requires dashboard administrator authentication. Existing configuration saves do not change the installed plugin path.
 The page requires `HEADROOM_METRICS_TOKEN` even when OSS dashboard authentication is disabled.
 `BIFROST_HEADROOM_METRICS_PORT` defaults to 9909. The handler always connects to numeric loopback, never a caller-supplied URL.
+
+For the combined Codex/Headroom orb, prepare the sidecar from the repository root:
+
+```sh
+bash integrations/headroom/prepare-local.sh
+make setup-workspace
+go work use ./integrations/headroom
+go build -o /tmp/bifrost-codex ./transports/bifrost-http
+go build -buildmode=plugin -o /tmp/headroom-combined.so ./integrations/headroom
+```
+
+Start the gateway with `/tmp/bifrost-headroom-runtime/environment` sourced in its managed service command.
+The preparation script generates private local credentials without printing them. It does not change provider credentials or restart the gateway.
+The monitoring token comes from `HEADROOM_METRICS_TOKEN` in that private environment file.
+
+The full-path local test uses the real gateway, native plugin, and sidecar with a fixture provider:
+
+```sh
+source /tmp/bifrost-headroom-runtime/environment
+HEADROOM_GATEWAY_BINARY=/tmp/bifrost-codex HEADROOM_PLUGIN_PATH=/tmp/headroom-combined.so \
+HEADROOM_BENCH_URL=http://127.0.0.1:8787 HEADROOM_BENCH_TOKEN="$HEADROOM_PROXY_TOKEN" \
+go test -run TestGatewayWithLiveHeadroom -v ./integrations/headroom
+```
 
 ## Privacy, retention, and deployment limits
 
@@ -79,6 +111,8 @@ Disable upstream request logging separately if prompt retention is prohibited. T
 The HMAC scope is an attribution partition, not a CCR capability. No CCR handles exist in this implementation.
 There is no shared event database, durable turn state, migration, affinity router, or restart recovery.
 Monitor configuration changes require a gateway restart. Drain active requests before plugin removal or restart.
+The monitor listener lives until gateway exit because native-plugin reloads share package state.
+Removing the plugin stops new hook events. Restart the gateway to close the listener immediately.
 
 ## Accounting and evaluation
 

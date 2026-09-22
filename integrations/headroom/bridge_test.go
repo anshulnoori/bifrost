@@ -179,6 +179,25 @@ func TestAdmissionIsolationAndCopyOnWrite(t *testing.T) {
 	}
 }
 
+func TestVirtualKeyScopeWithoutProject(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	b.config.ProjectID = ""
+	b.config.VirtualKeyID = "vk-a"
+	for _, principal := range []string{"vk-b", "vk-a"} {
+		ctx := admitted("", principal)
+		b.pre(ctx, chatRequest())
+		if got := ctx.Value(eventKey).(*Event).Status; (principal == "vk-a") != (got == "compressed") {
+			t.Fatal("virtual key isolation failed", principal, got)
+		}
+	}
+	b.config.ProjectID = "required-project"
+	b.pre(admitted("other-project", "vk-a"), chatRequest())
+	if calls.Load() != 1 {
+		t.Fatal("sidecar saw unauthorized scope")
+	}
+}
+
 func TestFailPolicyAndStreamIdentity(t *testing.T) {
 	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "private server detail", 500) })
 	req := chatRequest()

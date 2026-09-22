@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { HeadroomReport, readHeadroomReport } from "@/lib/store/apis/headroomApi";
+import HeadroomConfiguration from "./configuration";
 
 export default function HeadroomPage() {
 	const [token, setToken] = useState("");
@@ -45,6 +46,7 @@ export default function HeadroomPage() {
 					</a>
 				</Button>
 			</div>
+			<HeadroomConfiguration />
 			<form
 				className="flex max-w-2xl flex-wrap items-end gap-3"
 				onSubmit={(e) => {

@@ -15,7 +15,12 @@ func TestMonitorReload(t *testing.T) {
 	if err := configureMonitor(config); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { Cleanup() })
+	t.Cleanup(func() {
+		monitorMu.Lock()
+		defer monitorMu.Unlock()
+		monitor.Close()
+		monitor = nil
+	})
 	config.RetentionSeconds = 0
 	if err := configureMonitor(config); err != nil {
 		t.Fatal("unchanged listener must permit policy reload", err)

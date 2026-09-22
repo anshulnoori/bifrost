@@ -46,15 +46,14 @@ func Init(raw any) error {
 	return nil
 }
 func Cleanup() error {
-	if old := current.Swap(nil); old != nil && old.client != nil {
-		old.client.CloseIdleConnections()
+	// Go's loader shares package state between DynamicPlugin wrappers. Bifrost
+	// calls the OLD wrapper's Cleanup after the replacement's Init (and for
+	// multiple interfaces). It must not clear the newly published bridge or
+	// close its monitor. The single bounded listener therefore lives until
+	// process exit; Init closes the replaced client's idle connections.
+	if b := current.Load(); b != nil && b.client != nil {
+		b.client.CloseIdleConnections()
 	}
-	monitorMu.Lock()
-	if monitor != nil {
-		monitor.Close()
-		monitor = nil
-	}
-	monitorMu.Unlock()
 	return nil
 }
 func main() {}
@@ -62,9 +61,11 @@ func main() {}
 // This hook captures an untrusted partition label, never an identity. Its value
 // cannot authorize compression or override the governance-derived project.
 func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	thread := req.Headers["x-headroom-thread"]
-	if len(thread) <= 128 {
-		ctx.SetValue(threadKey, thread)
+	for name, thread := range req.Headers {
+		if strings.EqualFold(name, "x-headroom-thread") && len(thread) <= 128 {
+			ctx.SetValue(threadKey, thread)
+			break
+		}
 	}
 	return nil, nil
 }
@@ -96,12 +97,19 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 		return bypass("disabled")
 	}
 	grant := ctx.Grant()
-	if grant == nil || grant.Identity() == nil || grant.Access() == nil || grant.Limits() == nil {
+	if grant == nil || grant.Identity() == nil || grant.Limits() == nil {
 		return bypass("unresolved_governance")
 	}
 	id := grant.Identity()
-	if id.Project() == nil || id.Project().ID == "" {
-		return bypass("missing_project")
+	// Bifrost intentionally leaves Access nil for a request with no presented
+	// credential. Limits is still settled by admission. Only the operator's
+	// explicit gateway-wide scope admits that case; unresolved credentials never do.
+	if grant.Access() == nil && (b.config.Scope != "gateway" || id.Presented()) {
+		return bypass("unresolved_governance")
+	}
+	project := ""
+	if id.Project() != nil {
+		project = id.Project().ID
 	}
 	principal := ""
 	if id.VirtualKey() != nil {
@@ -110,18 +118,37 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 	if principal == "" && id.User() != nil {
 		principal = "user:" + id.User().ID
 	}
+	if principal == "" && b.config.Scope == "gateway" {
+		principal = "gateway"
+	}
 	if principal == "" {
 		return bypass("missing_principal")
 	}
-	if b.config.ProjectID == "" || id.Project().ID != b.config.ProjectID {
+	if b.config.VirtualKeyID != "" {
+		if id.VirtualKey() == nil || id.VirtualKey().ID != b.config.VirtualKeyID {
+			return bypass("virtual_key_not_enabled")
+		}
+		// A configured project remains an additional restriction when present.
+		if b.config.ProjectID != "" && project != b.config.ProjectID {
+			return bypass("project_not_enabled")
+		}
+	} else if (b.config.ProjectID == "" && b.config.Scope != "gateway") || (b.config.ProjectID != "" && project != b.config.ProjectID) {
 		return bypass("project_not_enabled")
 	}
 	session, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
+	if session == "" {
+		// Marker-free compression has no continuation state. A single request
+		// is its own partition when the client does not supply a session.
+		session, _ = ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	}
 	thread, _ := ctx.Value(threadKey).(string)
+	if thread == "" {
+		thread = session
+	}
 	if session == "" || len(session) > 256 || thread == "" {
 		return bypass("missing_session_or_thread")
 	}
-	event.Project = id.Project().ID
+	event.Project = project
 	event.Principal = b.scopeID("principal", event.Project, principal)
 	event.Thread = b.scopeID("thread", event.Project, principal, session, thread)
 	scope := b.scopeID(event.Project, principal, session, thread, string(provider), model)
@@ -176,7 +203,7 @@ func requestBody(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) ([]by
 		switch p.Path {
 		case "/v1/chat/completions":
 			protocol = "chat"
-		case "/v1/responses":
+		case "/v1/responses", "/responses":
 			protocol = "responses"
 		case "/v1/messages":
 			protocol = "anthropic"
@@ -186,11 +213,8 @@ func requestBody(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) ([]by
 		if gjson.GetBytes(p.Body, "model").Str != p.Model {
 			return nil, "", nil, "model_mismatch"
 		}
-		// Raw SSE/WebSocket semantics vary by provider. Do not transform these
-		// lanes until their route's contract is tested with the owning provider.
-		if req.RequestType == schemas.PassthroughStreamRequest || gjson.GetBytes(p.Body, "stream").Bool() {
-			return nil, "", nil, "raw_stream"
-		}
+		// Compression changes only selected input text. Streaming flags, headers,
+		// response chunks and provider finalization remain owned by the provider.
 		return p.Body, protocol, func(body []byte) (*schemas.BifrostRequest, error) {
 			r := *req
 			copy := *p

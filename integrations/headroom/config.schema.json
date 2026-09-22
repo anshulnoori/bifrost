@@ -5,7 +5,9 @@
   "additionalProperties": false,
   "properties": {
     "enabled": {"type": "boolean", "default": false},
+    "scope": {"enum": ["gateway", "restricted"]},
     "project_id": {"type": "string"},
+    "virtual_key_id": {"type": "string"},
     "endpoint": {"type": "string", "format": "uri"},
     "token_env": {"type": "string"},
     "scope_key_env": {"type": "string"},

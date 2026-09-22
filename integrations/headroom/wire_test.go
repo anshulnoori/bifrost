@@ -47,13 +47,28 @@ func TestBypassBoundaries(t *testing.T) {
 	}
 }
 
-func TestRawSSEAndUnknownEndpointsBypass(t *testing.T) {
-	for _, path := range []string{"/v1/responses", "/v1/messages", "/v1/chat/completions", "/v1/batches", "/v1/responses/id"} {
+func TestUnknownEndpointsBypass(t *testing.T) {
+	for _, path := range []string{"/v1/batches", "/v1/responses/id"} {
 		body := []byte(`{"model":"m","stream":true,"input":[{"type":"function_call_output","output":"original output"}]}`)
 		req := &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Method: "POST", Path: path, Model: "m", Body: body}}
 		_, _, _, reason := requestBody(admitted("p", "v"), req)
 		if reason == "" || !bytes.Equal(body, req.PassthroughRequest.Body) {
 			t.Fatal("raw SSE changed")
+		}
+	}
+}
+
+func TestRawStreamingCompressesInputWithoutChangingProtocol(t *testing.T) {
+	b := testBridge(t, goodReply)
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Codex} {
+		body := []byte(`{"model":"m","stream":true,"input":[{"type":"reasoning","encrypted_content":"signed"},{"type":"function_call_output","call_id":"c","output":"original output"}],"tools":[{"type":"function","strict":true}]}`)
+		req := &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: provider, Method: "POST", Path: "/v1/responses", Model: "m", Body: body}}
+		got, sc, err := b.pre(admitted("project-a", "vk-a"), req)
+		if err != nil || sc != nil || string(got.PassthroughRequest.Body) != strings.Replace(string(body), "original output", "short", 1) || got.RequestType != req.RequestType || got.PassthroughRequest.Provider != provider {
+			t.Fatal("stream request protocol changed or compression skipped", provider)
+		}
+		if !bytes.Equal(req.PassthroughRequest.Body, body) {
+			t.Fatal("original request mutated")
 		}
 	}
 }

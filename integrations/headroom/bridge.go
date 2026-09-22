@@ -26,7 +26,9 @@ import (
 // never literal values: Bifrost persists and displays custom plugin configuration.
 type Config struct {
 	Enabled          bool   `json:"enabled"`
+	Scope            string `json:"scope"`
 	ProjectID        string `json:"project_id"`
+	VirtualKeyID     string `json:"virtual_key_id"`
 	Endpoint         string `json:"endpoint"`
 	TokenEnv         string `json:"token_env"`
 	ScopeKeyEnv      string `json:"scope_key_env"`
@@ -48,6 +50,9 @@ type bridge struct {
 }
 
 func newBridge(config Config) (*bridge, error) {
+	if config.Scope != "" && config.Scope != "gateway" && config.Scope != "restricted" {
+		return nil, errors.New("scope must be gateway or restricted")
+	}
 	if config.CCR {
 		return nil, errors.New("ccr is not supported: internal tools and continuations cannot be safely exposed")
 	}
