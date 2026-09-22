@@ -1,4 +1,4 @@
-import { Database, Landmark, Network, Shuffle, Workflow } from "lucide-react";
+import { Database, Landmark, Network, Shuffle, Terminal, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
 
@@ -26,6 +26,7 @@ const resolveSize = (size: IconSize): number => {
 
 // Provider Icons with theme awareness where applicable
 export const ProviderIcons = {
+	codex: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return theme === "light" ? (

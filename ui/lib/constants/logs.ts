@@ -5,6 +5,7 @@ export const KnownProvidersNames = [
 	"bedrock",
 	"bedrock_mantle",
 	"cerebras",
+	"codex",
 	"cohere",
 	"deepseek",
 	"gemini",
@@ -140,6 +141,7 @@ export const RequestTypes = [
 
 export const ProviderLabels: Record<ProviderName, string> = {
 	openai: "OpenAI",
+	codex: "Codex (ChatGPT subscription)",
 	anthropic: "Anthropic",
 	azure: "Azure",
 	bedrock: "AWS Bedrock",

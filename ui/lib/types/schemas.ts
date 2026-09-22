@@ -2,6 +2,10 @@ import { KnownProvidersNames } from "@/lib/constants/logs";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
+export const codexGatewayKeySchema = z.object({
+	key: z.string().trim().min(1, "Enter your Bifrost virtual key, not an OpenAI token."),
+});
+
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
 // Individual schemas can still override by passing their own message.
 z.config({
