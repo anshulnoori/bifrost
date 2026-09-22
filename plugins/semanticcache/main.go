@@ -353,6 +353,11 @@ func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifro
 // state on the plugin keyed by request ID for PostLLMHook to consume when
 // the upstream response arrives.
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	// Subscription credentials are resolved only after admission. A shared cache
+	// hit must not replace owner authorization or survive an account disconnect.
+	if provider, _, _ := req.GetRequestFields(); provider == schemas.Codex {
+		return req, nil, nil
+	}
 	cacheKey, ok := plugin.resolveCacheKey(ctx)
 	if !ok {
 		return req, nil, nil
@@ -531,6 +536,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	}
 
 	extraFields := res.GetExtraFields()
+	if extraFields.Provider == schemas.Codex {
+		// Also cover a Codex fallback after another provider's pre-hook ran.
+		plugin.clearCacheState(requestID)
+		return res, nil, nil
+	}
 	requestType := extraFields.RequestType
 	cacheMetadata := extraFields.CacheDebug
 

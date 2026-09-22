@@ -16,7 +16,7 @@ import (
 // naming an upstream account. A new login creates a new connection ID.
 type Connection struct {
 	ID             string    `gorm:"primaryKey;size:36" json:"id"`
-	Owner          string    `gorm:"index;not null" json:"-"`
+	Owner          string    `gorm:"uniqueIndex;not null" json:"-"`
 	State          string    `json:"state"`
 	Secret         string    `gorm:"type:text" json:"-"`
 	Version        uint64    `json:"-"`
@@ -102,10 +102,33 @@ func (s *Store) Start(ctx context.Context, owner string) (*Login, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.db().WithContext(ctx).Create(&row).Error != nil {
+	// Reconnect replaces the owner's previous connection atomically. The new
+	// random ID fences exchanges still running against the old connection.
+	if s.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("owner = ?", owner).Delete(&Connection{}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&row).Error
+	}) != nil {
 		return nil, errors.New("could not persist codex authorization")
 	}
 	return &Login{Connection: row, VerificationURL: Issuer + "/codex/device", UserCode: d.Code, IntervalSeconds: int(interval / time.Second)}, nil
+}
+
+// Current identifies the owner's single current connection without exposing secrets.
+func (s *Store) Current(ctx context.Context, owner string) (Connection, error) {
+	if owner == "" {
+		return Connection{}, ErrNotFound
+	}
+	var row Connection
+	err := s.db().WithContext(ctx).Select("id").Where("owner = ?", owner).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return row, ErrNotFound
+	}
+	if err != nil {
+		return row, errors.New("codex credential store unavailable")
+	}
+	return s.Status(ctx, owner, row.ID)
 }
 
 func (s *Store) load(ctx context.Context, owner, id string) (Connection, error) {

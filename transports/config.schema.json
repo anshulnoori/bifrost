@@ -433,6 +433,10 @@
         "opencode-go": {
           "$ref": "#/$defs/provider"
         },
+        "codex": {
+          "description": "Owner-scoped ChatGPT subscription OAuth. Configure no static keys, base URL override, or extra headers. Requires encrypted database storage and authenticated virtual keys.",
+          "$ref": "#/$defs/provider"
+        },
         "opencode-zen": {
           "$ref": "#/$defs/provider"
         },
@@ -8747,6 +8751,7 @@
             "ollama",
             "groq",
             "opencode-go",
+            "codex",
             "opencode-zen",
             "sgl",
             "parasail",

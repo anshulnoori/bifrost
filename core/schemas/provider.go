@@ -565,6 +565,9 @@ type ProviderConfig struct {
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
+	// CodexCredential resolves an owner-bound subscription after gateway admission.
+	// It is installed by the host, never deserialized from provider configuration.
+	CodexCredential func(*BifrostContext) (accessToken, accountID string, err error) `json:"-"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for

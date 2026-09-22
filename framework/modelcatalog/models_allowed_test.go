@@ -52,3 +52,21 @@ func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexAdmissionUsesPolicyNotGlobalSubscriptionCatalog(t *testing.T) {
+	mc := &ModelCatalog{datasheet: datasheet.NewTestStore(nil), live: live.New(nil), keyconf: keyconfig.New(nil), done: make(chan struct{})}
+	mc.initCaches()
+	for _, tc := range []struct {
+		allowed schemas.WhiteList
+		want    bool
+	}{
+		{schemas.WhiteList{"*"}, true},
+		{schemas.WhiteList{}, false},
+		{schemas.WhiteList{"gpt-5.3-codex"}, true},
+		{schemas.WhiteList{"other"}, false},
+	} {
+		if got := mc.IsModelAllowedForProvider(schemas.Codex, "gpt-5.3-codex", nil, tc.allowed); got != tc.want {
+			t.Fatalf("allowed=%v got=%v", tc.allowed, got)
+		}
+	}
+}

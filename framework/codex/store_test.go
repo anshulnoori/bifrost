@@ -221,6 +221,9 @@ func TestRefreshFailureAndCrashedOwnerRequireReconnect(t *testing.T) {
 	if row.State != "reconnect_required" || row.Secret != "" {
 		t.Fatal("failed refresh retained usable secret")
 	}
+	if err := s.Disconnect(context.Background(), "user:A", "failed"); err != nil {
+		t.Fatal(err)
+	}
 	insertConnected(t, db, "user:A", "crashed")
 	if err = db.Model(&Connection{}).Where("id = ?", "crashed").Updates(map[string]any{"state": "refreshing", "operation_until": time.Now().Add(-time.Second)}).Error; err != nil {
 		t.Fatal(err)

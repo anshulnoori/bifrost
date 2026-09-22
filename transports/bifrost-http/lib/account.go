@@ -104,5 +104,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.PromptCache != nil {
 		providerConfig.PromptCache = config.PromptCache
 	}
+	if providerKey == schemas.Codex {
+		providerConfig.CodexCredential = codexCredential(baseAccount.store.ConfigStore)
+	}
 	return providerConfig, nil
 }

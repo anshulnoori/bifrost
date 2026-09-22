@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
+	"github.com/maximhq/bifrost/core/providers/codex"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/databricks"
 	"github.com/maximhq/bifrost/core/providers/deepseek"
@@ -4496,6 +4497,9 @@ func (bifrost *Bifrost) UpdateMCPToolSyncInterval(interval time.Duration) error 
 
 // createBaseProvider creates a provider based on the base provider type
 func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+	if providerKey == schemas.Codex {
+		return codex.New(config, bifrost.logger)
+	}
 	// Determine which provider type to create
 	targetProviderKey := providerKey
 
@@ -7011,7 +7015,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// batch/file/container operations that manage their own key lists.
 		var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
 
-		if providerRequiresKey(config.CustomProviderConfig) {
+		if provider.GetProviderKey() != schemas.Codex && providerRequiresKey(config.CustomProviderConfig) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
 			// and report per-key statuses (KeyStatuses).
 			if req.RequestType == schemas.ListModelsRequest {
