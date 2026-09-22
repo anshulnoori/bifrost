@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Experimental Headroom plugin configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {"type": "boolean", "default": false},
+    "project_id": {"type": "string"},
+    "endpoint": {"type": "string", "format": "uri"},
+    "token_env": {"type": "string"},
+    "scope_key_env": {"type": "string"},
+    "failure_policy": {"enum": ["open", "closed"], "default": "open"},
+    "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 30000, "default": 2000},
+    "max_body_bytes": {"type": "integer", "minimum": 1024, "maximum": 16777216, "default": 4194304},
+    "min_text_bytes": {"type": "integer", "minimum": 1, "default": 1024},
+    "ccr": {"const": false},
+    "metrics_address": {"type": "string"},
+    "metrics_token_env": {"type": "string"},
+    "retention_seconds": {"type": "integer", "minimum": 0, "maximum": 86400, "default": 0}
+  }
+}

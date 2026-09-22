@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "project_id": "replace-with-governance-project-id",
+  "endpoint": "http://127.0.0.1:8787",
+  "token_env": "HEADROOM_PROXY_TOKEN",
+  "scope_key_env": "HEADROOM_SCOPE_KEY",
+  "failure_policy": "open",
+  "timeout_ms": 2000,
+  "max_body_bytes": 4194304,
+  "min_text_bytes": 1024,
+  "ccr": false,
+  "metrics_address": "127.0.0.1:9909",
+  "metrics_token_env": "HEADROOM_METRICS_TOKEN",
+  "retention_seconds": 900
+}
