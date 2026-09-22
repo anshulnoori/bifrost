@@ -567,7 +567,7 @@ type ProviderConfig struct {
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
 	// CodexCredential resolves an owner-bound subscription after gateway admission.
 	// It is installed by the host, never deserialized from provider configuration.
-	CodexCredential func(*BifrostContext) (accessToken, accountID string, err error) `json:"-"`
+	CodexCredential func(*BifrostContext, Key) (accessToken, accountID string, err error) `json:"-"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for

@@ -793,6 +793,8 @@ paths:
     $ref: "./paths/management/codex.yaml#/connections"
   /api/codex/connections/current:
     $ref: "./paths/management/codex.yaml#/current"
+  /api/codex/connections/usage:
+    $ref: "./paths/management/codex.yaml#/usage"
   /api/codex/connections/{id}/poll:
     $ref: "./paths/management/codex.yaml#/poll"
   /api/codex/connections/{id}:
@@ -1325,8 +1327,8 @@ components:
         - base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).
 
         Virtual keys do not replace management authentication. The quota endpoint accepts
-        virtual keys directly; `/api/codex/connections*` additionally requires `x-bf-vk`
-        to identify the connection owner after management middleware.
+        virtual keys directly. `/api/codex/connections*` requires a genuine dashboard
+        login and the nonsecret `x-bf-codex-key` provider-account ID, not a virtual key.
     BasicAuth:
       type: http
       scheme: basic

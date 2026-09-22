@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Connection contains no exportable credentials. All queries are owner-scoped;
@@ -105,6 +108,18 @@ func (s *Store) Start(ctx context.Context, owner string) (*Login, error) {
 	// Reconnect replaces the owner's previous connection atomically. The new
 	// random ID fences exchanges still running against the old connection.
 	if s.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if keyID, providerOwned := strings.CutPrefix(owner, "provider:codex:"); providerOwned {
+			// Use the same lock order as config-store deletion. A login started
+			// before account deletion cannot resurrect its credential record.
+			var provider tables.TableProvider
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("name = ?", "codex").First(&provider).Error; err != nil {
+				return err
+			}
+			var key tables.TableKey
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("provider_id = ? AND key_id = ?", provider.ID, keyID).First(&key).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Where("owner = ?", owner).Delete(&Connection{}).Error; err != nil {
 			return err
 		}

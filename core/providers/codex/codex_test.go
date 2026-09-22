@@ -27,15 +27,45 @@ func (testIdentity) Presented() bool { return true }
 
 type testAccess struct{ schemas.Access }
 
-func (testAccess) IsProviderAllowed(p string) bool { return p == "codex" }
+func (testAccess) IsProviderAllowed(p string) bool              { return p == "codex" }
+func (testAccess) KeysForModel(string, string) ([]string, bool) { return nil, false }
 func (testAccess) IsModelAllowed(p, model string) bool {
-	return p == "codex" && model == "gpt-5.3-codex"
+	return p == "codex" && (model == "" || model == "gpt-5.3-codex")
 }
 
 type testGrant struct{ schemas.Grant }
 
 func (testGrant) Identity() schemas.Identity { return testIdentity{} }
 func (testGrant) Access() schemas.Access     { return testAccess{} }
+
+type restrictedAccess struct{ testAccess }
+
+func (restrictedAccess) KeysForModel(string, string) ([]string, bool) {
+	return []string{"account-A"}, true
+}
+
+type restrictedGrant struct{ testGrant }
+
+func (restrictedGrant) Access() schemas.Access { return restrictedAccess{} }
+
+func TestAccountSelectionCannotBypassGrant(t *testing.T) {
+	var selected string
+	p, err := New(&schemas.ProviderConfig{CodexCredential: func(_ *schemas.BifrostContext, key schemas.Key) (string, string, error) {
+		selected = key.ID
+		return "access", "account", nil
+	}}, testLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetGrant(restrictedGrant{})
+	if _, err := p.auth(ctx, schemas.Key{ID: "account-B"}, "gpt-5.3-codex"); err == nil || selected != "" {
+		t.Fatal("resolved an unpermitted account")
+	}
+	if _, err := p.auth(ctx, schemas.Key{ID: "account-A"}, "gpt-5.3-codex"); err != nil || selected != "account-A" {
+		t.Fatal("allowed account was not selected")
+	}
+}
 
 func admitted(t *testing.T) *schemas.BifrostContext {
 	t.Helper()
@@ -67,7 +97,9 @@ func TestResponsesUsesSubscriptionAndPreservesTools(t *testing.T) {
 		fmt.Fprintf(w, "data: %s\n\n", terminal)
 	}))
 	defer server.Close()
-	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext) (string, string, error) { return "owner-access", "owner-account", nil }}, testLogger{})
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) {
+		return "owner-access", "owner-account", nil
+	}}, testLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +130,13 @@ func TestResponsesUsesSubscriptionAndPreservesTools(t *testing.T) {
 }
 
 func TestPassthroughPreservesOpaqueFieldsAndIsolatesHeaders(t *testing.T) {
-	p, err := New(&schemas.ProviderConfig{CodexCredential: func(*schemas.BifrostContext) (string, string, error) { return "resolved", "account", nil }}, testLogger{})
+	p, err := New(&schemas.ProviderConfig{CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) { return "resolved", "account", nil }}, testLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := []byte(`{"model":"gpt-5.3-codex","input":[{"type":"reasoning","encrypted_content":"opaque"}],"future":{"z":7,"a":3},"stream":true}`)
 	req := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/responses", Model: "gpt-5.3-codex", Body: body, UpstreamURL: "https://attacker.invalid", SafeHeaders: map[string]string{"Authorization": "Bearer attacker", "ChatGPT-Account-ID": "victim"}}
-	r, bfErr := p.passthrough(admitted(t), req)
+	r, bfErr := p.passthrough(admitted(t), schemas.Key{}, req)
 	if bfErr != nil {
 		t.Fatal(bfErr)
 	}
@@ -126,11 +158,14 @@ func TestUnsupportedAndUnadmittedRequestsFailClosed(t *testing.T) {
 		}
 	}
 	called := false
-	p, err := New(&schemas.ProviderConfig{CodexCredential: func(*schemas.BifrostContext) (string, string, error) { called = true; return "token", "account", nil }}, testLogger{})
+	p, err := New(&schemas.ProviderConfig{CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) {
+		called = true
+		return "token", "account", nil
+	}}, testLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, bfErr := p.auth(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)); bfErr == nil || called {
+	if _, bfErr := p.auth(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{}, "gpt-5.3-codex"); bfErr == nil || called {
 		t.Fatal("credential resolved without admission")
 	}
 	if _, bfErr := p.Embedding(admitted(t), schemas.Key{}, &schemas.BifrostEmbeddingRequest{}); bfErr == nil {
@@ -140,7 +175,7 @@ func TestUnsupportedAndUnadmittedRequestsFailClosed(t *testing.T) {
 
 func TestExtraParamsCannotOverrideAdmittedRequest(t *testing.T) {
 	for _, extra := range []map[string]any{{"store": true}, {"model": "unadmitted-model"}, {"temperature": 0.5}} {
-		p, err := New(&schemas.ProviderConfig{CodexCredential: func(*schemas.BifrostContext) (string, string, error) { return "token", "account", nil }}, testLogger{})
+		p, err := New(&schemas.ProviderConfig{CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) { return "token", "account", nil }}, testLogger{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -169,7 +204,7 @@ func TestChatStreamKeepsParallelToolIndexes(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext) (string, string, error) { return "token", "account", nil }}, testLogger{})
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) { return "token", "account", nil }}, testLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,12 +241,14 @@ func TestCatalogUsesOwnerCredentialAndFiltersPolicy(t *testing.T) {
 		fmt.Fprint(w, `{"models":[{"slug":"gpt-5.3-codex","display_name":"Codex","context_window":123456},{"slug":"disallowed","context_window":9876}]}`)
 	}))
 	defer server.Close()
-	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext) (string, string, error) { return "owner-token", "owner-account", nil }}, testLogger{})
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) {
+		return "owner-token", "owner-account", nil
+	}}, testLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p.url = server.URL
-	result, bfErr := p.ListModels(admitted(t), nil, &schemas.BifrostListModelsRequest{})
+	result, bfErr := p.ListModels(admitted(t), []schemas.Key{{Models: schemas.WhiteList{"*"}}}, &schemas.BifrostListModelsRequest{})
 	if bfErr != nil {
 		t.Fatal(bfErr)
 	}
@@ -234,7 +271,7 @@ func TestRawUnaryPreservesTerminalJSONAndRejectsTruncation(t *testing.T) {
 				fmt.Fprint(w, "data: {\"type\":\"response.created\"}\n\n")
 			}
 		}))
-		p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext) (string, string, error) { return "token", "account", nil }}, testLogger{})
+		p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) { return "token", "account", nil }}, testLogger{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -269,7 +306,7 @@ func TestCancellationClosesUpstreamStream(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext) (string, string, error) { return "token", "account", nil }}, testLogger{})
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) { return "token", "account", nil }}, testLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}

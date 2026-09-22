@@ -5,7 +5,6 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { SettingsIcon, Trash } from "lucide-react";
 import { useMemo, useState } from "react";
 import ProviderConfigSheet from "../dialogs/providerConfigSheet";
-import CodexConnection from "./codexConnection";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
 
 interface Props {
@@ -58,14 +57,7 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	return (
 		<div className="flex w-full flex-col gap-2">
 			<ProviderConfigSheet show={showConfigSheet} onCancel={() => setShowConfigSheet(false)} provider={provider} />
-			{provider.name === "codex" ? (
-				<>
-					<div className="flex justify-end">{editConfigButton}</div>
-					<CodexConnection />
-				</>
-			) : (
-				<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
-			)}
+			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
 		</div>
 	);
 }

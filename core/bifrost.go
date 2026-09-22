@@ -7015,7 +7015,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// batch/file/container operations that manage their own key lists.
 		var keyProvider func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error)
 
-		if provider.GetProviderKey() != schemas.Codex && providerRequiresKey(config.CustomProviderConfig) {
+		if providerRequiresKey(config.CustomProviderConfig) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
 			// and report per-key statuses (KeyStatuses).
 			if req.RequestType == schemas.ListModelsRequest {

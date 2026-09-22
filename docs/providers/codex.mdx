@@ -1,61 +1,54 @@
 ---
 title: Codex subscription
-description: Connect an owner-scoped ChatGPT subscription with device authorization.
+description: Connect multiple ChatGPT accounts and monitor subscription usage.
 ---
 
 This fork adds the `codex` provider independently of Bifrost PR #2715.
 It pins upstream Bifrost at `a134a8ce71f8b6c6f5f97b84f192420d6799427b` and preserves upstream history.
 The local patches remain separate from upstream releases.
 
-## Authorization and deployment limits
+## Sign-in
 
 The implementation uses the device flow from the official Codex CLI.
 OpenAI documents this flow for Codex, not as a public hosted-gateway OAuth contract.
 An eligible subscription and enabled device authorization are required.
 Organization administrators can restrict device authorization.
-The mock tests do not establish OpenAI permission, live compatibility, or Amp client compatibility.
-
-Use only your authorized account and permitted workload.
-Do not share personal credentials, evade subscription limits, or present this integration as OpenAI-endorsed.
-Review [Codex authentication](https://developers.openai.com/codex/auth) and [OpenAI terms](https://openai.com/policies/terms-of-use/) before deployment.
-For shared or commercial hosting, establish permission separately.
+See [Codex authentication](https://developers.openai.com/codex/auth) and [OpenAI terms](https://openai.com/policies/terms-of-use/) for deployment requirements.
 
 ## Build and start a local deployment
 
-Requirements: Go 1.27.1, Node.js with npm, a C compiler, and a supported native Go plugin platform.
+Requirements: Linux, Go 1.27.1, Node.js with npm, a C compiler, `jq`, `openssl`, and `flock`.
 
 From the repository root, run:
 
 ```sh
-make setup-workspace
-go work use ./integrations/headroom
-npm --prefix ui ci
-npm --prefix ui run build
-go build -o /tmp/bifrost-codex ./transports/bifrost-http
-mkdir -p /tmp/bifrost-codex-config
-cp tests/codex/config.example.json /tmp/bifrost-codex-config/config.json
-export BIFROST_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export CODEX_GATEWAY_KEY="sk-bf-$(openssl rand -hex 32)"
-/tmp/bifrost-codex -app-dir /tmp/bifrost-codex-config -host 127.0.0.1 -port 8080
+bash scripts/codex-local.sh
 ```
 
-Keep both secrets in a secret manager for persistent deployments.
-Do not regenerate the encryption key on restart.
-The example binds only to loopback and stores the SQLite database in the working directory.
-For network access, configure TLS and Bifrost management authentication first.
+The launcher builds the UI and gateway and enables dashboard and inference authentication.
+It creates private credentials once in `$HOME/.local/share/bifrost-codex/credentials.env` and preserves them across restarts.
+The dashboard username is `codex`; read `CODEX_ADMIN_PASSWORD` from that private file locally.
+The database and credentials stay in the same directory, with owner-only permissions.
+Set `CODEX_DATA_DIR` or `CODEX_PORT` to change the directory or port.
+Set `BIFROST_BINARY` to reuse a built gateway. Use `--prepare-only` to generate configuration without starting it.
+The launcher refuses to regenerate a missing encryption secret for an existing database.
+For network access, configure TLS before exposing the loopback-only service.
 For multiple replicas, use a shared PostgreSQL config store and the same encryption secret.
 Separate SQLite files do not coordinate replicas.
 
-1. Open the gateway dashboard and select **Providers → Codex**.
-2. Enter the gateway virtual key in the password field.
-3. Start device authorization.
-4. Open the displayed OpenAI authorization link in your own browser.
-5. Enter the displayed device code on OpenAI, then authorize your account.
-6. Wait for the dashboard to show **connected**.
+1. Sign in to the dashboard and select **Model Providers → Codex**.
+2. Select **Add new account**, enter a name, then select **Continue**.
+3. Select **Connect with ChatGPT**, then **Continue to OpenAI**.
+4. Enter the displayed code on OpenAI and authorize the account.
+5. Wait for **connected**. Repeat for each subscription.
 
 Never paste OpenAI access tokens, refresh tokens, or device codes into a support conversation.
-The dashboard keeps the virtual key in component memory, not browser storage.
-A page reload requires the key again.
+No gateway virtual key or OpenAI API key is required during onboarding.
+Each account has its own connection, enabled state, weight, and model restrictions.
+The account table shows reported remaining allowance for primary, secondary, and additional usage windows.
+Bars display `100 − used_percent`, clamped to 0–100, with provider reset timestamps.
+Usage refreshes every minute while the table is open; each row also has a refresh button.
+Missing usage is not treated as unlimited usage. These bars do not measure gateway budgets or API costs.
 
 From another shell with the gateway key, run:
 
@@ -100,10 +93,13 @@ No savings claim follows from compression estimates or subscription usage.
 
 ## Ownership and credential lifecycle
 
-Each active virtual-key database ID owns one connection in OSS.
-A shared virtual key therefore shares its connection: issue separate virtual keys for separate users.
-Dashboard authentication alone cannot select an owner.
-Every management request also requires `x-bf-vk`.
+Each configured Codex provider-key ID owns one OAuth connection.
+Dashboard management requires a genuine admin session or admin Basic authentication, including when routes are whitelisted.
+Every management request carries the nonsecret provider-key ID in `x-bf-codex-key`.
+Cross-site browser requests are rejected. Disabling dashboard authentication does not expose OAuth management.
+Inference uses normal provider-key selection, weights, model restrictions, gateway authentication, and budgets.
+Restrict gateway users to specific provider-key IDs when their subscriptions must remain isolated.
+Keys that allow all provider accounts can use all configured subscriptions, as with other providers.
 An OpenAI JWT never grants gateway access.
 Inference requires an admitted gateway grant and rechecks the virtual key in the database.
 Provider routing, budgets, and access rules remain in the normal pipeline.
@@ -117,13 +113,16 @@ Operators must also restrict database access, backups, logs, proxy access, and h
 Database compare-and-swap coordinates polling and refresh across replicas.
 Only one operation can exchange a rotating refresh token.
 A crashed or uncertain exchange requires reconnect after its operation deadline, rather than reusing a possibly consumed token.
-Transient contention returns an operation-in-progress error.
+Inference followers wait up to 30 seconds for the refresh winner, with cancellation support.
+Dashboard polling recovers from contention by reading the current account state.
 Reconnect creates a new connection ID, so stale operations cannot overwrite the replacement.
 
 Disconnect deletes the local connection and prevents later credential resolution.
 It does not revoke OpenAI sessions or cancel a request that already obtained its credential.
 Use OpenAI account controls for remote session revocation.
-Deleting or disabling a virtual key blocks later requests, but does not erase its encrypted connection automatically.
+Deleting a provider account removes its encrypted connection in the same database transaction.
+Disabling an account prevents later credential resolution without erasing its connection.
+Deleting or disabling a gateway virtual key blocks its later inference requests without disconnecting provider accounts.
 
 ## Verification without credentials
 
@@ -155,14 +154,13 @@ Provider-harness folder `104 - codex-oauth` adds opt-in live protocol cases.
 Do not run live cases without account authorization and a usage limit.
 
 The September 22, 2026 verification passed the offline harness, provider/lifecycle race tests, full config-store/governance/HTTP-handler/lib suites, and targeted Go vet.
-The frontend build/typecheck, six API tests, and the browser contract test passed.
+The frontend build/typecheck, API tests, and browser contract test cover multiple account rows and independent usage bars.
 The full core test run was not green: MCP fixture servers were missing, and an SSRF TEST-NET reachability assumption failed in this orb.
 Three OpenAPI invariant failures also reproduce on the unmodified imported baseline.
 They concern logging fragments, a duplicate virtual-key rotation operation, and routing security declarations.
 
-The binary vulnerability scan reports `GO-2026-6354` and `GO-2026-6355` in the pinned `golang.org/x/crypto v0.55.0` SSH code.
-Both advisories list v0.56.0 as the fix.
-These inherited dependencies remain unchanged in this patch, so this distribution is not security-clean.
+The dependency update to `golang.org/x/crypto v0.56.0` fixes `GO-2026-6354` and `GO-2026-6355`.
+The completed binary scan reported zero reachable vulnerabilities.
 The source scan stalled under memory pressure; the completed scan used `govulncheck -mode=binary`.
 
 ## Upgrade and rollback
@@ -174,6 +172,9 @@ The source scan stalled under memory pressure; the completed scan used `govulnch
 5. Rebuild native plugins with the final gateway toolchain and dependency graph.
 6. Run the offline harness before restoring traffic.
 
+Earlier development builds bound connections to gateway virtual keys.
+Those records are not reassigned to provider accounts automatically: disconnect them before upgrading, then reconnect from the account table.
+
 For rollback, disconnect Codex accounts and remove the Codex provider before starting an older binary.
 The additive table can remain unused, or a database administrator can remove it after backup.
 Restore the pre-upgrade database if older migration code rejects the newer schema version.
@@ -184,6 +185,7 @@ This patch does not add that procedure.
 
 Sources reviewed include [Codex CLI](https://github.com/openai/codex), [LiteLLM](https://github.com/BerriAI/litellm), and [OpenCode](https://github.com/anomalyco/opencode).
 The official CLI establishes the issuer, client ID, device endpoints, and refresh exchange.
+Its backend client also defines `GET /backend-api/wham/usage`, used here for per-account allowance bars.
 This implementation replaces process-local credential files with owner-bound database records.
 Bifrost [PR #7325](https://github.com/maximhq/bifrost/pull/7325) provides caller-token passthrough, not a credential lifecycle.
 [PR #7393](https://github.com/maximhq/bifrost/pull/7393) supplies opaque passthrough safeguards.

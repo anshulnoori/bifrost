@@ -74,6 +74,11 @@ func TestOAuthThroughGateway(t *testing.T) {
 				refresh = "fixture-refresh-rotated"
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": token, "refresh_token": refresh, "expires_in": expiry})
+		case "/backend-api/wham/usage":
+			if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("ChatGPT-Account-Id") != "fixture-account" {
+				t.Error("usage credential isolation failed")
+			}
+			fmt.Fprint(w, `{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":23,"limit_window_seconds":18000,"reset_at":1900000000},"secondary_window":null}}`)
 		case "/backend-api/codex/models":
 			if r.Header.Get("Authorization") != "Bearer "+token {
 				t.Error("catalog credential isolation failed")
@@ -143,6 +148,9 @@ func TestOAuthThroughGateway(t *testing.T) {
 	}
 	config := fmt.Sprintf(`{"encryption_key":"fixture-only-encryption-key-32bytes","framework":{"pricing":{"pricing_url":%q,"model_parameters_url":%q,"mcp_library_sync_interval":0}},"client":{"enable_logging":false,"enforce_auth_on_inference":true},"plugins":[{"name":"telemetry","enabled":false}],"config_store":{"enabled":true,"type":"sqlite","config":{"path":%q}},"providers":{"codex":{"keys":[],"network_config":{"allow_private_network":true},"proxy_config":{"type":"http","url":%q,"ca_cert_pem":%q}}},"governance":{"virtual_keys":[{"id":"owner-a","name":"owner-a","value":"sk-bf-fixture-owner-a","is_active":true,"provider_configs":[{"provider":"codex","allowed_models":["*"],"key_ids":["*"],"weight":1}]},{"id":"owner-b","name":"owner-b","value":"sk-bf-fixture-owner-b","is_active":true,"provider_configs":[{"provider":"codex","allowed_models":["*"],"key_ids":["*"],"weight":1}]}]}}`, "file://"+pricingPath, "file://"+pricingPath, filepath.Join(dir, "config.db"), proxy.URL, string(ca))
 	plugin := os.Getenv("BIFROST_CODEX_TEST_PLUGIN")
+	config = strings.Replace(config, `"keys":[]`, `"keys":[{"id":"owner-a","name":"Account A","models":["*"],"weight":1},{"id":"owner-b","name":"Account B","models":["*"],"weight":1}]`, 1)
+	config = strings.Replace(config, `"key_ids":["*"]`, `"key_ids":["owner-a"]`, 1)
+	config = strings.Replace(config, `"key_ids":["*"]`, `"key_ids":["owner-b"]`, 1)
 	if plugin != "" {
 		config = strings.Replace(config, `"plugins":[`, fmt.Sprintf(`"plugins":[{"name":"headroom","enabled":true,"path":%q,"placement":"post_builtin","config":{"enabled":false}},`, plugin), 1)
 	}
@@ -206,6 +214,8 @@ func TestOAuthThroughGateway(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer eyJ.forged.jwt")
 		if strings.HasPrefix(path, "/api/") {
 			req.SetBasicAuth("fixture-admin", "fixture-dashboard-password")
+			req.Header.Del("x-bf-vk")
+			req.Header.Set("x-bf-codex-key", owner)
 		}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -292,9 +302,25 @@ func TestOAuthThroughGateway(t *testing.T) {
 	if bytes.Contains(data, []byte("codex/gpt-5.3-codex")) {
 		t.Fatalf("another owner received a cached catalog: %d %s", status, data)
 	}
+	status, data = call("GET", "/api/codex/connections/usage", "owner-a", "")
+	if status != 200 || !bytes.Contains(data, []byte(`"used_percent":23`)) {
+		t.Fatalf("usage=%d %s", status, data)
+	}
 	status, _ = call("DELETE", "/api/codex/connections/"+login.ID, "owner-b", "")
 	if status != 404 {
 		t.Fatalf("other owner disconnect=%d", status)
+	}
+	status, data = call("POST", "/api/codex/connections", "owner-b", "")
+	var loginB struct {
+		ID string `json:"id"`
+	}
+	if status != 200 || json.Unmarshal(data, &loginB) != nil || loginB.ID == login.ID {
+		t.Fatalf("second account=%d %s", status, data)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	status, data = call("POST", "/api/codex/connections/"+loginB.ID+"/poll", "owner-b", "")
+	if status != 200 {
+		t.Fatalf("second poll=%d %s", status, data)
 	}
 	status, data = call("DELETE", "/api/codex/connections/"+login.ID, "owner-a", "")
 	if status != 200 {
@@ -304,6 +330,22 @@ func TestOAuthThroughGateway(t *testing.T) {
 	status, _ = call("POST", "/v1/responses", "owner-a", request)
 	if status < 400 || inference.Load() != before {
 		t.Fatal("disconnected account reached upstream")
+	}
+	status, data = call("POST", "/v1/responses", "owner-b", request)
+	if status != 200 {
+		t.Fatalf("disconnect affected other subscription: %d %s", status, data)
+	}
+	status, data = call("DELETE", "/api/providers/codex/keys/owner-b", "owner-b", "")
+	if status != 200 {
+		t.Fatalf("delete account=%d %s", status, data)
+	}
+	status, data = call("POST", "/api/providers/codex/keys", "owner-b", `{"id":"owner-b","name":"Replacement B","models":["*"],"weight":1}`)
+	if status != 200 {
+		t.Fatalf("recreate account=%d %s", status, data)
+	}
+	status, data = call("GET", "/api/codex/connections/current", "owner-b", "")
+	if status != 200 || !bytes.Contains(data, []byte(`"state":"disconnected"`)) {
+		t.Fatalf("deleted credentials resurrected: %d %s", status, data)
 	}
 	for _, name := range []string{"config.db", "config.db-wal", "gateway.log"} {
 		data, _ := os.ReadFile(filepath.Join(dir, name))

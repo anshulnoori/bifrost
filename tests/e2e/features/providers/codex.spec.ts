@@ -1,64 +1,81 @@
 import { test, expect } from '../../core/fixtures/base.fixture'
 
-test('Codex device onboarding, replica polling, disconnect, and errors', async ({ page }) => {
-  const provider = { name: 'codex', keys: [], network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
-  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
-  await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
-  await page.route('**/v1/models?provider=codex', route => {
-    expect(route.request().headers()['x-bf-vk']).toBe('sk-bf-fixture-ui')
-    return route.fulfill({ json: { data: [{ id: 'codex/gpt-5.3-codex' }] } })
-  })
-  let probes = 0
-  await page.route('**/v1/responses', route => {
-    probes++
-    expect(route.request().headers()['x-bf-vk']).toBe('sk-bf-fixture-ui')
-    expect(route.request().postDataJSON()).toEqual({ model: 'codex/gpt-5.3-codex', input: 'Reply with exactly OK.', stream: false, store: false })
-    return route.fulfill({ json: { status: 'completed', output: [{ content: [{ type: 'output_text', text: 'OK' }] }], usage: { total_tokens: 37 } } })
-  })
-  let state = 'disconnected'
+test('Codex accounts use provider table, isolated usage bars and dashboard onboarding', async ({ page }) => {
+  const accounts = [
+    { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true },
+    { id: 'work', name: 'Work', models: ['*'], weight: 1, enabled: true },
+  ]
+  const provider = { name: 'codex', keys: accounts, network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  const states: Record<string, string> = { personal: 'connected', work: 'connected' }
+  let created = ''
   let polls = 0
   let fail = false
-  await page.route('**/api/codex/connections**', async route => {
-    expect(route.request().headers()['x-bf-vk']).toBe('sk-bf-fixture-ui')
-    expect(route.request().url()).not.toContain('sk-bf-fixture-ui')
-    if (fail) { await route.fulfill({ status: 503, json: { error: 'fixture-only' } }); return }
-    const path = new URL(route.request().url()).pathname
-    if (route.request().method() === 'DELETE') state = 'disconnected'
-    else if (path.endsWith('/poll')) {
-      polls++; state = polls === 1 ? 'polling' : 'connected'
-      if (polls === 1) { await route.fulfill({ status: 409, json: { error: 'another replica owns polling' } }); return }
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/codex/keys', route => {
+    if (route.request().method() === 'POST') {
+      const account = route.request().postDataJSON()
+      expect(account.value).toBeUndefined()
+      accounts.push(account); states[account.id] = 'disconnected'; created = account.id
+      return route.fulfill({ json: account })
     }
-    else if (route.request().method() === 'POST') state = 'pending'
-    await route.fulfill({ json: {
-      state, ...(state === 'disconnected' ? {} : { id: 'fixture-id' }),
-      ...(state === 'pending' ? { user_code: 'TEST-ONLY', verification_url: 'https://auth.openai.com/codex/device', interval_seconds: 1, expires_at: new Date(Date.now() + 900000).toISOString() } : {}),
+    return route.fulfill({ json: { keys: accounts, total: accounts.length } })
+  })
+  await page.route('**/api/codex/connections**', async route => {
+    const key = route.request().headers()['x-bf-codex-key']
+    expect(route.request().headers()['x-bf-vk']).toBeUndefined()
+    expect(accounts.some(account => account.id === key)).toBeTruthy()
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/usage')) {
+      if (fail && key === 'work') return route.fulfill({ status: 502, json: { error: 'unavailable' } })
+      return route.fulfill({ json: { plan_type: key === 'work' ? 'pro' : 'plus', checked_at: new Date().toISOString(), rate_limit: {
+        allowed: key !== 'work', limit_reached: key === 'work',
+        primary_window: { used_percent: key === 'work' ? 100 : 23, limit_window_seconds: 18000, reset_at: 1900000000 },
+        secondary_window: { used_percent: key === 'work' ? 95 : 68, limit_window_seconds: 604800, reset_at: 1900100000 },
+      } } })
+    }
+    if (route.request().method() === 'DELETE') states[key] = 'disconnected'
+    else if (path.endsWith('/poll')) {
+      polls++; states[key] = polls === 1 ? 'polling' : 'connected'
+      if (polls === 1) return route.fulfill({ status: 409, json: { error: 'another replica owns polling' } })
+    } else if (route.request().method() === 'POST') states[key] = 'pending'
+    const state = states[key]
+    return route.fulfill({ json: { state, ...(state === 'disconnected' ? {} : { id: `connection-${key}` }),
+      ...(state === 'pending' ? { user_code: 'TEST-ONLY', verification_url: 'https://auth.openai.com/codex/device', interval_seconds: 1 } : {}),
     } })
   })
   await page.goto('/workspace/providers')
-  await expect(page.getByTestId('codex-onboarding')).toBeVisible()
-  // The setup checklist is unrelated to this form and can cover its actions.
+  await expect(page.getByTestId('keys-table')).toBeVisible({ timeout: 15000 })
   const closeSetup = page.getByRole('button', { name: 'Close for now', exact: true })
   if (await closeSetup.isVisible()) await closeSetup.click()
-  await page.getByTestId('codex-gateway-key').fill('sk-bf-fixture-ui')
-  await expect(page.getByTestId('codex-gateway-key')).toHaveAttribute('type', 'password')
-  await page.getByTestId('codex-check-status').click()
+  const personal = page.getByTestId('codex-usage-personal')
+  const work = page.getByTestId('codex-usage-work')
+  await expect(personal.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '77')
+  await expect(personal.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '32')
+  await expect(work.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '0')
+  await expect(work.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '5')
+  await expect(page.getByText(/not endorsed|permitted coding|Bifrost virtual key/i)).toHaveCount(0)
+  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-accounts.png` })
+  await page.getByTestId('add-key-btn').click()
+  const form = page.getByTestId('key-form')
+  await form.getByLabel('Name', { exact: true }).fill('Travel')
+  await expect(form.getByLabel('API Key', { exact: true })).toHaveCount(0)
+  await page.getByTestId('key-save-btn').click()
+  await expect(page.getByTestId('codex-onboarding')).toBeVisible()
   await page.getByTestId('codex-connect').click()
   await expect(page.getByTestId('codex-device-code')).toContainText('TEST-ONLY')
-  await expect(page.getByRole('link', { name: 'Open OpenAI device authorization' })).toHaveAttribute('href', 'https://auth.openai.com/codex/device')
+  await expect(page.getByRole('link', { name: 'Continue to OpenAI' })).toHaveAttribute('href', 'https://auth.openai.com/codex/device')
   if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-pending.png` })
   await expect(page.getByTestId('codex-connected')).toBeVisible({ timeout: 15000 })
   expect(polls).toBe(2)
-  await expect(page.getByRole('combobox', { name: 'Available model' })).toContainText('codex/gpt-5.3-codex')
-  expect(probes).toBe(0) // Connection never silently consumes inference allowance.
-  await page.getByTestId('codex-test-inference').click()
-  await expect(page.getByTestId('codex-test-success')).toContainText('Inference verified · 37 tokens')
-  expect(probes).toBe(1)
-  if (process.env.CODEX_SCREENSHOT_DIR) await page.getByTestId('codex-onboarding').screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-connected.png` })
   await page.getByTestId('codex-disconnect').click()
   await expect(page.getByTestId('codex-status')).toHaveText('disconnected')
+  expect(states.personal).toBe('connected'); expect(states.work).toBe('connected')
+  await page.getByTestId('key-cancel-btn').click()
+  await expect(page.getByTestId(`codex-usage-${created}`)).toContainText('disconnected')
   fail = true
-  await page.getByTestId('codex-check-status').click()
-  await expect(page.getByTestId('codex-error')).toContainText('Configure encrypted database storage')
-  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-error.png` })
-  expect(await page.evaluate(() => JSON.stringify(localStorage) + JSON.stringify(sessionStorage))).not.toContain('sk-bf-fixture-ui')
+  await work.getByRole('button', { name: 'Refresh usage' }).click()
+  await expect(work).toContainText('Usage unavailable')
+  await expect(work.getByRole('progressbar')).toHaveCount(0)
+  await expect(personal.getByRole('progressbar').first()).toHaveAttribute('aria-valuenow', '77')
 })

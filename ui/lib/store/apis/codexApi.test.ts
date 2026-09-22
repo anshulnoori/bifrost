@@ -47,7 +47,7 @@ describe("Codex onboarding boundary", () => {
 		await expect(codexAction("gateway-secret", "poll", "own")).resolves.toEqual({ state: "polling", id: "own" });
 		expect(fetch).toHaveBeenLastCalledWith("/api/codex/connections/current", expect.objectContaining({ method: "GET" }));
 	});
-	it("sends gateway credentials only in a header and never caches the response", async () => {
+	it("uses dashboard cookies and a nonsecret account ID, never an inference key", async () => {
 		const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ state: "connected", id: "own" })));
 		vi.stubGlobal("fetch", fetch);
 		await expect(codexAction("gateway-secret", "poll", "own")).resolves.toMatchObject({
@@ -57,7 +57,8 @@ describe("Codex onboarding boundary", () => {
 			"/api/codex/connections/own/poll",
 			expect.objectContaining({
 				method: "POST",
-				headers: { "x-bf-vk": "gateway-secret" },
+				headers: { "x-bf-codex-key": "gateway-secret" },
+				credentials: "same-origin",
 				cache: "no-store",
 			}),
 		);

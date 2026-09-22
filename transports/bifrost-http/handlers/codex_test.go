@@ -13,6 +13,10 @@ import (
 
 type deniedCodexStore struct{ configstore.ConfigStore }
 
+func (deniedCodexStore) GetAuthConfig(context.Context) (*configstore.AuthConfig, error) {
+	return nil, nil
+}
+
 func (deniedCodexStore) GetVirtualKeyByValue(context.Context, string) (*tables.TableVirtualKey, error) {
 	return nil, nil
 }

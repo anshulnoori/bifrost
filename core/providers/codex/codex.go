@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,7 +26,7 @@ const baseURL = "https://chatgpt.com/backend-api/codex"
 // the restricted OpenAI provider. Only methods below can resolve a credential.
 type Provider struct {
 	*openai.OpenAIProvider
-	resolve      func(*schemas.BifrostContext) (string, string, error)
+	resolve      func(*schemas.BifrostContext, schemas.Key) (string, string, error)
 	streamClient *fasthttp.Client
 	logger       schemas.Logger
 	idle         int
@@ -55,17 +56,26 @@ func failure(message string) *schemas.BifrostError {
 		Error: &schemas.ErrorField{Message: message}, ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.Codex}}
 }
 
-func (p *Provider) auth(ctx *schemas.BifrostContext) (map[string]string, *schemas.BifrostError) {
+func (p *Provider) auth(ctx *schemas.BifrostContext, key schemas.Key, model string) (map[string]string, *schemas.BifrostError) {
 	if p.resolve == nil {
 		return nil, failure("codex credential resolver is not configured")
 	}
-	if ctx == nil || ctx.Grant() == nil || ctx.Grant().Access() == nil || ctx.Grant().Identity() == nil || !ctx.Grant().Identity().Presented() {
-		return nil, failure("codex requires authenticated gateway admission")
+	if ctx == nil || ctx.Grant() == nil {
+		return nil, failure("codex requires gateway admission")
 	}
-	if !ctx.Grant().Access().IsProviderAllowed(string(schemas.Codex)) {
-		return nil, failure("codex provider is not allowed")
+	if access := ctx.Grant().Access(); access != nil {
+		if !access.IsModelAllowed(string(schemas.Codex), model) {
+			return nil, failure("codex provider is not allowed")
+		}
+		if ids, restricted := access.KeysForModel(string(schemas.Codex), model); restricted && !slices.Contains(ids, key.ID) {
+			return nil, failure("codex account is not allowed")
+		}
+	} else if ctx.Grant().Identity() == nil || ctx.Grant().Identity().Presented() || ctx.Grant().Limits() == nil {
+		// A settled anonymous grant is intentional only when the operator has
+		// disabled inference authentication. A presented but unresolved key is not.
+		return nil, failure("codex requires gateway admission")
 	}
-	access, account, err := p.resolve(ctx)
+	access, account, err := p.resolve(ctx, key)
 	if err != nil {
 		return nil, failure("codex credential unavailable; check connection status or reconnect")
 	}
@@ -124,8 +134,8 @@ func prepare(body []byte, model string) ([]byte, error) {
 	return body, err
 }
 
-func (p *Provider) ResponsesStream(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, finalize func(context.Context), _ schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	headers, authErr := p.auth(ctx)
+func (p *Provider) ResponsesStream(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, finalize func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	headers, authErr := p.auth(ctx, key, request.Model)
 	if authErr != nil {
 		return nil, authErr
 	}
@@ -282,7 +292,7 @@ func validateChat(ctx *schemas.BifrostContext, request *schemas.BifrostChatReque
 	return nil
 }
 
-func (p *Provider) passthrough(ctx *schemas.BifrostContext, request *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughRequest, *schemas.BifrostError) {
+func (p *Provider) passthrough(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughRequest, *schemas.BifrostError) {
 	if request.Method != http.MethodPost || (request.Path != "/responses" && request.Path != "/v1/responses" && request.Path != "/backend-api/codex/responses") || request.RawQuery != "" {
 		return nil, failure("codex passthrough supports only POST /responses")
 	}
@@ -290,7 +300,7 @@ func (p *Provider) passthrough(ctx *schemas.BifrostContext, request *schemas.Bif
 	if err != nil {
 		return nil, failure(err.Error())
 	}
-	headers, authErr := p.auth(ctx)
+	headers, authErr := p.auth(ctx, key, request.Model)
 	if authErr != nil {
 		return nil, authErr
 	}
@@ -301,18 +311,18 @@ func (p *Provider) passthrough(ctx *schemas.BifrostContext, request *schemas.Bif
 	return &r, nil
 }
 
-func (p *Provider) PassthroughStream(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, finalize func(context.Context), _ schemas.Key, request *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	r, err := p.passthrough(ctx, request)
+func (p *Provider) PassthroughStream(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, finalize func(context.Context), key schemas.Key, request *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	r, err := p.passthrough(ctx, key, request)
 	if err != nil {
 		return nil, err
 	}
 	return p.OpenAIProvider.PassthroughStream(ctx, hook, finalize, schemas.Key{}, r)
 }
 
-func (p *Provider) Passthrough(ctx *schemas.BifrostContext, _ schemas.Key, request *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+func (p *Provider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	ch, err := p.PassthroughStream(ctx, func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return r, e
-	}, func(context.Context) {}, schemas.Key{}, request)
+	}, func(context.Context) {}, key, request)
 	if err != nil {
 		return nil, err
 	}
@@ -368,8 +378,34 @@ func (p *Provider) Passthrough(ctx *schemas.BifrostContext, _ schemas.Key, reque
 
 // Catalog results are account-scoped and filtered against gateway admission.
 // Never cache one subscriber's catalog globally or invent a static model list.
-func (p *Provider) ListModels(ctx *schemas.BifrostContext, _ []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	headers, err := p.auth(ctx)
+func (p *Provider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	result := &schemas.BifrostListModelsResponse{Data: []schemas.Model{}, ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Codex}}
+	seen := make(map[string]bool)
+	var lastError *schemas.BifrostError
+	for _, key := range keys {
+		models, err := p.listKeyModels(ctx, key)
+		if err != nil {
+			lastError = err
+			result.KeyStatuses = append(result.KeyStatuses, schemas.KeyStatus{KeyID: key.ID, Provider: schemas.Codex, Status: schemas.KeyStatusListModelsFailed, Error: err})
+			continue
+		}
+		result.KeyStatuses = append(result.KeyStatuses, schemas.KeyStatus{KeyID: key.ID, Provider: schemas.Codex, Status: schemas.KeyStatusSuccess})
+		for _, model := range models {
+			if !seen[model.ID] {
+				seen[model.ID] = true
+				result.Data = append(result.Data, model)
+			}
+		}
+	}
+	if len(result.Data) == 0 && lastError != nil {
+		lastError.ExtraFields.KeyStatuses = result.KeyStatuses
+		return nil, lastError
+	}
+	return result.ApplyPagination(request.PageSize, request.PageToken), nil
+}
+
+func (p *Provider) listKeyModels(ctx *schemas.BifrostContext, key schemas.Key) ([]schemas.Model, *schemas.BifrostError) {
+	headers, err := p.auth(ctx, key, "")
 	if err != nil {
 		return nil, err
 	}
@@ -386,17 +422,17 @@ func (p *Provider) ListModels(ctx *schemas.BifrostContext, _ []schemas.Key, requ
 	if !models.IsArray() {
 		return nil, failure("invalid codex model catalog")
 	}
-	result := &schemas.BifrostListModelsResponse{Data: []schemas.Model{}, ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Codex}}
+	result := []schemas.Model{}
 	for _, m := range models.Array() {
 		id := m.Get("slug").String()
-		if id == "" || !ctx.Grant().Access().IsModelAllowed("codex", id) {
+		if id == "" || (ctx.Grant().Access() != nil && !ctx.Grant().Access().IsModelAllowed("codex", id)) || !key.Models.IsAllowed(id) || key.BlacklistedModels.IsBlocked(id) {
 			continue
 		}
 		model := schemas.Model{ID: "codex/" + id, Name: schemas.Ptr(m.Get("display_name").String()), OwnedBy: schemas.Ptr("openai")}
 		if n := m.Get("context_window").Int(); n > 0 {
 			model.ContextLength = schemas.Ptr(int(n))
 		}
-		result.Data = append(result.Data, model)
+		result = append(result, model)
 	}
-	return result.ApplyPagination(request.PageSize, request.PageToken), nil
+	return result, nil
 }

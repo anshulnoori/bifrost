@@ -10,8 +10,40 @@ export const codexConnectionSchema = z.object({
 });
 export type CodexConnection = z.infer<typeof codexConnectionSchema>;
 
-// Like Headroom's explicit admin credential, keep the virtual key out of Redux
-// action history, RTK query arguments, URLs, and persistent browser storage.
+const usageWindow = z.object({
+	used_percent: z.number().nullable(),
+	limit_window_seconds: z.number(),
+	reset_at: z.number(),
+});
+const usageLimits = z.object({
+	allowed: z.boolean(),
+	limit_reached: z.boolean(),
+	primary_window: usageWindow.nullable(),
+	secondary_window: usageWindow.nullable(),
+});
+export const codexUsageSchema = z.object({
+	plan_type: z.string(),
+	rate_limit: usageLimits.nullable(),
+	additional_rate_limits: z
+		.array(z.object({ limit_name: z.string(), metered_feature: z.string(), rate_limit: usageLimits.nullable() }))
+		.optional(),
+	checked_at: z.string(),
+});
+export type CodexUsage = z.infer<typeof codexUsageSchema>;
+
+export async function codexUsage(keyId: string, signal?: AbortSignal): Promise<CodexUsage> {
+	const response = await fetch("/api/codex/connections/usage", {
+		headers: { "x-bf-codex-key": keyId },
+		credentials: "same-origin",
+		cache: "no-store",
+		signal,
+	});
+	if (!response.ok) throw new Error("Usage unavailable");
+	return codexUsageSchema.parse(await response.json());
+}
+
+// The configured account ID is not a credential. Dashboard session cookies
+// authenticate management; gateway inference authentication remains separate.
 export async function codexAction(
 	key: string,
 	action: "status" | "start" | "poll" | "disconnect",
@@ -22,7 +54,7 @@ export async function codexAction(
 		action === "status" ? "/current" : action === "start" ? "" : `/${encodeURIComponent(id ?? "")}${action === "poll" ? "/poll" : ""}`;
 	const response = await fetch(`/api/codex/connections${path}`, {
 		method: action === "status" ? "GET" : action === "disconnect" ? "DELETE" : "POST",
-		headers: { "x-bf-vk": key },
+		headers: { "x-bf-codex-key": key },
 		credentials: "same-origin",
 		cache: "no-store",
 		signal,
@@ -34,8 +66,8 @@ export async function codexAction(
 	}
 	if (!response.ok) {
 		const messages: Record<number, string> = {
-			401: "Enter an active Bifrost virtual key that allows Codex.",
-			403: "This gateway identity cannot manage the Codex connection.",
+			401: "Sign in to the dashboard to manage this account.",
+			403: "You cannot manage this account.",
 			404: "This connection no longer exists. Check status or reconnect.",
 			409: "An operation is in progress or reconnect is required. Check status.",
 			503: "Configure encrypted database storage before connecting Codex.",

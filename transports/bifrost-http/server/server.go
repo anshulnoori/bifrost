@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
@@ -1938,6 +1939,16 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		c := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 		c.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 		c.SetValue(schemas.BifrostContextKeyValidateKeys, true)
+		if provider == schemas.Codex && keyID != "" {
+			// This internal, per-key catalog operation is not an inference request.
+			// Give it only the configured account being refreshed; never borrow
+			// a caller's virtual key or authorize a provider-wide credential pool.
+			g := grant.New()
+			permit := grant.NewPermit("catalog", keyID, "Codex model discovery", true, false,
+				[]schemas.ProviderPermit{{Provider: string(provider), AllowedModels: schemas.WhiteList{"*"}, KeyIDs: schemas.WhiteList{keyID}}}, nil)
+			g.SetAccess(grant.NewAccess([]schemas.Permit{permit}, nil, grant.Intersect, nil))
+			c.SetGrant(g)
+		}
 		return c
 	}
 

@@ -1,14 +1,19 @@
 connections:
+  parameters: &accountParameters
+    - &accountParameter
+      name: x-bf-codex-key
+      in: header
+      required: true
+      description: Configured Codex provider-key ID. This is not a credential.
+      schema: { type: string }
   post:
     operationId: startCodexConnection
     summary: Start Codex device authorization
-    description: Replaces this virtual key's previous connection. Never returns upstream credentials.
+    description: Replaces this provider account's previous connection. Never returns upstream credentials.
     tags: [Providers]
     security: &security
       - ManagementBearerAuth: []
-        VirtualKeyAuth: []
       - BasicAuth: []
-        VirtualKeyAuth: []
     responses:
       '200':
         description: Device authorization started. Response is not cacheable.
@@ -33,15 +38,16 @@ connections:
                     user_code: { type: string }
                     interval_seconds: { type: integer, minimum: 1, maximum: 60 }
       '401': &unauthorized
-        description: Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication.
+        description: Genuine dashboard authentication is required, even when management auth is disabled or the route is whitelisted.
       '503': &unavailable
         description: Encrypted database storage is not configured.
       '502': &upstream
         description: Authorization could not complete. Upstream details are intentionally hidden.
 current:
+  parameters: *accountParameters
   get:
     operationId: getCurrentCodexConnection
-    summary: Get this virtual key's connection status
+    summary: Get this provider account's connection status
     tags: [Providers]
     security: *security
     responses:
@@ -57,13 +63,14 @@ current:
       '502': *upstream
 poll:
   parameters: &id
+    - *accountParameter
     - name: id
       in: path
       required: true
       schema: { type: string, format: uuid }
   post:
     operationId: pollCodexConnection
-    summary: Poll a device authorization owned by this virtual key
+    summary: Poll this provider account's device authorization
     description: Poll no faster than interval_seconds. Pending authorization returns 200 with state pending.
     tags: [Providers]
     security: *security
@@ -75,6 +82,47 @@ poll:
       '409': *busy
       '503': *unavailable
       '502': *upstream
+usage:
+  parameters: *accountParameters
+  get:
+    operationId: getCodexSubscriptionUsage
+    summary: Get this account's subscription allowance windows
+    tags: [Providers]
+    security: *security
+    responses:
+      '200':
+        description: OpenAI usage snapshot. Missing windows are not unlimited allowance. Not cacheable.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plan_type: { type: string }
+                checked_at: { type: string, format: date-time }
+                rate_limit: &limits
+                  type: [object, 'null']
+                  properties:
+                    allowed: { type: boolean }
+                    limit_reached: { type: boolean }
+                    primary_window: &window
+                      type: [object, 'null']
+                      properties:
+                        used_percent: { type: [number, 'null'] }
+                        limit_window_seconds: { type: integer }
+                        reset_at: { type: integer, description: Unix timestamp in seconds }
+                    secondary_window: *window
+                additional_rate_limits:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      limit_name: { type: string }
+                      metered_feature: { type: string }
+                      rate_limit: *limits
+      '401': *unauthorized
+      '502':
+        description: Subscription usage is unavailable. No upstream error body is returned.
+      '503': *unavailable
 connection:
   parameters: *id
   delete:

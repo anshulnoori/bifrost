@@ -22,6 +22,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/codex"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -1253,6 +1254,11 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	if err := s.cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx, txDB, dbProvider.Name); err != nil {
 		return err
 	}
+	if provider == schemas.Codex {
+		if err := txDB.WithContext(ctx).Where("owner LIKE ?", "provider:codex:%").Delete(&codex.Connection{}).Error; err != nil {
+			return err
+		}
+	}
 
 	// Store the budget and rate limit IDs before deleting
 	budgetID := dbProvider.BudgetID
@@ -1508,6 +1514,11 @@ func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas
 			return ErrNotFound
 		}
 		return err
+	}
+	if provider == schemas.Codex {
+		if err := txDB.WithContext(ctx).Where("owner = ?", "provider:codex:"+keyID).Delete(&codex.Connection{}).Error; err != nil {
+			return err
+		}
 	}
 	if err := txDB.WithContext(ctx).
 		Table("governance_virtual_key_provider_config_keys").

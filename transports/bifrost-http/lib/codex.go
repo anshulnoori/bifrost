@@ -8,52 +8,38 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/codex"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-func codexKeyOwner(vk *tables.TableVirtualKey) (string, error) {
-	if vk == nil || !vk.IsActiveValue() || vk.IsExpiredAt(time.Now()) {
-		return "", errors.New("an active gateway virtual key is required")
+// CodexOwner identifies a configured provider account, never a caller-supplied
+// upstream credential. Management authentication is enforced by the handler.
+func CodexOwner(ctx context.Context, store configstore.ConfigStore, id string) (string, error) {
+	if store == nil || id == "" {
+		return "", errors.New("a configured Codex account is required")
 	}
-	allowed := vk.AllowAllProviders
-	for _, provider := range vk.ProviderConfigs {
-		if provider.Provider == string(schemas.Codex) {
-			allowed = true
-		}
+	key, err := store.GetProviderKey(ctx, schemas.Codex, id)
+	if err != nil || key == nil || key.ID != id {
+		return "", errors.New("Codex account not found")
 	}
-	if !allowed {
-		return "", errors.New("virtual key does not allow codex")
-	}
-	// Deliberately key-scoped in OSS: knowing another connection ID or upstream
-	// account ID grants nothing. A dashboard admin session is not this identity.
-	return "vk:" + vk.ID, nil
+	return "provider:codex:" + key.ID, nil
 }
 
-// CodexOwner authenticates onboarding independently of dashboard authentication.
-func CodexOwner(ctx context.Context, store configstore.ConfigStore, value string) (string, error) {
-	if store == nil || value == "" {
-		return "", errors.New("a gateway virtual key is required")
-	}
-	vk, err := store.GetVirtualKeyByValue(ctx, value)
-	if err != nil {
-		return "", errors.New("invalid gateway virtual key")
-	}
-	return codexKeyOwner(vk)
-}
-
-func codexCredential(store configstore.ConfigStore) func(*schemas.BifrostContext) (string, string, error) {
-	return func(ctx *schemas.BifrostContext) (string, string, error) {
-		if store == nil || ctx.Grant() == nil || ctx.Grant().Access() == nil || ctx.Grant().Identity() == nil || ctx.Grant().Identity().VirtualKey() == nil {
-			return "", "", errors.New("codex requires an admitted gateway virtual key")
+func codexCredential(store configstore.ConfigStore) func(*schemas.BifrostContext, schemas.Key) (string, string, error) {
+	return func(ctx *schemas.BifrostContext, selected schemas.Key) (string, string, error) {
+		if store == nil || ctx == nil || ctx.Grant() == nil {
+			return "", "", errors.New("codex requires gateway admission")
 		}
-		vk, err := store.GetVirtualKey(ctx, ctx.Grant().Identity().VirtualKey().ID)
-		if err != nil {
-			return "", "", errors.New("gateway virtual key no longer exists")
+		// Recheck mutable records, rather than trusting a cached routing snapshot.
+		if identity := ctx.Grant().Identity(); identity != nil && identity.VirtualKey() != nil {
+			vk, err := store.GetVirtualKey(ctx, identity.VirtualKey().ID)
+			if err != nil || vk == nil || !vk.IsActiveValue() || vk.IsExpiredAt(time.Now()) {
+				return "", "", errors.New("gateway virtual key is no longer active")
+			}
 		}
-		owner, err := codexKeyOwner(vk)
-		if err != nil {
-			return "", "", err
+		key, err := store.GetProviderKey(ctx, schemas.Codex, selected.ID)
+		if err != nil || key == nil || key.ID == "" || key.Enabled != nil && !*key.Enabled {
+			return "", "", errors.New("Codex account is missing or disabled")
 		}
+		owner := "provider:codex:" + key.ID
 		s, err := codex.NewStore(store.DB)
 		if err != nil {
 			return "", "", err

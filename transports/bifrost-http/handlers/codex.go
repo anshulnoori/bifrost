@@ -20,20 +20,46 @@ func NewCodexHandler(store configstore.ConfigStore) *CodexHandler {
 }
 
 func (h *CodexHandler) RegisterRoutes(r *router.Router, middleware ...schemas.BifrostHTTPMiddleware) {
+	middleware = append(middleware, h.managementAuth)
 	r.POST("/api/codex/connections", lib.ChainMiddlewares(h.start, middleware...))
 	r.GET("/api/codex/connections/current", lib.ChainMiddlewares(h.current, middleware...))
+	r.GET("/api/codex/connections/usage", lib.ChainMiddlewares(h.usage, middleware...))
 	r.POST("/api/codex/connections/{id}/poll", lib.ChainMiddlewares(h.poll, middleware...))
 	r.DELETE("/api/codex/connections/{id}", lib.ChainMiddlewares(h.disconnect, middleware...))
+}
+
+// OAuth credentials are provider configuration. Require a genuine dashboard
+// login even if a deployment disabled management auth or whitelisted this path.
+func (h *CodexHandler) managementAuth(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		ctx.Response.Header.Set("Cache-Control", "no-store")
+		if h.configStore == nil {
+			SendError(ctx, 503, "Configure encrypted database storage before connecting Codex")
+			return
+		}
+		config, err := h.configStore.GetAuthConfig(ctx)
+		if err != nil || config == nil || !config.IsEnabled {
+			SendError(ctx, 401, "Sign in to the dashboard to manage Codex accounts")
+			return
+		}
+		if string(ctx.Request.Header.Peek("Sec-Fetch-Site")) == "cross-site" || len(ctx.Request.Header.Peek("x-bf-codex-key")) == 0 {
+			SendError(ctx, 403, "A same-origin Codex account request is required")
+			return
+		}
+		auth := &AuthMiddleware{store: h.configStore}
+		auth.authConfig.Store(config)
+		// Never accept upstream JWTs, inference keys, or temporary tokens here.
+		ctx.SetUserValue(schemas.IsAPIKeyAuthContextKey, false)
+		auth.middleware(func(*configstore.AuthConfig, string) bool { return false }, false)(next)(ctx)
+	}
 }
 
 func (h *CodexHandler) authorize(ctx *fasthttp.RequestCtx) (*codex.Store, string, bool) {
 	ctx.Response.Header.Set("Cache-Control", "no-store")
 	ctx.Response.Header.Set("Pragma", "no-cache")
-	// An upstream JWT in Authorization is never an onboarding identity. Requiring
-	// this custom header also prevents ambient dashboard cookies from granting access.
-	owner, err := lib.CodexOwner(ctx, h.configStore, string(ctx.Request.Header.Peek("x-bf-vk")))
+	owner, err := lib.CodexOwner(ctx, h.configStore, string(ctx.Request.Header.Peek("x-bf-codex-key")))
 	if err != nil {
-		SendError(ctx, 401, "An active Bifrost virtual key allowing Codex is required in x-bf-vk")
+		SendError(ctx, 404, "Codex account not found")
 		return nil, "", false
 	}
 	store, err := codex.NewStore(h.configStore.DB)
@@ -55,6 +81,21 @@ func codexError(ctx *fasthttp.RequestCtx, err error) {
 	default:
 		SendError(ctx, 502, "Codex authorization could not complete; retry or reconnect")
 	}
+}
+
+func (h *CodexHandler) usage(ctx *fasthttp.RequestCtx) {
+	store, owner, ok := h.authorize(ctx)
+	if !ok {
+		return
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	usage, err := store.Usage(requestCtx, owner)
+	if err != nil {
+		SendError(ctx, 502, "Subscription usage is unavailable")
+		return
+	}
+	SendJSON(ctx, usage)
 }
 
 func (h *CodexHandler) start(ctx *fasthttp.RequestCtx) {
