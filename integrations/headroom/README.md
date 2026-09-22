@@ -70,7 +70,9 @@ Choose **All admitted requests on this gateway** to use normal provider configur
 Optional virtual-key restrictions use the ID from Governance, not the virtual key secret.
 An optional project ID further restricts the scope. Both must match when both are configured.
 New native-plugin installation requires dashboard administrator authentication. Existing configuration saves do not change the installed plugin path.
-The page requires `HEADROOM_METRICS_TOKEN` even when OSS dashboard authentication is disabled.
+The Overview tab loads metrics through a verified local administrator session. Configuration has a separate tab.
+Without that session, the page requires `HEADROOM_METRICS_TOKEN`. Disabled dashboard authentication does not grant metrics access.
+The chart shows estimated tool-result tokens per retained attempt. It does not show billed savings or total prompt tokens.
 `BIFROST_HEADROOM_METRICS_PORT` defaults to 9909. The handler always connects to numeric loopback, never a caller-supplied URL.
 
 For the combined Codex/Headroom orb, prepare the sidecar from the repository root:

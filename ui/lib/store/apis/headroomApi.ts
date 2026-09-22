@@ -43,7 +43,7 @@ export async function readHeadroomReport(token: string): Promise<HeadroomReport>
 	if (!response.ok)
 		throw new Error(
 			response.status === 401
-				? "Invalid monitoring token."
+				? "Sign in as a dashboard administrator or enter a valid monitoring token."
 				: "Monitoring is unavailable. Check the plugin listener and gateway registration.",
 		);
 	return headroomReportSchema.parse(await response.json());

@@ -16,8 +16,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// HeadroomHandler exposes metadata only. The explicit token is required even
-// when OSS dashboard authentication is disabled. The browser never selects a URL.
+// HeadroomHandler exposes metadata to verified local admin sessions or holders
+// of the explicit monitoring token. Disabled dashboard auth never grants access.
 type HeadroomHandler struct {
 	token    string
 	endpoint string
@@ -54,7 +54,10 @@ func (h *HeadroomHandler) events(ctx *fasthttp.RequestCtx) {
 		ctx.Error("Headroom monitoring is not configured", 503)
 		return
 	}
-	if subtle.ConstantTimeCompare(ctx.Request.Header.Peek("X-Headroom-Admin-Token"), []byte(h.token)) != 1 {
+	admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	session, _ := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string)
+	if !(admin && !bypassed && session != "") && subtle.ConstantTimeCompare(ctx.Request.Header.Peek("X-Headroom-Admin-Token"), []byte(h.token)) != 1 {
 		ctx.Error("unauthorized", 401)
 		return
 	}

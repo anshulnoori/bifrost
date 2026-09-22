@@ -9,8 +9,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+func TestHeadroomDashboardSession(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) }))
+	defer s.Close()
+	_, portText, _ := net.SplitHostPort(strings.TrimPrefix(s.URL, "http://"))
+	port, _ := strconv.Atoi(portText)
+	h := newHeadroomHandler(strings.Repeat("x", 32), port)
+	for _, tc := range []struct {
+		name                   string
+		admin, bypass, session bool
+		want                   int
+	}{
+		{"session", true, false, true, 200},
+		{"bypassed", true, true, true, 401},
+		{"no session", true, false, false, 401},
+		{"non admin", false, false, true, 401},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.SetUserValue(schemas.IsLocalAdminContextKey, tc.admin)
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, tc.bypass)
+			if tc.session {
+				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "verified-session")
+			}
+			h.events(&ctx)
+			if ctx.Response.StatusCode() != tc.want {
+				t.Fatalf("got %d want %d", ctx.Response.StatusCode(), tc.want)
+			}
+		})
+	}
+}
 
 func TestHeadroomHandlerAuthAndFixedDestination(t *testing.T) {
 	token := strings.Repeat("x", 32)
