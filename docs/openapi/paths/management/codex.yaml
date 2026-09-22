@@ -1,0 +1,91 @@
+connections:
+  post:
+    operationId: startCodexConnection
+    summary: Start Codex device authorization
+    description: Replaces this virtual key's previous connection. Never returns upstream credentials.
+    tags: [Providers]
+    security: &security
+      - ManagementBearerAuth: []
+        VirtualKeyAuth: []
+      - BasicAuth: []
+        VirtualKeyAuth: []
+    responses:
+      '200':
+        description: Device authorization started. Response is not cacheable.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - &connectionSchema
+                  type: object
+                  required: [state]
+                  properties:
+                    id: { type: string, format: uuid }
+                    state:
+                      type: string
+                      enum: [disconnected, pending, polling, connected, refreshing, expired, reconnect_required]
+                    expires_at: { type: string, format: date-time }
+                    created_at: { type: string, format: date-time }
+                    updated_at: { type: string, format: date-time }
+                - type: object
+                  properties:
+                    verification_url: { type: string, const: 'https://auth.openai.com/codex/device' }
+                    user_code: { type: string }
+                    interval_seconds: { type: integer, minimum: 1, maximum: 60 }
+      '401': &unauthorized
+        description: Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication.
+      '503': &unavailable
+        description: Encrypted database storage is not configured.
+      '502': &upstream
+        description: Authorization could not complete. Upstream details are intentionally hidden.
+current:
+  get:
+    operationId: getCurrentCodexConnection
+    summary: Get this virtual key's connection status
+    tags: [Providers]
+    security: *security
+    responses:
+      '200': &status
+        description: Owner-scoped state. No credentials. Response is not cacheable.
+        content:
+          application/json:
+            schema: *connectionSchema
+      '401': *unauthorized
+      '409': &busy
+        description: Another replica owns the operation, or reconnect is required.
+      '503': *unavailable
+      '502': *upstream
+poll:
+  parameters: &id
+    - name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  post:
+    operationId: pollCodexConnection
+    summary: Poll a device authorization owned by this virtual key
+    description: Poll no faster than interval_seconds. Pending authorization returns 200 with state pending.
+    tags: [Providers]
+    security: *security
+    responses:
+      '200': *status
+      '401': *unauthorized
+      '404': &missing
+        description: Connection does not exist for this owner.
+      '409': *busy
+      '503': *unavailable
+      '502': *upstream
+connection:
+  parameters: *id
+  delete:
+    operationId: disconnectCodexConnection
+    summary: Disconnect or cancel a Codex connection
+    description: Deletes local credentials. Does not revoke upstream sessions or stop previously admitted requests.
+    tags: [Providers]
+    security: *security
+    responses:
+      '200': *status
+      '401': *unauthorized
+      '404': *missing
+      '503': *unavailable
+      '502': *upstream

@@ -43013,6 +43013,356 @@
         }
       }
     },
+    "/api/codex/connections": {
+      "post": {
+        "operationId": "startCodexConnection",
+        "summary": "Start Codex device authorization",
+        "description": "Replaces this virtual key's previous connection. Never returns upstream credentials.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": [],
+            "VirtualKeyAuth": []
+          },
+          {
+            "BasicAuth": [],
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device authorization started. Response is not cacheable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "disconnected",
+                            "pending",
+                            "polling",
+                            "connected",
+                            "refreshing",
+                            "expired",
+                            "reconnect_required"
+                          ]
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "verification_url": {
+                          "type": "string",
+                          "const": "https://auth.openai.com/codex/device"
+                        },
+                        "user_code": {
+                          "type": "string"
+                        },
+                        "interval_seconds": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 60
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          },
+          "502": {
+            "description": "Authorization could not complete. Upstream details are intentionally hidden."
+          }
+        }
+      }
+    },
+    "/api/codex/connections/current": {
+      "get": {
+        "operationId": "getCurrentCodexConnection",
+        "summary": "Get this virtual key's connection status",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": [],
+            "VirtualKeyAuth": []
+          },
+          {
+            "BasicAuth": [],
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped state. No credentials. Response is not cacheable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "disconnected",
+                        "pending",
+                        "polling",
+                        "connected",
+                        "refreshing",
+                        "expired",
+                        "reconnect_required"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+          },
+          "409": {
+            "description": "Another replica owns the operation, or reconnect is required."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          },
+          "502": {
+            "description": "Authorization could not complete. Upstream details are intentionally hidden."
+          }
+        }
+      }
+    },
+    "/api/codex/connections/{id}/poll": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "pollCodexConnection",
+        "summary": "Poll a device authorization owned by this virtual key",
+        "description": "Poll no faster than interval_seconds. Pending authorization returns 200 with state pending.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": [],
+            "VirtualKeyAuth": []
+          },
+          {
+            "BasicAuth": [],
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped state. No credentials. Response is not cacheable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "disconnected",
+                        "pending",
+                        "polling",
+                        "connected",
+                        "refreshing",
+                        "expired",
+                        "reconnect_required"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+          },
+          "404": {
+            "description": "Connection does not exist for this owner."
+          },
+          "409": {
+            "description": "Another replica owns the operation, or reconnect is required."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          },
+          "502": {
+            "description": "Authorization could not complete. Upstream details are intentionally hidden."
+          }
+        }
+      }
+    },
+    "/api/codex/connections/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "delete": {
+        "operationId": "disconnectCodexConnection",
+        "summary": "Disconnect or cancel a Codex connection",
+        "description": "Deletes local credentials. Does not revoke upstream sessions or stop previously admitted requests.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": [],
+            "VirtualKeyAuth": []
+          },
+          {
+            "BasicAuth": [],
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped state. No credentials. Response is not cacheable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "disconnected",
+                        "pending",
+                        "polling",
+                        "connected",
+                        "refreshing",
+                        "expired",
+                        "reconnect_required"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+          },
+          "404": {
+            "description": "Connection does not exist for this owner."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          },
+          "502": {
+            "description": "Authorization could not complete. Upstream details are intentionally hidden."
+          }
+        }
+      }
+    },
     "/api/plugins": {
       "get": {
         "operationId": "listPlugins",
@@ -96558,7 +96908,7 @@
       "ManagementBearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Management API authentication for `/api/*` endpoints. Use the `Authorization` header\nwith `Bearer <token>`, where `<token>` is one of:\n\n- a Bifrost management API key,\n- a dashboard session token issued by `POST /api/session/login`,\n- base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).\n\nVirtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -\nthe sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.\n"
+        "description": "Management API authentication for `/api/*` endpoints. Use the `Authorization` header\nwith `Bearer <token>`, where `<token>` is one of:\n\n- a Bifrost management API key,\n- a dashboard session token issued by `POST /api/session/login`,\n- base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).\n\nVirtual keys do not replace management authentication. The quota endpoint accepts\nvirtual keys directly; `/api/codex/connections*` additionally requires `x-bf-vk`\nto identify the connection owner after management middleware.\n"
       },
       "BasicAuth": {
         "type": "http",
@@ -96569,7 +96919,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "x-bf-vk",
-        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`) - with the single\nexception of the self-service `GET /api/governance/virtual-keys/quota`, where the virtual key is the credential.\nExample: `sk-bf-*` prefixed keys.\n"
+        "description": "Bifrost Virtual Key for governance, routing, and access control. Supported on inference\nendpoints and the self-service quota endpoint. Codex connection management also requires\nthis header to identify the owner, in addition to configured management authentication.\nExample: `sk-bf-*` prefixed keys.\n"
       },
       "ApiKeyAuth": {
         "type": "apiKey",

@@ -788,6 +788,16 @@ paths:
   /api/models/base:
     $ref: "./paths/management/providers.yaml#/models-base"
 
+  # Owner-scoped Codex subscription connections
+  /api/codex/connections:
+    $ref: "./paths/management/codex.yaml#/connections"
+  /api/codex/connections/current:
+    $ref: "./paths/management/codex.yaml#/current"
+  /api/codex/connections/{id}/poll:
+    $ref: "./paths/management/codex.yaml#/poll"
+  /api/codex/connections/{id}:
+    $ref: "./paths/management/codex.yaml#/connection"
+
   # Plugins
   /api/plugins:
     $ref: "./paths/management/plugins.yaml#/plugins"
@@ -1314,8 +1324,9 @@ components:
         - a dashboard session token issued by `POST /api/session/login`,
         - base64 of `<admin-username>:<admin-password>` (legacy equivalent of `BasicAuth`).
 
-        Virtual keys (`sk-bf-*`) and the `x-api-key` header are not accepted on management APIs -
-        the sole exception is `GET /api/governance/virtual-keys/quota`, which is virtual-key-only.
+        Virtual keys do not replace management authentication. The quota endpoint accepts
+        virtual keys directly; `/api/codex/connections*` additionally requires `x-bf-vk`
+        to identify the connection owner after management middleware.
     BasicAuth:
       type: http
       scheme: basic
@@ -1329,8 +1340,9 @@ components:
       in: header
       name: x-bf-vk
       description: |
-        Bifrost Virtual Key for governance, routing, and access control. Supported on all inference endpoints (`/v1/*`, `/openai/*`, `/anthropic/*`, `/bedrock/*`, `/cohere/*`, `/genai/*`, `/langchain/*`, `/litellm/*`, `/pydanticai/*`, `/mcp`), not on management APIs (`/api/*`) - with the single
-        exception of the self-service `GET /api/governance/virtual-keys/quota`, where the virtual key is the credential.
+        Bifrost Virtual Key for governance, routing, and access control. Supported on inference
+        endpoints and the self-service quota endpoint. Codex connection management also requires
+        this header to identify the owner, in addition to configured management authentication.
         Example: `sk-bf-*` prefixed keys.
     ApiKeyAuth:
       type: apiKey

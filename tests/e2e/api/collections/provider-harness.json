@@ -158143,6 +158143,44 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "104. Codex subscription protocol (codex-oauth)",
+      "description": "Requires a separately onboarded Codex owner virtual key in codexVirtualKey. Does not acquire or import OAuth credentials. These cases fail rather than silently skipping broken subscription routing.",
+      "item": [
+        {
+          "name": "Codex gpt-5.3-codex Responses unary preserves usage (codex-oauth)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{codexVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"codex/gpt-5.3-codex\",\"input\":\"Reply only OK.\",\"store\":false}"},
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Codex terminal response and accounting', function () {",
+            "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+            "  var body = pm.response.json(); pm.expect(body.status).to.equal('completed');",
+            "  pm.expect(body.output.length).to.be.above(0); pm.expect(body.usage.total_tokens).to.be.above(0);",
+            "});"
+          ]}}]
+        },
+        {
+          "name": "Codex gpt-5.3-codex Chat streaming tools (codex-oauth)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{codexVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"codex/gpt-5.3-codex\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Call weather for Oslo.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"weather\"}}}"},
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Codex Chat stream contains tool calls and completion', function () {",
+            "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+            "  pm.expect(pm.response.text()).to.include('weather'); pm.expect(pm.response.text()).to.include('tool_calls');",
+            "  pm.expect(pm.response.text()).to.include('[DONE]');",
+            "});"
+          ]}}]
+        }
+      ]
     }
   ]
 }

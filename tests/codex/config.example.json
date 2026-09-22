@@ -1,0 +1,16 @@
+{
+  "$schema": "../../transports/config.schema.json",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "client": { "enforce_auth_on_inference": true },
+  "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "./codex-config.db" } },
+  "providers": { "codex": { "keys": [] } },
+  "governance": {
+    "virtual_keys": [{
+      "id": "codex-local-user",
+      "name": "Codex local user",
+      "value": "env.CODEX_GATEWAY_KEY",
+      "is_active": true,
+      "provider_configs": [{ "provider": "codex", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1 }]
+    }]
+  }
+}
