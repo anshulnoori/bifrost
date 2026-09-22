@@ -259,7 +259,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							<col className="w-[12%]" />
 							<col className="w-[12%]" />
 						</colgroup>
-						<TableHeader className="w-full">
+						<TableHeader className={providerName === "codex" ? "sr-only" : "w-full"}>
 							<TableRow>
 								<TableHead>{providerName === "codex" ? "Account" : isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
@@ -277,6 +277,27 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							)}
 							{keys.map((key) => {
 								const isKeyEnabled = key.enabled ?? true;
+								if (providerName === "codex")
+									return (
+										<CodexUsage
+											key={key.id}
+											account={key}
+											revision={usageRevision}
+											canUpdate={hasUpdateProviderAccess}
+											checking={isRefreshing}
+											onCheck={() => handleRefreshKeyModels(key.id, key.name)}
+											onEdit={() => setShowAddNewKeyDialog({ show: true, keyId: key.id })}
+											menu={
+												<ProviderKeyActionsMenu
+													keyId={key.id}
+													hasUpdateAccess={hasUpdateProviderAccess}
+													hasDeleteAccess={hasDeleteProviderAccess}
+													onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
+													onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
+												/>
+											}
+										/>
+									);
 								return (
 									<TableRow
 										key={key.id}
@@ -351,7 +372,6 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													})()}
 												<span className="truncate font-mono text-sm">{key.name}</span>
 											</div>
-											{providerName === "codex" && <CodexUsage keyId={key.id} revision={usageRevision} />}
 										</TableCell>
 										<TableCell data-testid="key-weight-value">
 											<div className="flex items-center space-x-2">

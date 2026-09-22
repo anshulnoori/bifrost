@@ -10,6 +10,16 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   let created = ''
   let polls = 0
   let fail = false
+  let checked = false
+  await page.route('**/api/providers/codex/keys/personal/refresh-models', route => {
+    checked = true
+    return route.fulfill({ json: { ...accounts[0], status: 'success' } })
+  })
+  await page.route('**/api/providers/codex/keys/personal', route => {
+    expect(route.request().method()).toBe('PUT')
+    accounts[0].enabled = route.request().postDataJSON().enabled
+    return route.fulfill({ json: accounts[0] })
+  })
   await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
   await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
   await page.route('**/api/providers/codex/keys', route => {
@@ -50,6 +60,21 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   if (await closeSetup.isVisible()) await closeSetup.click()
   const personal = page.getByTestId('codex-usage-personal')
   const work = page.getByTestId('codex-usage-work')
+  await expect(personal.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '32')
+  await expect(work.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '0')
+  await expect(personal.getByRole('button', { name: 'Personal subscription details' })).toHaveAttribute('aria-expanded', 'false')
+  await personal.getByRole('button', { name: 'Personal subscription details' }).click()
+  await work.getByRole('button', { name: 'Work subscription details' }).click()
+  await expect(personal.getByRole('button', { name: 'Check access' })).toBeVisible()
+  await personal.getByRole('button', { name: 'Check access' }).click()
+  await expect.poll(() => checked).toBe(true)
+  await personal.getByRole('button', { name: 'Deactivate', exact: true }).click()
+  await expect(personal.getByRole('button', { name: 'Activate', exact: true })).toBeVisible()
+  await expect(personal.getByRole('button', { name: 'Check access' })).toBeDisabled()
+  await expect(work.getByRole('button', { name: 'Deactivate', exact: true })).toBeVisible()
+  await personal.getByRole('button', { name: 'Activate', exact: true }).click()
+  await expect(personal.getByRole('button', { name: 'Check access' })).toBeEnabled()
+  await expect(personal.getByRole('link', { name: 'ChatGPT usage' })).toHaveAttribute('href', 'https://chatgpt.com/codex/settings/usage')
   await expect(personal.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '77')
   await expect(personal.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '32')
   await expect(work.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '0')
@@ -77,5 +102,5 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   await work.getByRole('button', { name: 'Refresh usage' }).click()
   await expect(work).toContainText('Usage unavailable')
   await expect(work.getByRole('progressbar')).toHaveCount(0)
-  await expect(personal.getByRole('progressbar').first()).toHaveAttribute('aria-valuenow', '77')
+  await expect(personal.getByRole('progressbar', { name: '5h remaining', exact: true })).toHaveAttribute('aria-valuenow', '77')
 })

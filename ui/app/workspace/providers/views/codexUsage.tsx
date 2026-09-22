@@ -1,10 +1,37 @@
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { TableCell, TableRow } from "@/components/ui/table";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { codexAction, codexUsage, type CodexUsage as Usage } from "@/lib/store/apis/codexApi";
-import { RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
+import { ModelProviderKey } from "@/lib/types/config";
+import { getErrorMessage } from "@/lib/store";
+import { formatDistanceToNow } from "date-fns";
+import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
+import { ReactNode, useEffect, useState } from "react";
+import { toast } from "sonner";
 
-export default function CodexUsage({ keyId, revision }: { keyId: string; revision: number }) {
+export default function CodexUsage({
+	account,
+	revision,
+	canUpdate,
+	onEdit,
+	onCheck,
+	checking,
+	menu,
+}: {
+	account: ModelProviderKey;
+	revision: number;
+	canUpdate: boolean;
+	onEdit: () => void;
+	onCheck: () => void;
+	checking: boolean;
+	menu: ReactNode;
+}) {
+	const keyId = account.id;
+	const [open, setOpen] = useState(false);
+	const [updateKey, { isLoading: updating }] = useUpdateProviderKeyMutation();
 	const [usage, setUsage] = useState<Usage>();
 	const [status, setStatus] = useState("Loading…");
 	const [refresh, setRefresh] = useState(0);
@@ -46,52 +73,135 @@ export default function CodexUsage({ keyId, revision }: { keyId: string; revisio
 			window && window.used_percent !== null ? [{ window, name: group.name, index }] : [],
 		),
 	);
+	// The tightest standard window determines the headline; additional features
+	// retain their own limits in the expanded view.
+	const primaryWindows = windows.filter(({ name }) => !name);
+	const headline = primaryWindows.length
+		? Math.max(0, Math.min(100, ...primaryWindows.map(({ window }) => 100 - window.used_percent!)))
+		: undefined;
+	const enabled = account.enabled ?? true;
 	return (
-		<div className="mt-2 max-w-sm space-y-2" data-testid={`codex-usage-${keyId}`}>
-			<div className="text-muted-foreground flex items-center gap-2 text-xs">
-				<span className="capitalize">
-					{usage?.plan_type ? `${usage.plan_type} · ` : ""}
-					{status}
-				</span>
-				<Button
-					type="button"
-					variant="ghost"
-					size="icon"
-					className="size-5"
-					aria-label="Refresh usage"
-					onClick={() => setRefresh((value) => value + 1)}
-				>
-					<RefreshCw className="size-3" />
-				</Button>
-			</div>
-			{windows.map(({ window, name, index }) => {
-				const remaining = Math.max(0, Math.min(100, 100 - window.used_percent!));
-				const hours = window.limit_window_seconds / 3600;
-				const label =
-					hours >= 24
-						? `${Math.round(hours / 24)}d`
-						: hours > 0
-							? `${Math.round(hours * 10) / 10}h`
-							: index === 0
-								? "Primary"
-								: "Secondary";
-				return (
-					<div key={`${name}:${index}`} className="space-y-1">
-						<div className="flex justify-between gap-3 text-xs">
-							<span>
-								{name} {label}
-							</span>
-							<span>{Math.round(remaining)}% left</span>
+		<TableRow data-testid={`key-row-${account.name}`} className="hover:bg-transparent">
+			<TableCell colSpan={4} className="p-0 whitespace-normal">
+				<Collapsible open={open} onOpenChange={setOpen} data-testid={`codex-usage-${keyId}`}>
+					<CollapsibleTrigger asChild>
+						<button
+							type="button"
+							className="hover:bg-muted/50 flex w-full flex-wrap items-center gap-3 px-5 py-4 text-left"
+							aria-label={`${account.name} subscription details`}
+						>
+							<span className="min-w-0 flex-1 font-medium break-words">{account.name}</span>
+							<span className="text-muted-foreground text-xs capitalize">ChatGPT {usage?.plan_type ?? "subscription"}</span>
+							{headline !== undefined && (
+								<span className="flex items-center gap-2 text-xs tabular-nums">
+									<Progress className="h-1.5 w-20" value={headline} aria-label="Remaining allowance" aria-valuenow={headline} />
+									<span>{Math.round(headline)}%</span>
+								</span>
+							)}
+							<Badge variant="secondary" className="capitalize">
+								{!enabled ? "Inactive" : status}
+							</Badge>
+							<ChevronDown className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+						</button>
+					</CollapsibleTrigger>
+					<CollapsibleContent className="border-t px-5 py-4">
+						<dl className="grid grid-cols-[auto_1fr] items-start gap-x-6 gap-y-4 text-sm">
+							<dt className="text-muted-foreground pt-1">Account</dt>
+							<dd className="flex flex-wrap items-center gap-3">
+								<span>{account.name}</span>
+								<Button variant="outline" size="sm" disabled={!canUpdate || checking || !enabled} onClick={onCheck}>
+									{checking ? "Checking…" : "Check access"}
+								</Button>
+							</dd>
+							<dt className="text-muted-foreground">Models</dt>
+							<dd className="break-words">
+								{!account.models?.length || account.models.includes("*") ? "All available Codex models" : account.models.join(", ")}
+								{!!account.blacklisted_models?.length && (
+									<span className="text-muted-foreground"> · Excludes {account.blacklisted_models.join(", ")}</span>
+								)}
+							</dd>
+							<dt className="text-muted-foreground">Billing</dt>
+							<dd>Uses your ChatGPT subscription allowance</dd>
+							<dt className="text-muted-foreground">Usage</dt>
+							<dd className="space-y-3">
+								<div className="flex flex-wrap items-center gap-2">
+									<span className="text-muted-foreground text-xs capitalize">{status}</span>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										className="size-6"
+										aria-label="Refresh usage"
+										onClick={() => setRefresh((value) => value + 1)}
+									>
+										<RefreshCw className="size-3.5" />
+									</Button>
+									<Button variant="outline" size="sm" asChild>
+										<a href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer">
+											ChatGPT usage <ExternalLink className="size-3" />
+										</a>
+									</Button>
+								</div>
+								{windows.map(({ window, name, index }) => {
+									const remaining = Math.max(0, Math.min(100, 100 - window.used_percent!));
+									const hours = window.limit_window_seconds / 3600;
+									const label =
+										hours >= 24
+											? `${Math.round(hours / 24)}d`
+											: hours > 0
+												? `${Math.round(hours * 10) / 10}h`
+												: index === 0
+													? "Primary"
+													: "Secondary";
+									return (
+										<div key={`${name}:${index}`} className="max-w-sm space-y-1">
+											<div className="flex justify-between gap-3 text-xs">
+												<span>
+													{name} {label}
+												</span>
+												<span>{Math.round(remaining)}% left</span>
+											</div>
+											<Progress value={remaining} aria-label={`${name} ${label} remaining`.trim()} aria-valuenow={remaining} />
+											{window.reset_at > 0 && (
+												<p className="text-muted-foreground text-xs" title={new Date(window.reset_at * 1000).toLocaleString()}>
+													{window.reset_at * 1000 > Date.now()
+														? `Resets ${formatDistanceToNow(window.reset_at * 1000, { addSuffix: true })}`
+														: "Reset pending refresh"}
+												</p>
+											)}
+										</div>
+									);
+								})}
+								{usage && windows.length === 0 && <p className="text-muted-foreground text-xs">No usage limits reported</p>}
+								{usage?.rate_limit?.limit_reached && <p className="text-muted-foreground text-xs">Limit reached</p>}
+							</dd>
+						</dl>
+						<div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+							<span className="text-muted-foreground text-xs">Routing weight: {account.weight}</span>
+							<div className="flex items-center gap-2">
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={!canUpdate || updating}
+									onClick={async () => {
+										try {
+											await updateKey({ provider: "codex", keyId, key: { ...account, enabled: !enabled } }).unwrap();
+										} catch (error) {
+											toast.error("Could not update account", { description: getErrorMessage(error) });
+										}
+									}}
+								>
+									{enabled ? "Deactivate" : "Activate"}
+								</Button>
+								<Button variant="outline" size="sm" disabled={!canUpdate} onClick={onEdit}>
+									Edit connection
+								</Button>
+								{menu}
+							</div>
 						</div>
-						<Progress value={remaining} aria-label={`${name} ${label} remaining`.trim()} aria-valuenow={remaining} />
-						{window.reset_at > 0 && (
-							<p className="text-muted-foreground text-xs">Resets {new Date(window.reset_at * 1000).toLocaleString()}</p>
-						)}
-					</div>
-				);
-			})}
-			{usage && windows.length === 0 && <p className="text-muted-foreground text-xs">No usage limits reported</p>}
-			{usage?.rate_limit?.limit_reached && <p className="text-muted-foreground text-xs">Limit reached</p>}
-		</div>
+					</CollapsibleContent>
+				</Collapsible>
+			</TableCell>
+		</TableRow>
 	);
 }
