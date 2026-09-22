@@ -172,9 +172,11 @@ func TestRefreshReplicaExclusionAndDisconnect(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { _, _, err := s.Credential(context.Background(), "user:A", "connection-A"); done <- err }()
 			<-entered
-			_, _, err = replica.Credential(context.Background(), "user:A", "connection-A")
-			if !errors.Is(err, ErrBusy) {
-				t.Error("replica not excluded", err)
+			waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			_, _, err = replica.Credential(waitCtx, "user:A", "connection-A")
+			cancel()
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Error("replica did not wait for refresh or respect cancellation", err)
 			}
 			if disconnect {
 				if err = replica.Disconnect(context.Background(), "user:A", "connection-A"); err != nil {
@@ -184,7 +186,7 @@ func TestRefreshReplicaExclusionAndDisconnect(t *testing.T) {
 			close(release)
 			err = <-done
 			if disconnect {
-				if !errors.Is(err, ErrBusy) {
+				if !errors.Is(err, ErrNotFound) {
 					t.Fatal("refresh resurrected deleted row", err)
 				}
 			} else {
@@ -204,6 +206,52 @@ func TestRefreshReplicaExclusionAndDisconnect(t *testing.T) {
 				t.Fatal("duplicate token refresh")
 			}
 		})
+	}
+}
+
+func TestConcurrentRequestsShareRotatedCredential(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	s, db := testStore(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(entered)
+		}
+		<-release
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": fixtureToken("account-A"), "refresh_token": "rotated"})
+	})
+	insertConnected(t, db, "owner", "connection")
+	replica, err := NewStore(s.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replica.client = s.client
+	done := make(chan error, 2)
+	request := func(store *Store) {
+		access, account, err := store.Credential(context.Background(), "owner", "connection")
+		if err == nil && (access == "" || account != "account-A") {
+			err = errors.New("wrong rotated credential")
+		}
+		done <- err
+	}
+	go request(s)
+	<-entered
+	go request(replica)
+	select {
+	case err := <-done:
+		t.Errorf("request failed instead of waiting for rotation: %v", err)
+		close(release)
+		<-done
+		return
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh exchanges=%d, want 1", calls.Load())
 	}
 }
 

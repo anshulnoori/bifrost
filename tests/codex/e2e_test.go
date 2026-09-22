@@ -146,6 +146,7 @@ func TestOAuthThroughGateway(t *testing.T) {
 	if plugin != "" {
 		config = strings.Replace(config, `"plugins":[`, fmt.Sprintf(`"plugins":[{"name":"headroom","enabled":true,"path":%q,"placement":"post_builtin","config":{"enabled":false}},`, plugin), 1)
 	}
+	config = strings.Replace(config, `"governance":{`, `"governance":{"auth_config":{"is_enabled":true,"admin_username":"fixture-admin","admin_password":"fixture-dashboard-password"},`, 1)
 	config = strings.Replace(config, `"virtual_keys":[`, `"virtual_keys":[{"id":"budget-blocked","name":"budget-blocked","value":"sk-bf-fixture-budget-blocked","is_active":true,"budgets":[{"id":"zero-budget","max_limit":0,"reset_duration":"1d"}],"provider_configs":[{"provider":"codex","allowed_models":["*"],"key_ids":["*"],"weight":1}]},`, 1)
 	if err = os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
@@ -203,6 +204,9 @@ func TestOAuthThroughGateway(t *testing.T) {
 			req.Header.Set("x-bf-vk", "sk-bf-fixture-"+owner)
 		}
 		req.Header.Set("Authorization", "Bearer eyJ.forged.jwt")
+		if strings.HasPrefix(path, "/api/") {
+			req.SetBasicAuth("fixture-admin", "fixture-dashboard-password")
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -216,6 +220,16 @@ func TestOAuthThroughGateway(t *testing.T) {
 			t.Fatal("credential leaked into response")
 		}
 		return resp.StatusCode, data
+	}
+	unauthenticated, _ := http.NewRequest("POST", base+"/api/codex/connections", nil)
+	unauthenticated.Header.Set("x-bf-vk", "sk-bf-fixture-owner-a")
+	denied, err := client.Do(unauthenticated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied.Body.Close()
+	if denied.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("management auth bypassed: %d", denied.StatusCode)
 	}
 	status, data := call("POST", "/api/codex/connections", "owner-a", "")
 	if status != 200 {

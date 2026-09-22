@@ -4,6 +4,17 @@ test('Codex device onboarding, replica polling, disconnect, and errors', async (
   const provider = { name: 'codex', keys: [], network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
   await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
   await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
+  await page.route('**/v1/models?provider=codex', route => {
+    expect(route.request().headers()['x-bf-vk']).toBe('sk-bf-fixture-ui')
+    return route.fulfill({ json: { data: [{ id: 'codex/gpt-5.3-codex' }] } })
+  })
+  let probes = 0
+  await page.route('**/v1/responses', route => {
+    probes++
+    expect(route.request().headers()['x-bf-vk']).toBe('sk-bf-fixture-ui')
+    expect(route.request().postDataJSON()).toEqual({ model: 'codex/gpt-5.3-codex', input: 'Reply with exactly OK.', stream: false, store: false })
+    return route.fulfill({ json: { status: 'completed', output: [{ content: [{ type: 'output_text', text: 'OK' }] }], usage: { total_tokens: 37 } } })
+  })
   let state = 'disconnected'
   let polls = 0
   let fail = false
@@ -13,7 +24,10 @@ test('Codex device onboarding, replica polling, disconnect, and errors', async (
     if (fail) { await route.fulfill({ status: 503, json: { error: 'fixture-only' } }); return }
     const path = new URL(route.request().url()).pathname
     if (route.request().method() === 'DELETE') state = 'disconnected'
-    else if (path.endsWith('/poll')) { polls++; state = polls === 1 ? 'polling' : 'connected' }
+    else if (path.endsWith('/poll')) {
+      polls++; state = polls === 1 ? 'polling' : 'connected'
+      if (polls === 1) { await route.fulfill({ status: 409, json: { error: 'another replica owns polling' } }); return }
+    }
     else if (route.request().method() === 'POST') state = 'pending'
     await route.fulfill({ json: {
       state, ...(state === 'disconnected' ? {} : { id: 'fixture-id' }),
@@ -34,7 +48,12 @@ test('Codex device onboarding, replica polling, disconnect, and errors', async (
   if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-pending.png` })
   await expect(page.getByTestId('codex-connected')).toBeVisible({ timeout: 15000 })
   expect(polls).toBe(2)
-  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-connected.png` })
+  await expect(page.getByRole('combobox', { name: 'Available model' })).toContainText('codex/gpt-5.3-codex')
+  expect(probes).toBe(0) // Connection never silently consumes inference allowance.
+  await page.getByTestId('codex-test-inference').click()
+  await expect(page.getByTestId('codex-test-success')).toContainText('Inference verified · 37 tokens')
+  expect(probes).toBe(1)
+  if (process.env.CODEX_SCREENSHOT_DIR) await page.getByTestId('codex-onboarding').screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-connected.png` })
   await page.getByTestId('codex-disconnect').click()
   await expect(page.getByTestId('codex-status')).toHaveText('disconnected')
   fail = true

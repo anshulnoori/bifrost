@@ -2,7 +2,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { codexAction, type CodexConnection as Connection } from "@/lib/store/apis/codexApi";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { codexAction, codexModels, codexProbe, type CodexConnection as Connection } from "@/lib/store/apis/codexApi";
 import { codexGatewayKeySchema } from "@/lib/types/schemas";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,6 +20,7 @@ export default function CodexConnection() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const operation = useRef<AbortController | null>(null);
+	const { copy, copied } = useCopyToClipboard({ successMessage: "Device code copied" });
 
 	useEffect(() => () => operation.current?.abort(), []);
 
@@ -46,10 +49,10 @@ export default function CodexConnection() {
 	// One poll at a time. Closing the page stops polling; expiry is enforced by
 	// the server, and Cancel deletes the pending authorization on every replica.
 	useEffect(() => {
-		if (!key || busy || error || (connection?.state !== "pending" && connection?.state !== "polling")) return;
+		if (!key || busy || error || !connection || !["pending", "polling", "refreshing"].includes(connection.state)) return;
 		const timer = setTimeout(
 			() => {
-				void run("poll");
+				void run(connection.state === "refreshing" ? "status" : "poll");
 			},
 			(connection.interval_seconds ?? 5) * 1000,
 		);
@@ -111,7 +114,12 @@ export default function CodexConnection() {
 			{pending && connection?.user_code && (
 				<div className="space-y-3 rounded-md border p-4" data-testid="codex-device-code">
 					<p className="text-sm">Open OpenAI’s sign-in page and enter this one-time code. Continue only if you started this login.</p>
-					<code className="block text-2xl font-semibold tracking-widest">{connection.user_code}</code>
+					<div className="flex items-center gap-4">
+						<code className="block text-2xl font-semibold tracking-widest">{connection.user_code}</code>
+						<Button variant="outline" size="sm" onClick={() => copy(connection.user_code!)}>
+							{copied ? "Copied" : "Copy code"}
+						</Button>
+					</div>
 					<a className="text-primary underline" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener noreferrer">
 						Open OpenAI device authorization
 					</a>
@@ -127,11 +135,14 @@ export default function CodexConnection() {
 				</p>
 			)}
 			{state === "connected" && (
-				<p className="text-sm" data-testid="codex-connected">
-					Connected. Send requests to Bifrost with this virtual key and a <code>codex/</code> model. Bifrost refreshes the subscription
-					token automatically.
-				</p>
+				<div className="space-y-4">
+					<p className="text-sm" data-testid="codex-connected">
+						Connected to ChatGPT. Bifrost refreshes your subscription token automatically.
+					</p>
+					<CodexVerification key={connection?.id} gatewayKey={key} />
+				</div>
 			)}
+			{state === "expired" && <p className="text-sm">The device code expired. Connect again to get a new code.</p>}
 			{state === "reconnect_required" && (
 				<p className="text-sm">
 					Authorization could not be safely refreshed. Reconnect to continue; Bifrost will not reuse a potentially consumed refresh token.
@@ -154,5 +165,118 @@ export default function CodexConnection() {
 				OpenAI or cancel inference already sent upstream.
 			</p>
 		</section>
+	);
+}
+
+function CodexVerification({ gatewayKey }: { gatewayKey: string }) {
+	const [models, setModels] = useState<string[]>([]);
+	const [model, setModel] = useState("");
+	const [loading, setLoading] = useState(true);
+	const [testing, setTesting] = useState(false);
+	const [attempt, setAttempt] = useState(0);
+	const [error, setError] = useState("");
+	const [result, setResult] = useState<{ text: string; tokens?: number }>();
+	const operation = useRef<AbortController | null>(null);
+	useEffect(() => () => operation.current?.abort(), []);
+	useEffect(() => {
+		const controller = new AbortController();
+		operation.current = controller;
+		setLoading(true);
+		setError("");
+		void codexModels(gatewayKey, controller.signal)
+			.then((available) => {
+				if (controller.signal.aborted) return;
+				setModels(available);
+				setModel(available[0] ?? "");
+			})
+			.catch((err: unknown) => {
+				if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "Could not load models.");
+			})
+			.finally(() => {
+				if (!controller.signal.aborted) setLoading(false);
+			});
+		return () => controller.abort();
+	}, [gatewayKey, attempt]);
+
+	async function verify() {
+		operation.current?.abort();
+		const controller = new AbortController();
+		operation.current = controller;
+		setTesting(true);
+		setError("");
+		setResult(undefined);
+		try {
+			const response = await codexProbe(gatewayKey, model, controller.signal);
+			if (!controller.signal.aborted) setResult(response);
+		} catch (err) {
+			if (!controller.signal.aborted) setError(err instanceof Error ? err.message : "The test request failed.");
+		} finally {
+			if (!controller.signal.aborted) setTesting(false);
+		}
+	}
+	return (
+		<div className="space-y-3 rounded-md border p-4" data-testid="codex-verification">
+			<h3 className="font-medium">Verify inference</h3>
+			{loading ? (
+				<p className="text-muted-foreground text-sm">Loading your available models…</p>
+			) : models.length === 0 ? (
+				<p className="text-sm">No models are available for this connection. Check your plan and virtual-key permissions.</p>
+			) : (
+				<>
+					<Label htmlFor="codex-test-model">Available model</Label>
+					<Select
+						value={model}
+						onValueChange={(value) => {
+							setModel(value);
+							setResult(undefined);
+						}}
+						disabled={testing}
+					>
+						<SelectTrigger id="codex-test-model" className="w-full">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{models.map((id) => (
+								<SelectItem key={id} value={id}>
+									{id}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+					<p className="text-muted-foreground text-xs">
+						Sends one short request through normal gateway authentication and budgets. Uses your subscription allowance.
+					</p>
+					<Button onClick={() => void verify()} disabled={testing || !model} data-testid="codex-test-inference">
+						{testing ? "Testing…" : "Send test request"}
+					</Button>
+					<div className="space-y-1 text-xs">
+						<p>
+							OpenAI-compatible base URL: <code className="break-all">{window.location.origin}/v1</code>
+						</p>
+						<p>
+							Model: <code>{model}</code> · API key: this Bifrost virtual key, not an OpenAI token.
+						</p>
+					</div>
+				</>
+			)}
+			{error && (
+				<p role="alert" className="text-destructive text-sm">
+					{error}
+				</p>
+			)}
+			{!loading && models.length === 0 && (
+				<Button variant="outline" onClick={() => setAttempt((value) => value + 1)}>
+					Retry model discovery
+				</Button>
+			)}
+			{result && (
+				<div className="space-y-1 text-sm" data-testid="codex-test-success">
+					<p className="font-medium">
+						Inference verified{result.tokens !== undefined ? ` · ${result.tokens} tokens` : " · usage not reported"}
+					</p>
+					<p>{result.text}</p>
+				</div>
+			)}
+		</div>
 	);
 }

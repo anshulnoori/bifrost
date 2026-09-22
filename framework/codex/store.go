@@ -257,6 +257,29 @@ func (s *Store) saveTokens(ctx context.Context, row Connection, t tokens) error 
 // Credential returns secrets only to the provider resolver, never to handlers.
 // No token cache is retained between calls, so replicas observe disconnects.
 func (s *Store) Credential(ctx context.Context, owner, id string) (access, account string, err error) {
+	// A follower waits for the database winner instead of failing a valid
+	// inference request. It never takes over or reuses an uncertain refresh.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
+		access, account, err = s.credential(ctx, owner, id)
+		if !errors.Is(err, ErrBusy) {
+			return access, account, err
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", "", ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Store) credential(ctx context.Context, owner, id string) (access, account string, err error) {
 	row, err := s.Status(ctx, owner, id)
 	if err != nil {
 		return "", "", err
