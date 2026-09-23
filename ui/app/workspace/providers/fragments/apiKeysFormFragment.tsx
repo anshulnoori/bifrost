@@ -280,10 +280,13 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						name={`key.name`}
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>Name</FormLabel>
+								<FormLabel>{effectiveProvider === "codex" ? "Name (optional)" : "Name"}</FormLabel>
 								<FormControl>
-									<Input placeholder="Production Key" type="text" {...field} />
+									<Input placeholder={effectiveProvider === "codex" ? "e.g. Personal" : "Production Key"} type="text" {...field} />
 								</FormControl>
+								{effectiveProvider === "codex" && (
+									<p className="text-muted-foreground text-xs">Shown as Name (email). Leave blank to show only your email.</p>
+								)}
 								<FormMessage />
 							</FormItem>
 						)}

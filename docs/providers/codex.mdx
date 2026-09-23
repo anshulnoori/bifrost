@@ -184,7 +184,9 @@ The source scan stalled under memory pressure; the completed scan used `govulnch
 
 ## Account labels and usage reserves
 
-The table uses the email supplied by OpenAI during OAuth. Email remains encrypted with the tokens, not in a plaintext account column.
+The table shows `Name (email)` when you set an optional name, or just the email when the name is blank or matches the email.
+Generated internal names are hidden when email is available. You can edit or clear the name under **Edit connection**.
+Email comes from OpenAI during OAuth and remains encrypted with the tokens, not in a plaintext account column.
 Existing connections read email from their stored access token when available. If OpenAI supplies no email, the table uses the editable account alias.
 Routing and authorization always use the stable account ID, never the email.
 

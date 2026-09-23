@@ -11,6 +11,7 @@ import { formatDistanceToNow } from "date-fns";
 import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { codexAccountLabel } from "./codexAccountLabel";
 
 export default function CodexUsage({
 	account,
@@ -25,7 +26,7 @@ export default function CodexUsage({
 	revision: number;
 	canUpdate: boolean;
 	onEdit: () => void;
-	onCheck: () => void;
+	onCheck: (label: string) => void;
 	checking: boolean;
 	menu: ReactNode;
 }) {
@@ -82,7 +83,7 @@ export default function CodexUsage({
 		? Math.max(0, Math.min(100, ...primaryWindows.map(({ window }) => 100 - window.used_percent!)))
 		: undefined;
 	const enabled = account.enabled ?? true;
-	const label = email ?? account.name;
+	const label = codexAccountLabel(account.name, email);
 	const reserve = account.codex_reserve_percent;
 	const weekly = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window].filter(
 		(window) => window?.limit_window_seconds === 604800,
@@ -128,7 +129,7 @@ export default function CodexUsage({
 							<dt className="text-muted-foreground pt-1">Account</dt>
 							<dd className="flex flex-wrap items-center gap-3">
 								<span>{label}</span>
-								<Button variant="outline" size="sm" disabled={!canUpdate || checking || !enabled} onClick={onCheck}>
+								<Button variant="outline" size="sm" disabled={!canUpdate || checking || !enabled} onClick={() => onCheck(label)}>
 									{checking ? "Checking…" : "Check access"}
 								</Button>
 							</dd>

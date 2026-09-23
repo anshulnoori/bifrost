@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getErrorMessage } from "@/lib/store";
 import { useCreateProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
-import { modelProviderKeySchema, modelProviderKeyFieldsSchema } from "@/lib/types/schemas";
+import { modelProviderKeySchema, codexProviderKeyFieldsSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
@@ -16,6 +16,7 @@ import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
 import CodexConnection from "./codexConnection";
+import { codexAccountAlias } from "./codexAccountLabel";
 import { stripDatabricksAuthDiscriminator } from "./providerKeyForm.utils";
 interface Props {
 	provider: ModelProvider;
@@ -27,7 +28,7 @@ interface Props {
 type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 
 export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: Props) {
-	const providerKeyFormSchema = z.object({ key: provider.name === "codex" ? modelProviderKeyFieldsSchema : modelProviderKeySchema });
+	const providerKeyFormSchema = z.object({ key: provider.name === "codex" ? codexProviderKeyFieldsSchema : modelProviderKeySchema });
 	const [createdAccountId, setCreatedAccountId] = useState<string>();
 	const accountId = createdAccountId ?? keyId;
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
@@ -42,9 +43,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			key: (currentKey as ProviderKeyFormValues) ?? {
+			key: (currentKey
+				? ({
+						...currentKey,
+						name: provider.name === "codex" ? codexAccountAlias(currentKey.name) : currentKey.name,
+					} as ProviderKeyFormValues)
+				: undefined) ?? {
 				id: uuid(),
-				name: provider.name === "codex" ? `Codex ${uuid().slice(0, 8)}` : "",
+				name: "",
 				models: ["*"],
 				blacklisted_models: [],
 				weight: 1.0,
@@ -57,8 +63,13 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 	// Skip reset if user has unsaved edits to avoid discarding changes during background refetches
 	useEffect(() => {
 		if (!isEditing || !currentKey || form.formState.isDirty) return;
-		form.reset({ key: currentKey as ProviderKeyFormValues });
-	}, [isEditing, currentKey, form]);
+		form.reset({
+			key: {
+				...currentKey,
+				name: provider.name === "codex" ? codexAccountAlias(currentKey.name) : currentKey.name,
+			} as ProviderKeyFormValues,
+		});
+	}, [isEditing, currentKey, form, provider.name]);
 
 	// Trigger validation on mount when editing existing data
 	useEffect(() => {
@@ -84,6 +95,11 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		if (isEditing && !currentKey) return;
 		// Strip internal _auth_type fields before sending to API
 		const key = { ...value.key };
+		if (provider.name === "codex") {
+			// An empty API name means "unchanged", and names must be unique.
+			// Preserve existing generated names, or create a unique fallback.
+			key.name = key.name.trim() || (currentKey && !codexAccountAlias(currentKey.name) ? currentKey.name : `Codex ${uuid()}`);
+		}
 		if (key.azure_key_config) {
 			const { _auth_type, ...rest } = key.azure_key_config;
 			key.azure_key_config = rest;
@@ -119,7 +135,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 			.then((saved) => {
 				if (provider.name === "codex" && !isEditing) {
 					setCreatedAccountId(saved.id);
-					form.reset({ key: saved as ProviderKeyFormValues });
+					form.reset({ key: { ...saved, name: codexAccountAlias(saved.name) } as ProviderKeyFormValues });
 				} else onSave();
 			})
 			.catch((err) => {

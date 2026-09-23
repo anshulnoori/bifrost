@@ -285,7 +285,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 											revision={usageRevision}
 											canUpdate={hasUpdateProviderAccess}
 											checking={isRefreshing}
-											onCheck={() => handleRefreshKeyModels(key.id, key.name)}
+											onCheck={(label) => handleRefreshKeyModels(key.id, label)}
 											onEdit={() => setShowAddNewKeyDialog({ show: true, keyId: key.id })}
 											menu={
 												<ProviderKeyActionsMenu

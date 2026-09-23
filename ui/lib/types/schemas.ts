@@ -475,6 +475,10 @@ export const modelProviderKeyFieldsSchema = z.object({
 	enabled: z.boolean().optional(),
 });
 
+// Codex names are optional display aliases; the form retains an internal unique
+// provider-key name when the alias is blank.
+export const codexProviderKeyFieldsSchema = modelProviderKeyFieldsSchema.extend({ name: z.string().trim() });
+
 export const modelProviderKeySchema = modelProviderKeyFieldsSchema.refine(
 	(data) => {
 		if (data.vllm_key_config || data.ollama_key_config || data.sgl_key_config) {
