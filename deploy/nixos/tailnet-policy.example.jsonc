@@ -1,0 +1,15 @@
+// Merge and test in the existing tailnet policy. Do not replace it wholesale.
+// Existing broad grants can still allow other members to access this node.
+{
+  "tagOwners": { "tag:bifrost": ["autogroup:admin"] },
+  "grants": [
+    {
+      "src": ["autogroup:admin"],
+      "dst": ["tag:bifrost"],
+      "ip": ["tcp:22", "tcp:8443"]
+    }
+  ],
+  "nodeAttrs": [
+    { "target": ["tag:bifrost"], "attr": ["funnel"] }
+  ]
+}

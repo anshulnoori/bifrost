@@ -1,0 +1,74 @@
+{
+	admin off
+	auto_https off
+	# Do not write prompts, credentials, or OAuth callback URLs to access/error logs.
+	log {
+		output discard
+	}
+}
+
+(inference) {
+	request_body {
+		max_size 4MiB
+	}
+	@messages path /v1/messages
+	rewrite @messages /anthropic/v1/messages
+	reverse_proxy 127.0.0.1:{$BIFROST_PORT:8080} {
+		# A positive header allowlist prevents provider-key and routing overrides.
+		header_up -*
+		header_up X-Bf-Vk {http.request.header.X-Bf-Vk}
+		header_up Content-Type application/json
+		header_up Accept {http.request.header.Accept}
+		header_up Anthropic-Version {http.request.header.Anthropic-Version}
+		header_up X-Forwarded-Proto https
+		# Default flushing supports SSE and retains cancellation propagation.
+		# Do not use flush_interval -1: that disables early disconnect cancellation.
+	}
+}
+
+http://:{$INFERENCE_PORT:8081} {
+	bind 127.0.0.1
+	route {
+		@invalid expression `{http.request.method} != "POST" || !({http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages"])`
+		respond @invalid 404
+		@encoded header Content-Encoding *
+		respond @encoded 415
+		@upgrade header Upgrade *
+		respond @upgrade 400
+		@json header Content-Type application/json*
+		handle @json {
+			route {
+				# Reject ambiguous credentials rather than picking an arbitrary identity.
+				@ambiguous expression `({http.request.header.Authorization} != "" && {http.request.header.X-Bf-Vk} != "") || ({http.request.header.X-Api-Key} != "" && ({http.request.header.Authorization} != "" || {http.request.header.X-Bf-Vk} != ""))`
+				respond @ambiguous 401
+				@bearer header_regexp bearer Authorization "^Bearer (sk-bf-[A-Za-z0-9_-]+)$"
+				handle @bearer {
+					request_header X-Bf-Vk {re.bearer.1}
+					import inference
+				}
+				@anthropic header_regexp anthropic X-Api-Key ^(sk-bf-[A-Za-z0-9_-]+)$
+				handle @anthropic {
+					request_header X-Bf-Vk {re.anthropic.1}
+					import inference
+				}
+				@vk header_regexp vk X-Bf-Vk ^sk-bf-[A-Za-z0-9_-]+$
+				handle @vk {
+					import inference
+				}
+				respond 401
+			}
+		}
+		respond 415
+	}
+}
+
+# Only Tailscale Serve on private HTTPS port 8443 may proxy here. Never Funnel.
+http://:{$ADMIN_PORT:8082} {
+	bind 127.0.0.1
+	reverse_proxy 127.0.0.1:{$BIFROST_PORT:8080} {
+		header_up -Tailscale-*
+		header_up -Cf-Access-*
+		header_up -X-Forwarded-*
+		header_up X-Forwarded-Proto https
+	}
+}

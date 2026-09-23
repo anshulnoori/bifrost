@@ -1,5 +1,9 @@
 # Deployment status and architecture
 
+**Current target: [NixOS + Funnel + Neon + Valkey](nixos.md).**
+The owner abandoned Cloudflare Workers/Containers. The material below records the previous candidate, not current deployment instructions.
+Its code and tests remain for history and reuse. No Cloudflare deployment is required by the NixOS profile.
+
 This implementation is an **offline-tested deployment candidate**, not a live service.
 Do not attach public DNS until the release gates in [validation.md](validation.md) pass.
 No provider resources were created. No credentials were requested or committed.

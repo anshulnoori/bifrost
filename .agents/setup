@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
+# Orb-only Nix tooling. The deployment shell pins Caddy and Node through flake.lock.
+if [[ ! -x "$HOME/.nix-profile/bin/nix" ]]; then
+  nix_scratch=$(mktemp -d)
+  curl -fsSL https://releases.nixos.org/nix/nix-2.28.5/nix-2.28.5-x86_64-linux.tar.xz -o "$nix_scratch/nix.tar.xz"
+  printf '2b7e9fda8e17e2143c302a700908e86698c265b5862fc7e6b805942aceef6668  %s/nix.tar.xz\n' "$nix_scratch" | sha256sum -c
+  tar xf "$nix_scratch/nix.tar.xz" -C "$nix_scratch" --strip-components=1
+  NIX_INSTALLER_NO_CHANNEL_ADD=1 "$nix_scratch/install" --no-daemon --no-modify-profile
+  rm -rf "$nix_scratch"
+fi
+# Keep activation explicit (nix develop .#deployment), without nesting Amp in a shell.
+sudo ln -sf "$HOME/.nix-profile/bin/nix" /usr/local/bin/nix
+mkdir -p "$HOME/.config/nix"
+if ! rg -qx 'extra-experimental-features = nix-command flakes' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
+  printf '\nextra-experimental-features = nix-command flakes\n' >> "$HOME/.config/nix/nix.conf"
+fi
 if ! command -v go >/dev/null || [[ $(go version) != 'go version go1.27.0 linux/amd64' ]]; then
   scratch=$(mktemp -d)
   trap 'rm -rf "$scratch"' EXIT
