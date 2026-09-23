@@ -52,6 +52,34 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_service(compressor)), base_url="http://service") as client:
                 self.assertEqual((await client.post("/v1/compress", headers=HEADERS, json=BODY)).status_code, status)
 
+    async def test_chunked_limit_before_compressor(self):
+        async def chunks():
+            yield b"x" * MAX_BODY
+            yield b"x"
+        response = await self.client.post("/v1/compress", headers={**HEADERS, "content-type": "application/json"}, content=chunks())
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(self.calls, 0)
+
+    async def test_concurrency_cap_and_slot_release(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def blocked(raw):
+            entered.set()
+            await release.wait()
+            return json.dumps({"messages": json.loads(raw)["messages"], "tokens_before": 9, "tokens_after": 9}).encode()
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_service(blocked)), base_url="http://service") as client:
+            first = asyncio.create_task(client.post("/v1/compress", headers=HEADERS, json=BODY))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                second = await client.post("/v1/compress", headers=HEADERS, json=BODY)
+                self.assertEqual(second.status_code, 429)
+                self.assertEqual(second.headers["retry-after"], "1")
+            finally:
+                release.set()
+                self.assertEqual((await first).status_code, 200)
+            self.assertEqual((await client.post("/v1/compress", headers=HEADERS, json=BODY)).status_code, 200)
+
     @unittest.skipUnless(os.environ.get("HEADROOM_REAL_TEST") == "1", "opt-in official package integration")
     async def test_official_headroom_fidelity(self):
         text = json.dumps([{"id": i, "status": "healthy", "target_fact": "KEEP-7391", "region": "east"} for i in range(150)])

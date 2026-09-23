@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { generateKeyPair, SignJWT } from 'jose';
 import { inference, admin, digest, readBody, MAX_BODY } from '../shared/policy.mjs';
 import { admit, drainBody } from '../shared/lifecycle.mjs';
@@ -144,4 +145,25 @@ test('stream lease releases only on EOF/cancel/error, cancellation reaches sourc
   assert.equal(cancel, 1);
   assert.equal(await new Response(drainBody(new Response('last').body, async () => { finish++; })).text(), 'last');
   assert.equal(finish, 2);
+});
+
+test('shipping Workers enable incoming request cancellation without test aliases', async () => {
+  for (const name of ['inference-worker', 'admin-worker']) {
+    const config = JSON.parse(await readFile(new URL(`../${name}/wrangler.jsonc`, import.meta.url), 'utf8'));
+    assert.ok(config.compatibility_flags.includes('enable_request_signal'));
+    assert.equal(config.alias, undefined);
+    assert.equal(config.main, 'index.ts');
+  }
+});
+
+test('IP limit aggregates separate keys and resets at the window boundary', async () => {
+  const values = new Map();
+  const store = { transaction: fn => fn({ get: async k => values.get(k), put: async (k, v) => values.set(k, v) }) };
+  const headers = new Headers({ 'x-deployment-ip': 'a'.repeat(64), 'x-deployment-rpm': '120', 'x-deployment-daily': '1000' });
+  for (let i = 0; i < 180; i++) {
+    headers.set('x-deployment-key', (i % 2 ? 'b' : 'c').repeat(64));
+    assert.equal(await admit(store, headers, 0), 200);
+  }
+  assert.equal(await admit(store, headers, 59999), 429);
+  assert.equal(await admit(store, headers, 60000), 200);
 });

@@ -8,13 +8,14 @@ No public deployment endpoint or portal exists. Local fixtures contain synthetic
 | Check | Result |
 | --- | --- |
 | Bundle per-part/original SHA-256, self-contained import, exact source ancestry | Passed |
-| `npm test` in `deploy/cloudflare` | 10 passed, including real DO restart and 32-way replay race |
+| `npm test` in `deploy/cloudflare` | 12 passed, including real DO restart and 32-way replay race |
+| `node deploy/cloudflare/test/local/run.mjs` against three Wrangler dev servers | 7/7 HTTP groups passed; see transport limitations below |
 | `npm run check` and `npm run dry-run` in `deploy/cloudflare` | Both Workers passed |
 | `npm test` and `npm run check` in `prototype` | 11 passed; preserved Stage 1 baseline |
 | `CODEX_TEST_POSTGRES=1 go test -race ./framework/codex ./core/providers/codex ./integrations/headroom -count=1` | Passed |
 | Targeted transport handler/lib Codex and Headroom tests | Passed |
 | `DEPLOY_TEST_POSTGRES=1 go test ./deploy/cloudflare/container -count=1` | Passed; repeat migration and restricted runtime schema startup |
-| `HEADROOM_REAL_TEST=1 python -m unittest discover -s deploy/modal/headroom -p 'test_*.py'` | 4 passed, including official compressor |
+| Modal facade unit tests | 5 mock tests passed; optional official compressor skipped in the latest mock-only run (passed previously) |
 | Real compiled gateway Codex fixture | Passed onboarding, refresh, unary Responses, Chat SSE, isolation, disconnect |
 | Real compiled gateway + native Headroom plugin + official compressor | Passed; earlier concurrent-build timeout retained as a performance finding |
 | `docker build --network host -f deploy/cloudflare/container/Dockerfile -t bifrost-cloudflare:local .` | Passed, linux/amd64 |
@@ -25,6 +26,12 @@ No public deployment endpoint or portal exists. Local fixtures contain synthetic
 The image builds binary and plugin in one Go 1.27.0 workspace with identical flags.
 The local gateway integration exercised native plugin loading. The final musl image has
 not completed an authenticated Neon-backed end-to-end startup.
+
+The [Wrangler local run](local-validation.md) exercises the production Worker handlers,
+private admin binding, Container SDK, and Docker mock application. This orb lacks the
+stock sidecar's required kernel socket match, so the passing run used an explicit
+ingress-only transport fixture. It found and fixed incoming cancellation and hard startup
+deadline defects. It is not evidence for Cloudflare production networking or placement.
 
 The edge tests verify allowlists, duplicate JSON-key rejection, JWT signature/issuer/audience/
 expiry/identity, spoofed headers, size limits, model restriction, rates, replay persistence,

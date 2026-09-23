@@ -4,5 +4,5 @@
     "lib": ["ES2022"], "types": ["@cloudflare/workers-types"],
     "strict": true, "noEmit": true, "allowJs": true, "skipLibCheck": true
   },
-  "include": ["inference-worker/*.ts", "admin-worker/*.ts", "shared/*.mjs"]
+  "include": ["inference-worker/*.ts", "admin-worker/*.ts", "shared/*.mjs", "test/local/*.ts"]
 }

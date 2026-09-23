@@ -15,6 +15,7 @@ interface Env {
 
 export class BifrostContainer extends Container<Env> {
   defaultPort = 8080;
+  startupTimeoutMS = 55000;
   sleepAfter = '5m';
   enableInternet = true;
   override onError(): void { console.log(JSON.stringify({ event: 'container_error' })); }
@@ -61,9 +62,25 @@ export class BifrostContainer extends Container<Env> {
     };
     await this.ctx.storage.put(`lease:${id}`, Date.now() + 11 * 60 * 1000);
     try {
-      await this.startAndWaitForPorts({ ports: [8080], startOptions: { envVars }, cancellationOptions: {
-        abort: controller.signal, instanceGetTimeoutMS: 10000, portReadyTimeoutMS: 45000,
-      } });
+      // SDK retry budgets are not a wall-clock deadline: transport failure can
+      // leave its startup promise waiting for the container monitor to settle.
+      let cancelStart = () => {};
+      const startupTimer = setTimeout(abort, this.startupTimeoutMS);
+      try {
+        await Promise.race([
+          this.startAndWaitForPorts({ ports: [8080], startOptions: { envVars }, cancellationOptions: {
+            abort: controller.signal, instanceGetTimeoutMS: 10000, portReadyTimeoutMS: 45000,
+          } }),
+          new Promise<never>((_, reject) => {
+            cancelStart = () => reject(new Error('startup cancelled'));
+            if (controller.signal.aborted) cancelStart();
+            else controller.signal.addEventListener('abort', cancelStart, { once: true });
+          }),
+        ]);
+      } finally {
+        clearTimeout(startupTimer);
+        controller.signal.removeEventListener('abort', cancelStart);
+      }
       const headers = new Headers(request.headers);
       for (const name of [...headers.keys()]) if (name.startsWith('x-deployment-')) headers.delete(name);
       // Direct port fetch after bounded startup: no SDK proxy error strings,
