@@ -128,7 +128,7 @@ export default function CodexUsage({
 						<dl className="grid grid-cols-[auto_1fr] items-start gap-x-6 gap-y-4 text-sm">
 							<dt className="text-muted-foreground pt-1">Account</dt>
 							<dd className="flex flex-wrap items-center gap-3">
-								<span>{label}</span>
+								<span data-testid="codex-account-email">{email?.trim() || "Email unavailable"}</span>
 								<Button variant="outline" size="sm" disabled={!canUpdate || checking || !enabled} onClick={() => onCheck(label)}>
 									{checking ? "Checking…" : "Check access"}
 								</Button>

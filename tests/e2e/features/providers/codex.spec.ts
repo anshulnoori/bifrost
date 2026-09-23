@@ -51,7 +51,7 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
       if (polls === 1) return route.fulfill({ status: 409, json: { error: 'another replica owns polling' } })
     } else if (route.request().method() === 'POST') states[key] = 'pending'
     const state = states[key]
-    return route.fulfill({ json: { state, ...(state === 'connected' ? { email: `${key}@example.test` } : {}), ...(state === 'disconnected' ? {} : { id: `connection-${key}` }),
+    return route.fulfill({ json: { state, ...(state === 'connected' && !(fail && key === 'work') ? { email: `${key}@example.test` } : {}), ...(state === 'disconnected' ? {} : { id: `connection-${key}` }),
       ...(state === 'pending' ? { user_code: 'TEST-ONLY', verification_url: 'https://auth.openai.com/codex/device', interval_seconds: 1 } : {}),
     } })
   })
@@ -66,6 +66,8 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   await expect(personal.getByRole('button', { name: 'Personal (personal@example.test) subscription details' })).toHaveAttribute('aria-expanded', 'false')
   await personal.getByRole('button', { name: 'Personal (personal@example.test) subscription details' }).click()
   await work.getByRole('button', { name: 'Work (work@example.test) subscription details' }).click()
+  await expect(personal.getByTestId('codex-account-email')).toHaveText('personal@example.test')
+  await expect(work.getByTestId('codex-account-email')).toHaveText('work@example.test')
   await expect(work).toContainText('Reserve reached')
   await expect(work).toContainText('Pause at 25% weekly allowance remaining')
   await expect(personal).not.toContainText('Reserve reached')
@@ -77,6 +79,7 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   await page.getByTestId('key-save-btn').click()
   await expect.poll(() => accounts[0].codex_reserve_percent).toBe(40)
   await expect(personal.getByRole('button', { name: 'Home (personal@example.test) subscription details' })).toBeVisible()
+  await expect(personal.getByTestId('codex-account-email')).toHaveText('personal@example.test')
   await expect(personal).toContainText('Reserve reached')
   await personal.getByRole('button', { name: 'Edit connection' }).click()
   await page.getByLabel('Name (optional)', { exact: true }).fill('')
@@ -130,6 +133,9 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   fail = true
   await work.getByRole('button', { name: 'Refresh usage' }).click()
   await expect(work).toContainText('Usage unavailable')
+  await expect(work.getByTestId('codex-account-email')).toHaveText('Email unavailable')
+  await expect(work.getByRole('button', { name: 'Work subscription details', exact: true })).toBeVisible()
+  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-email-unavailable.png` })
   await expect(work.getByRole('progressbar')).toHaveCount(0)
   await expect(personal.getByRole('progressbar', { name: '5h remaining', exact: true })).toHaveAttribute('aria-valuenow', '0')
 })
