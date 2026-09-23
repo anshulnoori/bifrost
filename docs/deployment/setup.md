@@ -72,6 +72,27 @@ Record Access issuer and application audience in both Worker configurations. Sto
 verified Access **subject**, not an assumed tsidp subject, as `OWNER_SUB`. Store
 `OWNER_EMAIL` as a secret to avoid publishing the owner's email. Both Workers need these.
 
+### Native Bifrost sign-in
+
+For sign-in without a second password prompt, follow [dashboard OIDC](../dashboard-oidc.md).
+The intended issuer is `https://idp.silverside-mongoose.ts.net`; it is not yet live-verified.
+Discovery, exact issuer equality, and valid TLS remain deployment gates.
+Register a separate confidential Bifrost client with callback
+`https://YOUR-BIFROST-ADMIN-HOST/api/session/oidc/callback`, not the Access callback above.
+Keep Bifrost auth and the existing encryption key enabled; the password is for recovery.
+
+Store all five `BIFROST_OIDC_*` settings documented there as secrets on the inference Worker,
+which owns the Container binding. They are forwarded only to the container environment.
+Do not put client secrets, subject allowlists, or callback codes in Wrangler vars or logs.
+With no settings, password login remains available; partial configuration fails startup.
+The admin Worker permits only the login POST and callback GET, still behind Access.
+It preserves the OIDC browser-binding cookie only on those routes and bounds callback query parameters.
+Disable callback URL/query logging at every proxy/CDN layer; Worker observability stays off.
+
+Run the controlled migration and apply runtime grants before deploying the new binary to all replicas.
+Enable OIDC only after every replica is upgraded. Before rollback, revoke OIDC sessions through
+the operator-approved procedure in the OIDC guide; old binaries do not enforce its subject allowlist.
+
 ## 3. Modal
 
 The local SDK definition was imported with `modal==1.5.5`. Install that exact version in
@@ -132,8 +153,8 @@ npx wrangler deploy --config admin-worker/wrangler.jsonc
 ```
 
 Attach the inference and admin custom domains to their respective Workers. Do not reuse
-the prototype's signed lifecycle endpoint. Log in through Access, then Bifrost user `owner`
-and its separate password. Configure Codex accounts and VKs only in that protected UI.
+the prototype's signed lifecycle endpoint. Log in through Access, then use Bifrost's Tailscale
+sign-in if configured, or the `owner` recovery password. Configure Codex accounts and VKs only in that protected UI.
 Complete the staging matrix before setting `EMERGENCY_DISABLE=false`.
 
 ## Sources and unresolved provider checks

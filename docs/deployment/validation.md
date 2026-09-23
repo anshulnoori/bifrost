@@ -55,7 +55,10 @@ Keep inference disabled until each applicable gate passes. Use synthetic prompts
    validation and pooled connections, then start twice without DDL privileges. Restart after
    persisting encrypted accounts and verify emails/reserves without displaying tokens.
 2. Access: verify discovered tsidp endpoints, allowed owner login, wrong identity denial,
-   expired token denial, fabricated header denial, and continued Bifrost password protection.
+   expired token denial, fabricated header denial, and continued Bifrost session protection.
+   If native OIDC is configured, verify browser-bound login/callback, subject denial, logout,
+   recovery password, and shared PostgreSQL state consumption across replicas. Local signed
+   IdP fixtures and mocked login UI tests do not prove live tsidp or Access compatibility.
    Check provider/Codex and VK pages in a browser. Never capture OAuth/device codes.
 3. Cloudflare: cold-start one authenticated synthetic inference request, record readiness
    time, stream SSE, cancel midstream, hold a second stream over idle expiry, and confirm

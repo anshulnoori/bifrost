@@ -4,6 +4,8 @@ import { admin, inference, reply } from '../shared/policy.mjs';
 import { admit, drainBody } from '../shared/lifecycle.mjs';
 
 interface Env {
+  BIFROST_OIDC_ISSUER?: string; BIFROST_OIDC_CLIENT_ID?: string; BIFROST_OIDC_CLIENT_SECRET?: string;
+  BIFROST_OIDC_REDIRECT_URL?: string; BIFROST_OIDC_ALLOWED_SUBJECTS?: string;
   BIFROST: DurableObjectNamespace<BifrostContainer>;
   INFERENCE_ORIGIN: string; ADMIN_ORIGIN: string; EMERGENCY_DISABLE: string;
   INFERENCE_KEYS_JSON: string; ACCESS_ISSUER: string; ACCESS_AUD: string;
@@ -47,6 +49,10 @@ export class BifrostContainer extends Container<Env> {
     for (const name of ['NEON_DATABASE_URL', 'BIFROST_ENCRYPTION_KEY', 'BIFROST_ADMIN_PASSWORD', 'HEADROOM_ENDPOINT', 'HEADROOM_PROXY_TOKEN', 'HEADROOM_SCOPE_KEY', 'HEADROOM_METRICS_TOKEN', 'MODAL_TOKEN_ID', 'MODAL_TOKEN_SECRET'] as const) {
       if (!this.env[name]) return reply(503);
       envVars[name] = this.env[name];
+    }
+    // Optional private settings. The gateway rejects partial OIDC configuration.
+    for (const name of ['BIFROST_OIDC_ISSUER', 'BIFROST_OIDC_CLIENT_ID', 'BIFROST_OIDC_CLIENT_SECRET', 'BIFROST_OIDC_REDIRECT_URL', 'BIFROST_OIDC_ALLOWED_SUBJECTS'] as const) {
+      if (this.env[name]) envVars[name] = this.env[name];
     }
     const id = crypto.randomUUID();
     const controller = new AbortController();

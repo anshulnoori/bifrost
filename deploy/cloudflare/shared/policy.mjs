@@ -16,6 +16,8 @@ const adminRoutes = [
   ['GET', /^\/favicon.ico$/],
   ['GET', /^\/api\/(?:version|config|auth\/type|branding|models|models\/details|models\/parameters|models\/base|keys|session\/is-auth-enabled)$/],
   ['POST', /^\/api\/session\/(?:login|logout)$/],
+  ['POST', /^\/api\/session\/oidc\/login$/],
+  ['GET', /^\/api\/session\/oidc\/callback$/],
   ['GET', /^\/api\/providers(?:\/[a-z0-9_-]+(?:\/keys(?:\/[a-zA-Z0-9_-]+)?)?)?$/],
   ['POST', /^\/api\/providers(?:\/[a-z0-9_-]+\/keys)?$/],
   ['PUT', /^\/api\/providers\/[a-z0-9_-]+(?:\/keys\/[a-zA-Z0-9_-]+)?$/],
@@ -104,9 +106,13 @@ export function headersFor(request, plane, id) {
     if (value !== null && value.length <= 1024) headers.set(name, value);
   }
   if (plane === 'admin') {
-    // The only browser cookie that Bifrost needs. Never forward the Access JWT.
-    const token = request.headers.get('cookie')?.split(';').map(x => x.trim()).find(x => /^token=[A-Za-z0-9._~-]+$/.test(x));
-    if (token) headers.set('cookie', token);
+    // Only the session and OIDC flow's browser binding. Never forward Access cookies.
+    const cookies = request.headers.get('cookie')?.split(';').map(x => x.trim()) ?? [];
+    const selected = [cookies.find(x => /^token=[A-Za-z0-9._~-]+$/.test(x))];
+    if (['/api/session/oidc/login', '/api/session/oidc/callback'].includes(new URL(request.url).pathname)) {
+      selected.push(cookies.find(x => /^__Host-bifrost_oidc=[A-Za-z0-9_-]{43}$/.test(x)));
+    }
+    if (selected.some(Boolean)) headers.set('cookie', selected.filter(Boolean).join('; '));
   }
   headers.set('x-forwarded-proto', 'https');
   headers.set('x-request-id', id);
@@ -176,10 +182,15 @@ export async function admin(request, env, proxy, keyset) {
   try { await accessIdentity(request, env, keyset); } catch { return reply(403, id); }
   if (request.headers.has('upgrade') || request.headers.has('content-encoding') || request.headers.has('x-bf-vk') || request.headers.has('authorization') || request.headers.has('x-api-key')) return reply(403, id);
   if (request.method !== 'GET' && request.headers.get('origin') !== env.ADMIN_ORIGIN) return reply(403, id);
-  // No query credentials or caller-selected upstreams.
-  if (url.search && !['/api/config', '/api/providers', '/api/models', '/api/models/details', '/api/models/parameters', '/api/keys', '/api/governance/virtual-keys'].includes(url.pathname)) return reply(400, id);
+  // Only the OIDC callback may carry an authorization code. Never log its query.
+  if (url.search && !['/login', '/api/session/oidc/callback', '/api/config', '/api/providers', '/api/models', '/api/models/details', '/api/models/parameters', '/api/keys', '/api/governance/virtual-keys'].includes(url.pathname)) return reply(400, id);
+  if (['/login', '/api/session/oidc/callback'].includes(url.pathname) && (url.search.length > 16384 || new Set(url.searchParams.keys()).size !== [...url.searchParams].length)) return reply(400, id);
   for (const [name, value] of url.searchParams) {
-    if (url.pathname === '/api/config') {
+    if (url.pathname === '/api/session/oidc/callback') {
+      if (!['code', 'state', 'error', 'error_description', 'error_uri', 'iss'].includes(name) || value.length > (name === 'code' ? 8192 : 1024)) return reply(400, id);
+    } else if (url.pathname === '/login') {
+      if (name !== 'oidc_error' || !['cancelled', 'invalid', 'unavailable', 'denied'].includes(value)) return reply(400, id);
+    } else if (url.pathname === '/api/config') {
       if (name !== 'from_db' || !['true', 'false'].includes(value)) return reply(400, id);
     } else if (!['offset', 'limit', 'search', 'provider', 'model', 'page'].includes(name)) return reply(400, id);
   }

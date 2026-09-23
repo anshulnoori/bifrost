@@ -102,6 +102,42 @@ test('expired Access JWT fails closed', async () => {
   assert.equal((await admin(adminReq('/', jwt), env, () => assert.fail('wake'), pair.publicKey)).status, 403);
 });
 
+test('OIDC admin flow preserves only browser binding and bounded callback parameters', async () => {
+  const jwt = await token();
+  const browser = 'a'.repeat(43);
+  const cookie = `CF_Authorization=private; token=session-token; __Host-bifrost_oidc=${browser}; other=ignored`;
+  for (const [path, method] of [
+    ['/api/session/oidc/login', 'POST'],
+    [`/api/session/oidc/callback?state=${browser}&code=synthetic-code`, 'GET'],
+    [`/api/session/oidc/callback?state=${browser}&error=access_denied&error_description=cancelled`, 'GET'],
+  ]) {
+    assert.equal((await admin(adminReq(path, jwt, { cookie, origin: env.ADMIN_ORIGIN }, method), env, request => {
+      assert.equal(new URL(request.url).pathname + new URL(request.url).search, path);
+      assert.equal(request.headers.get('cookie'), `token=session-token; __Host-bifrost_oidc=${browser}`);
+      assert.equal(request.headers.get('cf-access-jwt-assertion'), null);
+      return new Response(null, { status: 303, headers: { location: '/login?oidc_error=cancelled', 'set-cookie': `__Host-bifrost_oidc=${browser}; Secure; HttpOnly; Path=/; SameSite=Lax` } });
+    }, pair.publicKey)).status, 303);
+    assert.equal((await admin(adminReq(path, 'forged', { cookie }, method), env, () => assert.fail('wake'), pair.publicKey)).status, 403);
+    assert.equal((await inference(req(path, '{}', {}, method), env, () => assert.fail('public wake'))).status, 404);
+  }
+  assert.equal((await admin(adminReq('/api/session/oidc/login', jwt, { origin: 'https://evil.example' }, 'POST'), env, () => assert.fail('wake'), pair.publicKey)).status, 403);
+  for (const error of ['cancelled', 'invalid', 'unavailable', 'denied']) {
+    assert.equal((await admin(adminReq(`/login?oidc_error=${error}`, jwt), env, () => new Response('ok'), pair.publicKey)).status, 200);
+  }
+  for (const path of [
+    '/api/session/oidc/login?code=x', '/login?oidc_error=unknown', '/login?oidc_error=invalid&oidc_error=denied',
+    '/api/session/oidc/callback?state=a&state=b', '/api/session/oidc/callback?redirect_uri=https://evil.example',
+    `/api/session/oidc/callback?code=${'x'.repeat(8193)}`,
+  ]) assert.equal((await admin(adminReq(path, jwt, { origin: env.ADMIN_ORIGIN }, path.startsWith('/api/session/oidc/login') ? 'POST' : 'GET'), env, () => assert.fail('wake'), pair.publicKey)).status, 400);
+  for (const [path, method] of [['/api/session/oidc/login', 'GET'], ['/api/session/oidc/callback', 'POST']]) {
+    assert.equal((await admin(adminReq(path, jwt, { origin: env.ADMIN_ORIGIN }, method), env, () => assert.fail('wake'), pair.publicKey)).status, 404);
+  }
+  await admin(adminReq('/api/providers', jwt, { cookie }), env, request => {
+    assert.equal(request.headers.get('cookie'), 'token=session-token');
+    return new Response('ok');
+  }, pair.publicKey);
+});
+
 test('restricted dashboard admits its bootstrap routes but not arbitrary config queries', async () => {
   const jwt = await token();
   for (const path of ['/login', '/workspace/providers', '/workspace/governance/virtual-keys', '/assets/index-fixture.js', '/bifrost-logo-dark.webp', '/api/auth/type', '/api/branding', '/api/config?from_db=false']) {
