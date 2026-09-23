@@ -761,6 +761,10 @@ paths:
   # Session
   /api/session/login:
     $ref: "./paths/management/session.yaml#/login"
+  /api/session/oidc/login:
+    $ref: "./paths/management/session.yaml#/oidc-login"
+  /api/session/oidc/callback:
+    $ref: "./paths/management/session.yaml#/oidc-callback"
   /api/session/logout:
     $ref: "./paths/management/session.yaml#/logout"
   /api/session/is-auth-enabled:

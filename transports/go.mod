@@ -6,6 +6,7 @@ require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/go-git/go-billy/v5 v5.9.0

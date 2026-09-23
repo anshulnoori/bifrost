@@ -31,6 +31,9 @@ IsAuthEnabledResponse:
       type: boolean
     has_valid_token:
       type: boolean
+    oidc_enabled:
+      type: boolean
+      description: Whether the dashboard offers configured Tailscale OIDC sign-in.
 
 LogoutResponse:
   type: object

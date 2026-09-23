@@ -17,6 +17,8 @@ type SessionsTable struct {
 	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
 	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	TokenHash        string    `gorm:"type:varchar(64);index:idx_session_token_hash,unique" json:"-"`
+	OIDCIssuer       string    `gorm:"type:text" json:"-"`
+	OIDCSubject      string    `gorm:"type:text" json:"-"`
 }
 
 // TableName sets the table name for each model

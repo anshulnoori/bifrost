@@ -2432,6 +2432,21 @@ func (l *captureLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEven
 	return e
 }
 
+func TestDashboardOIDCCallbackAccessLogRedactsQuery(t *testing.T) {
+	logger := &captureLogger{}
+	SetLogger(logger)
+	defer SetLogger(&mockLogger{})
+	ctx := getCtx(oidcCallbackPath + "?code=private-code&state=private-state")
+	cors := NewCorsMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{}}).Middleware()
+	cors(func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(303) })(ctx)
+	if len(logger.events) != 1 {
+		t.Fatalf("expected one access log, got %d", len(logger.events))
+	}
+	if got := logger.events[0].strFields["http.target"]; got != oidcCallbackPath {
+		t.Fatalf("callback query leaked into access log: %q", got)
+	}
+}
+
 // TestTracingMiddleware_AccessLogIncludesRequestID asserts the stdout access log
 // carries both trace_id and request_id, so Loki can index on either (BF-1041).
 func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {

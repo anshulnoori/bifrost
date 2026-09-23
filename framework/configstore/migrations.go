@@ -497,6 +497,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"migrate_vk_standalone_limits_to_model_configs"}, run: migrationMigrateVKStandaloneLimitsToModelConfigs},
 	{IDs: []string{"add_codex_connections"}, run: migrationAddCodexConnections},
 	{IDs: []string{"add_codex_reserve_percent"}, run: migrationAddCodexReserve},
+	{IDs: []string{"add_dashboard_oidc"}, run: migrationAddDashboardOIDC},
 }
 
 // videoResolutionPricingColumns are the resolution-banded video output rate columns.

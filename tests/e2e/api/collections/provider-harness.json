@@ -60,6 +60,7 @@
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1);",
+          "if (__u.indexOf('/api/session/oidc/') !== -1 && pm.response.code === 303) { __skipShape = true; }",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -405,6 +406,33 @@
     }
   ],
   "item": [
+    {
+      "name": "Dashboard OIDC",
+      "item": [
+        {
+          "name": "dashboard-oidc rejects unsolicited callback [EXPECT-303]",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/session/oidc/callback?state=invalid&code=fixture-not-a-real-code"
+          },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('Only fixed local error redirect; no session', function () {",
+                "  pm.expect(pm.response.headers.get('Location')).to.match(/^\\/login\\?oidc_error=(invalid|unavailable)$/);",
+                "  pm.expect(pm.response.headers.get('Cache-Control')).to.equal('no-store');",
+                "  pm.expect(pm.response.headers.get('Referrer-Policy')).to.equal('no-referrer');",
+                "  pm.expect(pm.response.headers.get('Set-Cookie') || '').not.to.match(/(?:^|;\\s*)token=/);",
+                "});"
+              ]
+            }
+          }]
+        }
+      ]
+    },
     {
       "name": "1. Native Bifrost API",
       "description": "Bifrost's own OpenAI-shaped surface. Use a `provider/model` string in the `model` field to route to any configured backend.",

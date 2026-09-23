@@ -14,6 +14,7 @@ export interface LoginResponse {
 export interface IsAuthEnabledResponse {
 	is_auth_enabled: boolean;
 	has_valid_token: boolean;
+	oidc_enabled?: boolean;
 	auth_type?: "sso" | "password" | "none";
 }
 

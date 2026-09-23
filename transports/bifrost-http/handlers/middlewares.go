@@ -146,9 +146,13 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					} else if statusCode >= 400 {
 						level = schemas.LogLevelWarn
 					}
+					target := string(ctx.RequestURI())
+					if string(ctx.Path()) == oidcCallbackPath {
+						target = oidcCallbackPath // Never log OAuth codes or browser state.
+					}
 					logBuilder := logger.LogHTTPRequest(level, "request completed").
 						Str("http.method", string(ctx.Method())).
-						Str("http.target", string(ctx.RequestURI())).
+						Str("http.target", target).
 						Int("http.status_code", statusCode).
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
@@ -847,7 +851,7 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 	if err != nil || session == nil {
 		return false
 	}
-	if session.ExpiresAt.Before(time.Now()) {
+	if !session.ExpiresAt.After(time.Now()) || !oidcSessionAllowed(session) {
 		return false
 	}
 	return true
@@ -1101,6 +1105,8 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	systemWhitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
+		"/api/session/oidc/login",
+		oidcCallbackPath,
 		// Idempotent: the handler clears the cookie and returns 200 whether or
 		// not a session token is present, so a repeat logout must not 401 here.
 		"/api/session/logout",

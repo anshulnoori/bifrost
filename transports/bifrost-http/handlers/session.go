@@ -21,6 +21,7 @@ import (
 type SessionHandler struct {
 	configStore   configstore.ConfigStore
 	wsTicketStore *WSTicketStore
+	oidc          *dashboardOIDC
 }
 
 // NewSessionHandler creates a new session handler instance
@@ -34,6 +35,8 @@ func NewSessionHandler(configStore configstore.ConfigStore, wsTicketStore *WSTic
 // RegisterRoutes registers the session-related routes
 func (h *SessionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.POST("/api/session/login", lib.ChainMiddlewares(h.login, middlewares...))
+	r.POST("/api/session/oidc/login", lib.ChainMiddlewares(h.oidcLogin, middlewares...))
+	r.GET(oidcCallbackPath, lib.ChainMiddlewares(h.oidcCallback, middlewares...))
 	r.POST("/api/session/logout", lib.ChainMiddlewares(h.logout, middlewares...))
 	r.GET("/api/session/is-auth-enabled", lib.ChainMiddlewares(h.isAuthEnabled, middlewares...))
 	r.POST("/api/session/ws-ticket", lib.ChainMiddlewares(h.issueWSTicket, middlewares...))
@@ -72,15 +75,13 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 	}
 	hasValidToken := false
 	if token != "" {
-		session, err := h.configStore.GetSession(ctx, token)
-		if err == nil && session != nil && session.ExpiresAt.After(time.Now()) {
-			hasValidToken = true
-		}
+		hasValidToken = validateSession(ctx, h.configStore, token)
 	}
 	SendJSON(ctx, map[string]any{
 		"is_auth_enabled": authConfig.IsEnabled,
 		"has_valid_token": hasValidToken,
 		"auth_type":       dashboardAuthType(authConfig.IsEnabled),
+		"oidc_enabled":    authConfig.IsEnabled && h.oidc != nil,
 	})
 }
 
