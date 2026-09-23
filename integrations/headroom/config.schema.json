@@ -10,6 +10,8 @@
     "virtual_key_id": {"type": "string"},
     "endpoint": {"type": "string", "format": "uri"},
     "token_env": {"type": "string"},
+    "modal_key_env": {"type": "string"},
+    "modal_secret_env": {"type": "string"},
     "scope_key_env": {"type": "string"},
     "failure_policy": {"enum": ["open", "closed"], "default": "open"},
     "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 30000, "default": 2000},

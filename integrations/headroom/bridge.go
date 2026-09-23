@@ -31,6 +31,8 @@ type Config struct {
 	VirtualKeyID     string `json:"virtual_key_id"`
 	Endpoint         string `json:"endpoint"`
 	TokenEnv         string `json:"token_env"`
+	ModalKeyEnv      string `json:"modal_key_env"`
+	ModalSecretEnv   string `json:"modal_secret_env"`
 	ScopeKeyEnv      string `json:"scope_key_env"`
 	FailurePolicy    string `json:"failure_policy"`
 	TimeoutMS        int    `json:"timeout_ms"`
@@ -43,10 +45,12 @@ type Config struct {
 }
 
 type bridge struct {
-	config Config
-	client *http.Client
-	token  string
-	key    []byte
+	config      Config
+	client      *http.Client
+	token       string
+	key         []byte
+	modalKey    string
+	modalSecret string
 }
 
 func newBridge(config Config) (*bridge, error) {
@@ -86,6 +90,12 @@ func newBridge(config Config) (*bridge, error) {
 	b.token, b.key = os.Getenv(config.TokenEnv), []byte(os.Getenv(config.ScopeKeyEnv))
 	if len(b.token) < 32 || len(b.key) < 32 {
 		return nil, errors.New("token_env and scope_key_env must resolve to secrets of at least 32 bytes")
+	}
+	if config.ModalKeyEnv != "" || config.ModalSecretEnv != "" {
+		b.modalKey, b.modalSecret = os.Getenv(config.ModalKeyEnv), os.Getenv(config.ModalSecretEnv)
+		if u.Scheme != "https" || b.modalKey == "" || b.modalSecret == "" {
+			return nil, errors.New("modal authentication requires HTTPS and both credential environment references")
+		}
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil // Do not disclose tool results to ambient HTTP proxies.
@@ -142,6 +152,10 @@ func (b *bridge) compress(ctx context.Context, model, scope string, texts []stri
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Headroom-Proxy-Token", b.token)
 	req.Header.Set("X-Headroom-Project", scope)
+	if b.modalKey != "" {
+		req.Header.Set("Modal-Key", b.modalKey)
+		req.Header.Set("Modal-Secret", b.modalSecret)
+	}
 	response, err := b.client.Do(req)
 	if err != nil {
 		return nil, estimate{}, errors.New("headroom unavailable or request cancelled")

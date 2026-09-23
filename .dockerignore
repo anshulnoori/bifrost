@@ -2,6 +2,7 @@
 .git/
 .gitignore
 .github/
+.amp/
 
 # Node.js
 node_modules/

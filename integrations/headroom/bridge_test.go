@@ -43,6 +43,37 @@ func goodReply(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"messages": req.Messages, "tokens_before": 53, "tokens_after": 12, "ccr_hashes": []string{}, "obligations": []string{}})
 }
 
+func TestModalProxyAuth(t *testing.T) {
+	t.Setenv("MODAL_TEST_ID", "fixture-id")
+	t.Setenv("MODAL_TEST_SECRET", "fixture-secret")
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Modal-Key") != "fixture-id" || r.Header.Get("Modal-Secret") != "fixture-secret" {
+			t.Error("missing Modal proxy credentials")
+		}
+		goodReply(w, r)
+	})
+	c := b.config
+	c.ModalKeyEnv, c.ModalSecretEnv = "MODAL_TEST_ID", "MODAL_TEST_SECRET"
+	// Credentials must never travel over cleartext outside local fixtures.
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted Modal credentials over HTTP")
+	}
+	c.Endpoint = "https://service.example"
+	m, err := newBridge(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.config.Endpoint = b.config.Endpoint
+	defer m.client.CloseIdleConnections()
+	if _, _, err := m.compress(context.Background(), "m", "s", []string{"original text"}); err != nil {
+		t.Fatal(err)
+	}
+	c.ModalSecretEnv = "MISSING_MODAL_SECRET"
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted incomplete Modal credentials")
+	}
+}
+
 func TestCompressContract(t *testing.T) {
 	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/compress" || r.Header.Get("X-Headroom-Proxy-Token") != strings.Repeat("t", 32) || r.Header.Get("Authorization") != "" {

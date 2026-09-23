@@ -1,0 +1,12 @@
+{
+  "name": "bifrost-deployment-edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "tsc --noEmit",
+    "dry-run": "wrangler deploy --config inference-worker/wrangler.jsonc --dry-run --containers-rollout=none --outdir /tmp/bifrost-inference-worker && wrangler deploy --config admin-worker/wrangler.jsonc --dry-run --outdir /tmp/bifrost-admin-worker"
+  },
+  "dependencies": { "@cloudflare/containers": "0.3.7", "jose": "6.1.0" },
+  "devDependencies": { "@cloudflare/workers-types": "5.20260923.1", "typescript": "7.0.2", "wrangler": "4.136.3", "miniflare": "5.20260921.0-alpha", "esbuild": "0.28.1" }
+}

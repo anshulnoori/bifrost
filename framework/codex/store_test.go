@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -33,7 +35,21 @@ func fixtureToken(account string) string {
 func testStore(t *testing.T, handler http.HandlerFunc) (*Store, *gorm.DB) {
 	t.Helper()
 	encrypt.Init("codex-test-only-encryption-key-32-bytes", quietLogger{})
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "credentials.db")+"?_busy_timeout=5000&_journal_mode=WAL"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	var driver gorm.Dialector = sqlite.Open(filepath.Join(t.TempDir(), "credentials.db") + "?_busy_timeout=5000&_journal_mode=WAL")
+	if os.Getenv("CODEX_TEST_POSTGRES") == "1" {
+		// Disposable loopback fixture only. Never accept a production DSN here.
+		admin, err := gorm.Open(postgres.Open("host=127.0.0.1 port=5432 user=postgres dbname=postgres sslmode=disable"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+		if err != nil {
+			t.Fatal("local PostgreSQL fixture unavailable")
+		}
+		schema := fmt.Sprintf("codex_test_%d", time.Now().UnixNano())
+		if err := admin.Exec("CREATE SCHEMA " + schema).Error; err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { admin.Exec("DROP SCHEMA " + schema + " CASCADE"); sqlDB, _ := admin.DB(); sqlDB.Close() })
+		driver = postgres.Open("host=127.0.0.1 port=5432 user=postgres dbname=postgres sslmode=disable search_path=" + schema)
+	}
+	db, err := gorm.Open(driver, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}

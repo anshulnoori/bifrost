@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+if ! command -v go >/dev/null || [[ $(go version) != 'go version go1.27.0 linux/amd64' ]]; then
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  curl -fsSL https://go.dev/dl/go1.27.0.linux-amd64.tar.gz -o "$scratch/go.tar.gz"
+  printf '675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685  %s/go.tar.gz\n' "$scratch" | sha256sum -c
+  sudo tar -C /usr/local -xzf "$scratch/go.tar.gz"
+  sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+fi
+# Do not run go work sync: it rewrites the preserved module baselines.
+if [[ ! -f "$root/go.work" ]]; then
+  go work init ./core ./framework ./transports ./integrations/headroom ./deploy/cloudflare/container
+  for module in plugins/*; do [[ ! -f "$module/go.mod" ]] || go work use "$module"; done
+fi
+npm ci --prefix "$root/deploy/cloudflare" --ignore-scripts
+npm ci --prefix "$root/prototype" --ignore-scripts
+uv venv --allow-existing /tmp/bifrost-headroom-test --python 3.11
+uv pip install --python /tmp/bifrost-headroom-test/bin/python --require-hashes -r "$root/integrations/headroom/requirements.lock"
+echo 'Offline dependencies ready. No provider authentication or deployment performed.'
