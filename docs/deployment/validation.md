@@ -33,6 +33,14 @@ stock sidecar's required kernel socket match, so the passing run used an explici
 ingress-only transport fixture. It found and fixed incoming cancellation and hard startup
 deadline defects. It is not evidence for Cloudflare production networking or placement.
 
+The later [t1 stock run](local-validation.md#t1-stock-run-transport-works-restart-fails)
+used rootless Podman 5.8.7 with isolated storage. The stock sidecar started and five HTTP
+groups passed. Container restart then failed with a name-in-use error and HTTP 503.
+The full seven-group stock suite did not pass. The t1 run did not use the ingress fixture.
+The 12 existing Node tests, added supervisor tests, TypeScript check, Worker dry-runs,
+PostgreSQL tests, race tests, and five Python mock tests passed. One optional Python test skipped.
+The earlier orb results in the table remain separate evidence, not a stock-transport pass.
+
 The edge tests verify allowlists, duplicate JSON-key rejection, JWT signature/issuer/audience/
 expiry/identity, spoofed headers, size limits, model restriction, rates, replay persistence,
 byte-preserving SSE, cancellation, and dashboard bootstrap route policy. They do not prove

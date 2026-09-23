@@ -53,6 +53,69 @@ Do not use this transport with production code or real credentials.
 On a kernel with the required modules, omit `--ingress-fixture` to use stock transport.
 Passing results on this orb used the explicit fixture; stock transport remains unverified.
 
+## Local hosts without orb services
+
+The stock transport supports foreground process supervision:
+
+```sh
+bash deploy/cloudflare/test/local/start.sh stock --process
+# In a second terminal, with the same isolated toolchain:
+node deploy/cloudflare/test/local/run.mjs
+```
+
+The supervisor refuses occupied ports before it generates credentials. It starts three
+Wrangler processes with a cleared environment, fresh HOME, and private cache/state directories.
+It preserves `PATH`, `DOCKER_HOST`, `TMPDIR`, and `XDG_RUNTIME_DIR` for portable tools and rootless engines.
+The default Docker socket is `/var/run/docker.sock`. Logs and state stay under the printed
+`.wrangler/local-e2e/process-*` directory. SIGINT or SIGTERM stops the child process groups.
+An unexpected child exit stops the other children and returns failure.
+
+The existing orb command remains unchanged. Process supervision supports stock transport only.
+It does not install tools, configure an engine, or remove engine resources. After shutdown,
+inspect the engine for remaining containers and remove only resources from this run.
+Stop local servers before `npm test`: the supervisor regression tests use the same loopback ports.
+
+### t1 stock run: transport works, restart fails
+
+The 2026-09-23 t1 run used NixOS 26.11, kernel `7.2.4-cachyos-lto`, and rootless Podman 5.8.7.
+The host `docker` command was a Podman alias, not Docker Engine. Test storage and the API
+socket stayed in a private temporary root. No existing container storage or services changed.
+Go 1.27.0 and Python 3.11.15 stayed in that root. Node 24.20.0 came from the existing Nix store.
+The npm lock supplied Wrangler 4.136.3 and Containers SDK 0.3.7.
+
+A test-local CLI wrapper removed `--provenance=false` and copied the stdin Dockerfile to a temporary file.
+Podman rejected that Docker flag and could not reopen Node's stdin socket through `/dev/stdin`.
+An isolated registry configuration resolved short image names through `docker.io`.
+These changes did not alter the fixture Dockerfile, application, or stock sidecar image.
+This run is not Docker Engine certification.
+
+The stock image digest was
+`sha256:0ef6716c52430096900b150d84a3302057d6cd2319dae7987128c85d0733e3c8`.
+The kernel had socket modules on disk and automatically loaded them during the container run.
+No explicit module-management command ran. No ingress-only substitute ran on t1.
+Workerd reported a rootless gateway-bind fallback to loopback. The fixture made no outbound requests,
+so stock image startup does not prove egress DNS or TLS interception.
+
+The unchanged HTTP suite passed its first five groups, including JWT crypto, SSE bytes,
+upstream cancellation, and active-stream idle protection. Group six failed on restart:
+
+```text
+Create container failed with [500] ... the container name ... is already in use
+503 !== 200
+```
+
+The failure reproduced. Diagnostic copies with one-second and twelve-second waits after
+the stopped state also failed. Those copies were removed. The original test assertion remains unchanged.
+The full seven-group suite did not pass. A separate readiness-fault request returned 503
+with zero leases, but the full suite did not reach group seven. The precise SDK/workerd/Podman
+compatibility cause remains unresolved. A supported Docker Engine rerun remains a local validation gate.
+
+The original 12 Node tests, TypeScript check, and both Worker dry-runs passed on t1.
+The additional supervisor tests cover collisions, environment isolation, SIGINT, SIGTERM, and child failure.
+The PostgreSQL migration/restricted-role test and Codex/Headroom race tests passed against disposable PostgreSQL 17.6.
+The Python mock suite passed five tests and skipped its optional official compressor test.
+No provider credentials, remote deployment, paid harness, or Namespace resources were used.
+
 ## Reproduce in this orb
 
 Prerequisites: the pinned npm dependencies, Docker with Buildx and a default bridge, and Amp's

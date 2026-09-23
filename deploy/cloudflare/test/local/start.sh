@@ -4,6 +4,10 @@ set -euo pipefail
 root=$(realpath "$(dirname "$0")/../..")
 mode=${1:-stock}
 [[ $mode == stock || $mode == --ingress-fixture ]] || exit 2
+if [[ ${2:-} == --process ]]; then
+  [[ $mode == stock ]] || { echo 'Process supervision currently supports stock transport only.' >&2; exit 2; }
+  exec node "$root/test/local/process.mjs"
+fi
 docker network inspect bridge >/dev/null
 home=$(mktemp -d /tmp/bifrost-wrangler-home.XXXXXX)
 mkdir -p "$home/.docker/cli-plugins"
