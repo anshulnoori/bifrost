@@ -266,6 +266,20 @@ in {
     };
     systemd.services.caddy.serviceConfig.LimitCORE = 0;
 
+    # A stable TailVIP/DNS identity, independent of the Oracle node hostname.
+    # Service endpoints are tailnet-only; Funnel below uses the node identity.
+    systemd.services.bifrost-inference-serve = {
+      description = "Tailnet-only ai service inference";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "tailscaled.service" "caddy.service" "bifrost.service" ];
+      requires = [ "tailscaled.service" "caddy.service" "bifrost.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=443 http://127.0.0.1:8081";
+        ExecStop = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=443 off";
+      };
+    };
     systemd.services.bifrost-admin-serve = {
       description = "Tailnet-only Bifrost administration";
       wantedBy = [ "multi-user.target" ];
@@ -274,8 +288,8 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${pkgs.tailscale}/bin/tailscale serve --bg --https=8443 http://127.0.0.1:8082";
-        ExecStop = "${pkgs.tailscale}/bin/tailscale serve --https=8443 off";
+        ExecStart = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=8443 http://127.0.0.1:8082";
+        ExecStop = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=8443 off";
       };
     };
     systemd.services.bifrost-inference-funnel = lib.mkIf cfg.publicInference {

@@ -6,9 +6,17 @@
     {
       "src": ["autogroup:admin"],
       "dst": ["tag:bifrost"],
-      "ip": ["tcp:22", "tcp:8443"]
+      "ip": ["tcp:22"]
+    },
+    {
+      "src": ["autogroup:admin"],
+      "dst": ["svc:ai"],
+      "ip": ["tcp:443", "tcp:8443"]
     }
   ],
+  "autoApprovers": {
+    "services": { "svc:ai": ["tag:bifrost"] }
+  },
   "nodeAttrs": [
     { "target": ["tag:bifrost"], "attr": ["funnel"] }
   ]

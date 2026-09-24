@@ -6,16 +6,21 @@ This profile is not a live deployment or a complete GPU/cache release.
 ## Network boundary
 
 ```text
-Internet -> Tailscale Funnel :443 -> Caddy 127.0.0.1:8081 -> Bifrost 127.0.0.1:8080
-Tailnet  -> Tailscale Serve :8443 -> Caddy 127.0.0.1:8082 -> same Bifrost
+Internet -> node Funnel :443    -> Caddy 127.0.0.1:8081 -> Bifrost 127.0.0.1:8080
+Tailnet  -> svc:ai HTTPS :443   -> same inference-only Caddy listener
+Tailnet  -> svc:ai HTTPS :8443  -> Caddy 127.0.0.1:8082 -> same Bifrost
                                                           |
                                                           +-> Neon (verified TLS)
 Local cache clients -> authenticated Valkey 127.0.0.1:6379
 ```
 
-Funnel provides public HTTPS on the node's `*.ts.net` hostname. Caddy provides the route and header boundary, not public TLS.
-Admin uses the same hostname on port 8443, through private Serve. No admin route exists on the public listener.
-The OIDC callback must use the exact private origin: `https://NODE.TAILNET.ts.net:8443/api/session/oidc/callback`.
+The private Tailscale Service is `svc:ai`, with inference on HTTPS port 443 and admin on port 8443.
+The requested hostname is `ai.silverside-mongoose.ts.net`, but runner `t1` reports the tailnet suffix `mongoose-silverside.ts.net`.
+`ai.mongoose-silverside.ts.net` already resolves there. Confirm the intended tailnet and existing name ownership before creating or reusing the Service.
+Funnel provides public HTTPS on the node's separate `*.ts.net` hostname. Its documented CLI has no `--service` flag.
+Do not assume the Service hostname can become a public Funnel hostname. Public activation remains a separate step.
+Caddy provides the route and header boundary, not public TLS. No admin route exists on its inference listener.
+The OIDC callback must use the confirmed Service hostname: `https://ai.<confirmed-tailnet>.ts.net:8443/api/session/oidc/callback`.
 The browser must belong to the tailnet. Bifrost still verifies its own session or OIDC login.
 
 Public inference accepts only POST `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`.
@@ -52,9 +57,10 @@ This repository does not overwrite disks, invent device names, or configure an O
 
 4. Supply runtime secret files through the host's secret manager.
 5. Build the configuration before switching the host.
-6. Enroll the dedicated node in Tailscale through an owner-operated login.
-7. Merge the example tailnet policy, then test its effective permissions.
-8. Restart `bifrost-admin-serve` after enrollment.
+6. Enroll the dedicated node in Tailscale with the `tag:bifrost` identity. Tailscale Services requires a tagged host.
+7. In the Tailscale Services console, define `ai` with endpoints `tcp:443` and `tcp:8443`.
+8. Merge the example tailnet policy, then test its effective permissions. Approve the host advertisement manually or through the scoped auto-approver.
+9. Restart `bifrost-admin-serve` and `bifrost-inference-serve` after enrollment.
 
 The example policy permits tailnet administrators. Existing wildcard grants can permit other members too.
 For owner-only access, replace the source group with the owner's identity in the private policy.
@@ -222,7 +228,8 @@ Before activation, validate these host conditions:
 - The native ARM binary loads the matching Headroom plugin.
 - The restricted Neon role starts after migration and survives a restart.
 - The private dashboard and native OIDC callback work from an authorized tailnet client.
-- A device outside the tailnet cannot connect to admin port 8443.
+- The `svc:ai` advertisement is approved and resolves to the confirmed `ai` Service hostname from a tailnet client.
+- A device outside the tailnet cannot connect to the Service or its admin port 8443.
 - The node has no other public Funnel mappings.
 - Invalid virtual keys fail on the actual gateway.
 - Valid synthetic inference streams and cancellation pass through Funnel.
