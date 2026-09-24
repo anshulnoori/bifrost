@@ -223,7 +223,7 @@ in {
         cmd = [ "/etc/valkey.conf" ];
         volumes = [ "/run/bifrost-valkey/valkey.conf:/etc/valkey.conf:ro" ];
         extraOptions = [ "--network=host" "--read-only" "--cap-drop=ALL" "--memory=3g"
-          "--security-opt=no-new-privileges" "--tmpfs=/data:uid=999,gid=999,mode=700" ];
+          "--security-opt=no-new-privileges" "--mount=type=tmpfs,destination=/data,tmpfs-mode=0700,U=true" ];
       };
     };
     systemd.services.podman-bifrost-valkey = {

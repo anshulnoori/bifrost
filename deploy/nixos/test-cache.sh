@@ -10,12 +10,18 @@ esac
 engine="${CONTAINER_ENGINE:-docker}"
 name="bifrost-cache-test-$$"
 trap '"$engine" rm -f "$name" >/dev/null 2>&1 || true' EXIT
+if [[ ${engine##*/} == podman ]]; then
+  data_mount=(--mount=type=tmpfs,destination=/data,tmpfs-mode=0700,U=true)
+else
+  data_mount=(--tmpfs /data:uid=999,gid=999,mode=700)
+fi
 "$engine" run -d --name "$name" --user 999:999 --read-only --cap-drop ALL \
-  --security-opt no-new-privileges --memory 3g --tmpfs /data:uid=999,gid=999,mode=700 \
+  --security-opt no-new-privileges --memory 3g "${data_mount[@]}" \
   -p 127.0.0.1::6379 --entrypoint valkey-server "valkey/valkey-bundle@sha256:$digest" \
   --loadmodule /usr/lib/valkey/libsearch.so --bind 0.0.0.0 \
   --requirepass synthetic-local-only --save '' --appendonly no \
   --maxmemory 2gb --maxmemory-policy allkeys-lfu >/dev/null
+"$engine" exec "$name" sh -c 'test "$(stat -c "%u:%g:%a" /data)" = "999:999:700"'
 export REDIS_ADDR
 REDIS_ADDR=$("$engine" port "$name" 6379/tcp)
 export REDIS_PASSWORD=synthetic-local-only
