@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 MAX_BODY = 4 * 1024 * 1024
-VERSION = "headroom-ai/0.38.0; policy=isolated-marker-free-cpu-v1"
+VERSION = "headroom-ai/0.38.0"
 
 
 def validate(body):
@@ -61,8 +61,29 @@ async def isolated_compress(raw):
                 await process.wait()
 
 
-def create_service(compressor=isolated_compress):
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+async def compress_until_disconnect(request, raw, compressor):
+    async def disconnected():
+        # The complete request body has already been consumed. Read the next
+        # ASGI event directly; is_disconnected() can swallow task cancellation.
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    work = asyncio.create_task(compressor(raw))
+    watcher = asyncio.create_task(disconnected())
+    try:
+        done, _ = await asyncio.wait({work, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        if watcher in done:
+            return None
+        return await work
+    finally:
+        for task in (work, watcher):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(work, watcher, return_exceptions=True)
+
+
+def create_service(compressor=isolated_compress, *, policy="isolated-marker-free-cpu-v1", lifespan=None):
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     slots = asyncio.Semaphore(1)
 
     @app.middleware("http")
@@ -85,7 +106,7 @@ def create_service(compressor=isolated_compress):
 
     @app.get("/version")
     async def version():
-        return {"version": VERSION, "gpu_policy": "disabled-unmeasured"}
+        return {"version": VERSION, "policy": policy, "performance": "unmeasured"}
 
     @app.post("/v1/compress")
     async def compress(request: Request):
@@ -111,7 +132,9 @@ def create_service(compressor=isolated_compress):
         started = time.monotonic()
         try:
             async with slots:
-                output = await compressor(bytes(raw))
+                output = await compress_until_disconnect(request, bytes(raw), compressor)
+            if output is None:
+                return Response(status_code=499)
             data = json.loads(output)
             if data.get("ccr_hashes") or data.get("obligations"):
                 raise ValueError()
@@ -131,7 +154,7 @@ def create_service(compressor=isolated_compress):
             return JSONResponse({"messages": messages, "tokens_before": before, "tokens_after": after,
                                  "ccr_hashes": [], "obligations": []}, headers={
                                      "x-compression-ms": str(round((time.monotonic() - started) * 1000)),
-                                     "x-headroom-policy": "isolated-marker-free-cpu-v1"})
+                                     "x-headroom-policy": policy})
         except asyncio.TimeoutError:
             return Response(status_code=504)
         except (ValueError, KeyError, TypeError):

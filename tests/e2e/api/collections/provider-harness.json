@@ -158209,6 +158209,51 @@
           ]}}]
         }
       ]
+    },
+    {
+      "name": "105. Virtual-key cache isolation (vk-cache-isolation)",
+      "description": "Requires semantic_cache scope_by_virtual_key=true, two active OpenAI virtual keys in cacheVirtualKeyA/cacheVirtualKeyB, and Valkey Search. Run all three requests in order. The first and third call the provider; the second must hit the first key's cache.",
+      "item": [
+        {
+          "name": "OpenAI tenant A cache write (vk-cache-isolation)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{cacheVirtualKeyA}}"},{"key":"x-bf-cache-key","value":"isolation-{{pcNonce}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only OK.\"}],\"temperature\":0}"},
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Cold tenant A misses cache', function () { pm.expect(pm.response.json().extra_fields.cache_debug.cache_hit).to.equal(false); });"
+          ]}}]
+        },
+        {
+          "name": "OpenAI tenant A cache read (vk-cache-isolation)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{cacheVirtualKeyA}}"},{"key":"x-bf-cache-key","value":"isolation-{{pcNonce}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only OK.\"}],\"temperature\":0}"},
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {"listen":"prerequest","script":{"type":"text/javascript","exec":["setTimeout(function () {}, 500);"]}},
+            {"listen":"test","script":{"type":"text/javascript","exec":[
+              "pm.test('Warm tenant A hits cache', function () { pm.expect(pm.response.json().extra_fields.cache_debug.cache_hit).to.equal(true); });"
+            ]}}
+          ]
+        },
+        {
+          "name": "OpenAI tenant B must miss tenant A cache (vk-cache-isolation)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{cacheVirtualKeyB}}"},{"key":"x-bf-cache-key","value":"isolation-{{pcNonce}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only OK.\"}],\"temperature\":0}"},
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('A shared caller key does not cross the authenticated tenant boundary', function () { pm.expect(pm.response.json().extra_fields.cache_debug.cache_hit).to.equal(false); });"
+          ]}}]
+        }
+      ]
     }
   ]
 }

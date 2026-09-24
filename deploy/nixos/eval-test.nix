@@ -9,7 +9,11 @@ let
         nixpkgs.hostPlatform = "aarch64-linux";
         # Evaluate topology without building a binary on this architecture.
         services.bifrost.package = lib.mkForce pkgs.hello;
-        services.bifrostDeployment = { enable = true; publicInference = public; };
+        services.bifrostDeployment = {
+          enable = true;
+          publicInference = public;
+          headroomEndpoint = if public then "https://synthetic-headroom.modal.run" else null;
+        };
         system.stateVersion = "26.05";
         boot.loader.grub.enable = false;
         fileSystems."/" = { device = "/dev/disk/by-label/nixos"; fsType = "ext4"; };
@@ -20,9 +24,14 @@ let
   public = (evaluate true).config;
 in
 assert private.services.bifrost.host == "127.0.0.1";
-assert private.services.redis.servers.bifrost.bind == "127.0.0.1";
-assert private.services.redis.servers.bifrost.settings.maxmemory == "2gb";
-assert private.services.redis.servers.bifrost.settings.save == "\"\"";
+assert private.virtualisation.oci-containers.containers.bifrost-valkey.ports == [];
+assert builtins.elem "--network=host" private.virtualisation.oci-containers.containers.bifrost-valkey.extraOptions;
+assert private.virtualisation.oci-containers.containers.bifrost-valkey.user == "999:999";
+assert private.services.bifrost.settings.vector_store.config.addr == "127.0.0.1:6379";
+assert (builtins.head private.services.bifrost.settings.plugins).config.scope_by_virtual_key;
+assert !(builtins.elemAt private.services.bifrost.settings.plugins 1).config.enabled;
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.enabled;
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.timeout_ms == 500;
 assert private.systemd.services.bifrost-migrate.wantedBy == [];
 assert private.services.bifrost.settings.client.enforce_auth_on_inference;
 assert private.services.bifrost.settings.governance.auth_config.is_enabled;

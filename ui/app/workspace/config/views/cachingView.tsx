@@ -84,6 +84,7 @@ const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig =
 		cache_by_provider: config.cache_by_provider,
 		vector_store_namespace: config.vector_store_namespace?.trim() || undefined,
 		default_cache_key: config.default_cache_key?.trim() || undefined,
+		scope_by_virtual_key: config.scope_by_virtual_key,
 	};
 	if (mode === "direct") {
 		return { ...base, dimension: 1 } as CacheConfig;

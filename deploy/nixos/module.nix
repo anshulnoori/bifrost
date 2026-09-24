@@ -1,6 +1,10 @@
 { config, lib, pkgs, ... }:
 let
   cfg = config.services.bifrostDeployment;
+  valkeyImage = "docker.io/valkey/valkey-bundle@" + {
+    aarch64-linux = "sha256:cc16e0c672ffdfdbee4581e146d41086f408468489e21b8625f877a332b998ba";
+    x86_64-linux = "sha256:203692cbb7d59887cd7723f88cefa0c470d74037e3f82024b17cfac31345d4f5";
+  }.${pkgs.stdenv.hostPlatform.system};
   db = {
     host = "env.NEON_HOST";
     port = "5432";
@@ -32,13 +36,21 @@ in {
       description = "Separate owner-only direct Neon URL for the manual migration unit.";
     };
     publicInference = lib.mkEnableOption "public Funnel after private validation";
+    headroomEndpoint = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Authenticated Modal HTTPS origin, set only after CPU/CUDA benchmark acceptance.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
     assertions = map (path: {
       assertion = lib.hasPrefix "/" path && !(lib.hasPrefix "/nix/store/" path);
       message = "Bifrost deployment secrets must be runtime absolute paths outside /nix/store.";
-    }) [ cfg.environmentFile cfg.redisPasswordFile cfg.migrationEnvironmentFile ];
+    }) [ cfg.environmentFile cfg.redisPasswordFile cfg.migrationEnvironmentFile ] ++ [ {
+      assertion = cfg.headroomEndpoint == null || builtins.match "https://[a-zA-Z0-9-]+\\.modal\\.run" cfg.headroomEndpoint != null;
+      message = "Headroom requires a Modal HTTPS origin without credentials, path or query.";
+    } ];
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
     services.tailscale.enable = true;
@@ -74,27 +86,78 @@ in {
           admin_username = "owner";
           admin_password = "env.BIFROST_ADMIN_PASSWORD";
         };
-        # GPU/private Modal and Search compatibility are release gates, not defaults.
+        vector_store = {
+          enabled = true;
+          type = "redis";
+          config = { addr = "127.0.0.1:6379"; password = "env.VALKEY_PASSWORD"; };
+        };
+        # Direct caching is enabled. Semantic embeddings and GPU Modal need validation.
         plugins = [ {
+          name = "semantic_cache";
+          enabled = true;
+          config = {
+            provider = "";
+            dimension = 1;
+            ttl = "5m";
+            default_cache_key = "deployment-v1";
+            scope_by_virtual_key = true;
+            vector_store_namespace = "BifrostScopedCacheV1";
+          };
+        } {
           name = "headroom";
           path = "${config.services.bifrost.package}/lib/headroom.so";
           enabled = true;
           placement = "post_builtin";
-          config = { enabled = false; ccr = false; };
+          config = {
+            enabled = cfg.headroomEndpoint != null;
+            endpoint = if cfg.headroomEndpoint == null then "" else cfg.headroomEndpoint;
+            scope = "gateway";
+            ccr = false;
+            token_env = "HEADROOM_PROXY_TOKEN";
+            scope_key_env = "HEADROOM_SCOPE_KEY";
+            modal_key_env = "HEADROOM_MODAL_KEY";
+            modal_secret_env = "HEADROOM_MODAL_SECRET";
+            failure_policy = "open";
+            timeout_ms = 500;
+            min_text_bytes = 4096;
+            metrics_address = if cfg.headroomEndpoint == null then "" else "127.0.0.1:9909";
+            metrics_token_env = "HEADROOM_METRICS_TOKEN";
+            retention_seconds = 900;
+          };
         } ];
       };
     };
     systemd.services.bifrost = {
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
-      preStart = lib.mkBefore ''
+      after = [ "network-online.target" "podman-bifrost-valkey.service" ];
+      wants = [ "network-online.target" "podman-bifrost-valkey.service" ];
+      preStart = lib.mkBefore (''
         for name in NEON_HOST NEON_USER NEON_PASSWORD NEON_DATABASE BIFROST_ENCRYPTION_KEY BIFROST_ADMIN_PASSWORD; do
           if [ -z "''${!name:-}" ]; then echo "Required deployment setting missing" >&2; exit 1; fi
         done
         [[ "$NEON_HOST" == *-pooler.*.neon.tech ]] || exit 1
         [[ ''${#BIFROST_ENCRYPTION_KEY} -ge 32 && ''${#BIFROST_ADMIN_PASSWORD} -ge 32 ]] || exit 1
-      '';
+      '' + lib.optionalString (cfg.headroomEndpoint != null) ''
+        for name in HEADROOM_PROXY_TOKEN HEADROOM_SCOPE_KEY HEADROOM_METRICS_TOKEN HEADROOM_MODAL_KEY HEADROOM_MODAL_SECRET; do
+          if [ -z "''${!name:-}" ]; then echo "Required Headroom setting missing" >&2; exit 1; fi
+        done
+        [[ ''${#HEADROOM_PROXY_TOKEN} -ge 32 && ''${#HEADROOM_SCOPE_KEY} -ge 32 && ''${#HEADROOM_METRICS_TOKEN} -ge 32 ]] || exit 1
+      '');
       serviceConfig = {
+        LoadCredential = [ "valkey-password:${cfg.redisPasswordFile}" ];
+        ExecStart = lib.mkForce (pkgs.writeShellScript "bifrost-start" ''
+          set -eu
+          export VALKEY_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/valkey-password")"
+          ready=false
+          for attempt in {1..30}; do
+            if VALKEYCLI_AUTH="$VALKEY_PASSWORD" ${pkgs.valkey}/bin/valkey-cli -e -h 127.0.0.1 FT._LIST >/dev/null 2>&1; then
+              ready=true; break
+            fi
+            sleep 1
+          done
+          "$ready" || exit 1
+          exec ${config.services.bifrost.package}/bin/bifrost-http \
+            -host 127.0.0.1 -port 8080 -app-dir ${lib.escapeShellArg config.services.bifrost.stateDir} -log-level error
+        '');
         Restart = "on-failure";
         RestartSec = 5;
         TimeoutStopSec = 45;
@@ -125,24 +188,51 @@ in {
       };
     };
 
-    services.redis = {
-      package = pkgs.valkey;
-      servers.bifrost = {
-        enable = true;
-        bind = "127.0.0.1";
-        port = 6379;
-        openFirewall = false;
-        requirePassFile = cfg.redisPasswordFile;
-        # Disposable cache only. Durable learned memory must live elsewhere.
-        save = [];
-        appendOnly = false;
-        settings = {
-          maxmemory = "2gb";
-          maxmemory-policy = "allkeys-lfu";
-        };
+    # Official multi-architecture bundle: Valkey 9.1.1 + Search 1.2.1.
+    # Only Search is loaded; no JSON, LDAP or Bloom modules are needed.
+    virtualisation.oci-containers = {
+      backend = "podman";
+      containers.bifrost-valkey = {
+        image = valkeyImage;
+        user = "999:999";
+        entrypoint = "valkey-server";
+        cmd = [ "/etc/valkey.conf" ];
+        volumes = [ "/run/bifrost-valkey/valkey.conf:/etc/valkey.conf:ro" ];
+        extraOptions = [ "--network=host" "--read-only" "--cap-drop=ALL" "--memory=3g"
+          "--security-opt=no-new-privileges" "--tmpfs=/data:uid=999,gid=999,mode=700" ];
       };
     };
-    systemd.services.redis-bifrost.serviceConfig.MemoryMax = "3G";
+    systemd.services.podman-bifrost-valkey = {
+      preStart = lib.mkBefore ''
+        set -eu
+        password="$(cat "$CREDENTIALS_DIRECTORY/valkey-password")"
+        [[ "$password" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Valkey password must be 64 hex characters" >&2; exit 1; }
+        umask 077
+        {
+          printf 'requirepass %s\n' "$password"
+          cat <<'EOF'
+        bind 127.0.0.1
+        port 6379
+        protected-mode yes
+        loadmodule /usr/lib/valkey/libsearch.so
+        save ""
+        appendonly no
+        maxmemory 2gb
+        maxmemory-policy allkeys-lfu
+        EOF
+        } > /run/bifrost-valkey/valkey.conf
+        chown 999:999 /run/bifrost-valkey/valkey.conf
+      '';
+      serviceConfig = {
+        LoadCredential = [ "valkey-password:${cfg.redisPasswordFile}" ];
+        RuntimeDirectory = "bifrost-valkey";
+        RuntimeDirectoryMode = "0700";
+        MemoryMax = "3G";
+        LimitCORE = 0;
+        StandardOutput = "null";
+        StandardError = "null";
+      };
+    };
 
     services.caddy = {
       enable = true;

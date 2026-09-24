@@ -1,10 +1,119 @@
 package semanticcache
 
 import (
+	"context"
+	"encoding/json"
+	"os"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 )
+
+func TestVirtualKeyCacheValkey(t *testing.T) {
+	if os.Getenv("BIFROST_TEST_VALKEY") != "1" {
+		t.Skip("requires disposable Valkey Search, BIFROST_TEST_VALKEY=1")
+	}
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
+		Enabled: true, Type: vectorstore.VectorStoreTypeRedis, Config: getRedisConfigFromEnv(),
+	}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close(context.Background(), "ScopedCacheTest")
+	if err := store.DeleteNamespace(context.Background(), "ScopedCacheTest"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store.DeleteNamespace(context.Background(), "ScopedCacheTest"); err != nil {
+			t.Error(err)
+		}
+	}()
+	p, err := Init(context.Background(), &Config{
+		Dimension: 1, ScopeByVirtualKey: true, DefaultCacheKey: "shared",
+		VectorStoreNamespace: "ScopedCacheTest",
+	}, logger, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Cleanup()
+	request := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("Synthetic private response", 0, 10)}
+	ctx := newBaseTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "tenant-a")
+	_, hit, err := p.PreLLMHook(ctx, request)
+	if err != nil || hit != nil {
+		t.Fatalf("initial miss: hit=%v err=%v", hit != nil, err)
+	}
+	response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ID: "private-a", Choices: []schemas.BifrostResponseChoice{{Index: 0,
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("only-a")},
+			}},
+		}}, ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: schemas.OpenAI, OriginalModelRequested: request.ChatRequest.Model, RequestType: schemas.ChatCompletionRequest,
+		},
+	}}
+	if _, _, err := p.PostLLMHook(ctx, response, nil); err != nil {
+		t.Fatal(err)
+	}
+	WaitForCache(p)
+	for _, id := range []string{"tenant-a", "tenant-b", ""} {
+		c := newBaseTestContext()
+		c.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, id)
+		_, hit, err := p.PreLLMHook(c, request)
+		if err != nil || (hit != nil) != (id == "tenant-a") {
+			t.Fatalf("tenant %q: hit=%v err=%v", id, hit != nil, err)
+		}
+		if hit != nil && *hit.Response.ChatResponse.Choices[0].Message.Content.ContentStr != "only-a" {
+			t.Fatal("cached response content changed")
+		}
+	}
+}
+
+func TestVirtualKeyCacheScope(t *testing.T) {
+	var config Config
+	if err := json.Unmarshal([]byte(`{"default_cache_key":"shared","scope_by_virtual_key":true}`), &config); err != nil {
+		t.Fatal(err)
+	}
+	plugin := &Plugin{config: &config}
+	resolve := func(id interface{}, key string) (string, bool) {
+		ctx := newBaseTestContext()
+		if id != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, id)
+		}
+		ctx.SetValue(CacheKey, key)
+		return plugin.resolveCacheKey(ctx)
+	}
+	a, ok := resolve("vk-a", "")
+	if !ok || a == "shared" {
+		t.Fatal("authenticated cache key must be scoped")
+	}
+	b, ok := resolve("vk-b", "")
+	if !ok || a == b {
+		t.Fatal("different authenticated virtual keys must not share cached responses")
+	}
+	again, _ := resolve("vk-a", "shared")
+	if again != a {
+		t.Fatal("same stable ID and effective key must retain the same namespace")
+	}
+	forged, _ := resolve("vk-b", a)
+	if forged == a {
+		t.Fatal("caller-supplied cache key must not impersonate another virtual key")
+	}
+	for _, id := range []interface{}{nil, "", 12} {
+		if key, ok := resolve(id, "caller-key"); ok || key != "" {
+			t.Fatal("missing or malformed authenticated identity must bypass caching")
+		}
+	}
+	left, _ := resolve("a:b", "c")
+	right, _ := resolve("a", "b:c")
+	if left == right {
+		t.Fatal("ambiguous concatenation must not collide")
+	}
+}
 
 // TestDefaultCacheKey_CachesWithoutPerRequestKey verifies that when DefaultCacheKey
 // is configured, requests without an explicit cache key are cached automatically.

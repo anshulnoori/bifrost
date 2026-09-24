@@ -5,6 +5,7 @@ package semanticcache
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -38,6 +39,7 @@ type Config struct {
 
 	// Advanced caching behavior
 	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
+	ScopeByVirtualKey            bool   `json:"scope_by_virtual_key,omitempty"`           // Require governance identity and partition cached responses by its stable ID.
 	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
 	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
 	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
@@ -472,13 +474,23 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 // resolveCacheKey returns the per-request cache key (or the configured default)
 // and a bool indicating whether the caller should proceed with caching.
 func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool) {
-	if cacheKey, ok := ctx.Value(CacheKey).(string); ok && cacheKey != "" {
-		return cacheKey, true
+	cacheKey, _ := ctx.Value(CacheKey).(string)
+	if cacheKey == "" {
+		cacheKey = plugin.config.DefaultCacheKey
 	}
-	if plugin.config.DefaultCacheKey != "" {
-		return plugin.config.DefaultCacheKey, true
+	if cacheKey == "" {
+		return "", false
 	}
-	return "", false
+	if plugin.config.ScopeByVirtualKey {
+		id, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
+		if !ok || id == "" {
+			return "", false
+		}
+		// Length-prefixing makes the tuple unambiguous even for caller-supplied keys.
+		// Never use the raw credential: rotating a key preserves its stable ID.
+		cacheKey = fmt.Sprintf("vk-%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s%s", len(id), id, cacheKey))))
+	}
+	return cacheKey, true
 }
 
 // resolveCacheTypes returns whether direct and semantic search paths should

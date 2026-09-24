@@ -75,8 +75,9 @@ The root-owned runtime environment file contains these names:
 
 Optional OIDC variables follow [dashboard-oidc.md](../dashboard-oidc.md).
 Never put secret values in the flake, CLI arguments, Git, screenshots, or Nix store.
-The Valkey password file must contain only its password. Both files require mode 0600.
-The NixOS Redis module reads its password file through its privileged pre-start process.
+The Valkey password file must contain exactly 64 hexadecimal characters, optionally followed by a newline.
+Both files require mode 0600. Systemd credentials supply the same password to Valkey and Bifrost.
+Passwords do not appear in process arguments or the Nix store.
 
 The separate migration environment file contains `NEON_DATABASE_URL` for the migrator role.
 It requires the direct endpoint, not the pooled endpoint, with `sslmode=verify-full`.
@@ -94,22 +95,64 @@ Valkey uses `maxmemory 2gb`, LFU eviction, and a 3 GiB systemd memory limit.
 Bifrost uses a 4 GiB soft limit and a 6 GiB hard limit.
 These limits are initial budgets, not measured capacity guarantees.
 
-This profile supplies plain Valkey, not a verified Search module. Bifrost does not yet use it for semantic caching.
-Search module packaging, ARM compatibility, and Bifrost vector-query tests remain required work.
+NixOS manages a pinned official Valkey Bundle container through Podman. The bundle contains Valkey 9.1.1 and Search 1.2.1.
+Only Search loads. The container runs as UID 999, without capabilities, with a read-only root and no published ports.
+Host networking permits only its configured loopback listener. Separate ARM64 and AMD64 image digests are pinned in the module.
+Bifrost waits for authenticated Search readiness before starting.
+
+Exact response caching is enabled with a five-minute TTL. Cache keys include the authenticated virtual-key ID.
+Caller-supplied cache labels cannot cross that boundary; requests without a governance identity bypass the cache.
+Codex still bypasses this cache: a hit must not bypass subscription admission or survive an account disconnect.
+Embedding-based semantic matching is not yet enabled. It requires an explicit embedding model and matching index dimension.
+Changing dimension requires a new namespace; changing embedding models also requires a new namespace even at the same dimension.
+The SDK must register governance before semantic cache when using `scope_by_virtual_key`.
 Disposable cache data has no disk persistence. Learned memory needs a separate durable storage policy.
-The profile does not silently enable an incompatible cache backend.
+Valkey's vector indexes consume memory in addition to cache payloads. Monitor RSS and evictions before increasing the 2 GiB budget.
 
 ## Modal and managed-service privacy
 
-The existing Headroom plugin builds with the gateway but remains disabled in this profile.
-The old public Modal ASGI facade does not meet a strict tailnet-only requirement.
-The release needs either tailnet networking inside Modal or a private Modal function with a local authenticated bridge.
-The latter still uses Modal's authenticated control plane, rather than tailnet transport.
-GPU-capable compression, CUDA dependencies, warm/cold benchmarks, and CPU fallback tests remain unfinished.
+The Headroom plugin builds with the gateway. Set `services.bifrostDeployment.headroomEndpoint` only after validating the selected Modal endpoint.
+Human administration remains tailnet-only. The owner permits authenticated outbound public connections to managed services.
+Modal service-to-service requests therefore need authentication, but do not require a browser-accessible admin endpoint.
+The existing ASGI facade requires Modal proxy authentication and a separate service credential; it exposes no dashboard.
 
-Neon is also outside the tailnet. TLS and passwords are not tailnet network isolation.
-Before production, approve an appropriate Neon network restriction or an explicit managed-service exception.
-A VM egress-IP allowlist is narrower than public access, but it is not tailnet identity enforcement.
+`deploy/modal/headroom/app.py` defines separate CPU and L4 GPU endpoints, each with at most two containers and scale-to-zero.
+The GPU image pins CUDA PyTorch dependencies and both Kompress and ModernBERT model revisions.
+Startup explicitly selects PyTorch and CUDA, verifies a GPU forward pass, then serves requests. ONNX CPU fallback cannot masquerade as CUDA.
+A killable subprocess retains model weights between requests. It receives no Modal or service credentials and uses offline model files.
+Cancellation discards that worker. The next request starts a fresh worker. Request and response caches, CCR, and learned memory remain disabled.
+Those features require tenant-scoped persistence and retrieval support that the current bridge does not provide.
+
+Add these runtime environment variables when enabling Headroom:
+
+- `HEADROOM_PROXY_TOKEN`: Service bearer shared with Modal's `bifrost-headroom` secret.
+- `HEADROOM_SCOPE_KEY`: Independent HMAC secret for request scoping.
+- `HEADROOM_METRICS_TOKEN`: Independent credential for loopback-only metrics.
+- `HEADROOM_MODAL_KEY` and `HEADROOM_MODAL_SECRET`: Modal **proxy auth tokens**, not account API credentials.
+
+The first three values must each contain at least 32 characters. Supply them through the secret manager, never shell arguments.
+The gateway compresses only eligible tool text of at least 4 KiB. Its 500 ms timeout preserves the original input on failure or cold start.
+Metrics remain on loopback port 9909. To disable compression, set `headroomEndpoint = null` and restart the gateway.
+To use the CPU alternative, select its separately deployed origin. This is an operator rollback, not an automatic cross-endpoint retry.
+
+The following commands create remote resources and incur charges. Run them only after approving the deployment and supplying credentials privately:
+
+```bash
+uv run --with modal==1.5.5 modal deploy deploy/modal/headroom/app.py
+# Set HEADROOM_BENCH_URL privately to the corresponding endpoint for each run.
+python deploy/modal/headroom/benchmark.py --live --backend cpu --samples 20
+python deploy/modal/headroom/benchmark.py --live --backend cuda --samples 20
+```
+
+Each benchmark run sends 60 synthetic requests. Reports contain timings and counts, not prompts or credentials.
+Run from the Oracle VM to include network latency. Record confirmed cold starts separately; the script cannot infer Modal placement.
+Initial acceptance targets are warm p95 below 200 ms, at least 20% token reduction, and no loss of required facts in representative fixtures.
+Compare task success and full provider latency against bypass and CPU before selecting CUDA. A single retained synthetic fact is insufficient.
+No GPU latency improvement, GPU runtime success, or net cost saving has been measured in the orb.
+
+Neon also uses the approved authenticated outbound path, with verified TLS and restricted database roles.
+Use an egress-IP allowlist when supported by the chosen Neon plan. This does not replace database authentication.
+Do not expose a local database proxy, Modal management proxy, or credentials through Funnel.
 
 ## Validation before public activation
 
@@ -120,6 +163,8 @@ nix build .#bifrost-stack
 nix eval --impure --json --file deploy/nixos/eval-test.nix
 nix develop .#deployment --command node --test deploy/nixos/edge.test.mjs
 BIFROST_PACKAGE=$(readlink -f result) nix develop .#deployment --command node --test deploy/nixos/package.test.mjs
+# Requires Docker or CONTAINER_ENGINE=podman and Go from the project toolchain.
+BIFROST_PACKAGE=$(readlink -f result) bash deploy/nixos/test-cache.sh
 ```
 
 The edge test requires Caddy 2.11.4 from the locked nixpkgs input in `PATH`, or its path in `CADDY`.
@@ -131,6 +176,22 @@ The package smoke test passed authentication rejection, UI asset delivery, and c
 All seven edge tests passed, including streaming, cancellation, credential filtering, and both sides of the body-size limit.
 The ARM NixOS system evaluated successfully. This is not an ARM boot or runtime test.
 The Headroom race suite also passed. No provider credentials or live cloud resources participated.
+
+The cache suite starts and removes a disposable pinned Valkey container. It tests index dimensions, deletion, filters, vector queries,
+and virtual-key isolation through the plugin and actual gateway. It never uses a shared cache or paid provider.
+The wire harness also includes `vk-cache-isolation`; it requires two owner-supplied test virtual keys and an enabled scoped cache.
+The index-dimension guard is startup-only and is covered by direct adapter tests rather than an inference request.
+
+The cache editor preserves `scope_by_virtual_key` when saving other fields. Mock-only browser tests cover both values:
+
+```bash
+# Run from tests/e2e with the UI development server already running.
+BASE_URL=http://127.0.0.1:3107 npx playwright test --config playwright.cache.config.ts
+```
+
+The Modal application imports with SDK 1.5.5 without authentication or remote deployment.
+Twelve Python tests cover facade authentication, body limits, CPU fidelity, disconnect cleanup, and mocked CUDA selection.
+These tests do not validate a CUDA driver, the GPU image, model downloads, or GPU performance.
 
 Before activation, validate these host conditions:
 

@@ -918,6 +918,12 @@ func vectorDimensionFromFTInfo(reply interface{}) (int, bool) {
 		}
 		rawDimension, ok := ftInfoField(entry, "dim")
 		if !ok {
+			// Valkey Search reports dimensions inside the attribute's index object.
+			if index, exists := ftInfoField(entry, "index"); exists {
+				rawDimension, ok = ftInfoField(index, "dimensions")
+			}
+		}
+		if !ok {
 			continue
 		}
 		if value, ok := toFloat64(rawDimension); ok && value > 0 {
@@ -1595,6 +1601,16 @@ func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) erro
 	// matching this index's prefix, keeping DeleteNamespace consistent with the
 	// collection-deleting semantics of the other vector store backends.
 	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace, "DD").Err(); err != nil {
+		// Valkey Search does not implement DD. Drop the index, then remove only
+		// this namespace's hashes using the same sweep as the missing-index path.
+		if strings.Contains(strings.ToLower(err.Error()), "wrong number of arguments") {
+			dropErr := s.client.Do(ctx, "FT.DROPINDEX", namespace).Err()
+			if dropErr != nil && !strings.Contains(strings.ToLower(dropErr.Error()), "not found in database") {
+				return fmt.Errorf("failed to drop semantic index %s: %w", namespace, dropErr)
+			}
+			s.deleteNamespaceFieldTypes(namespace)
+			return s.deleteNamespaceKeys(ctx, namespace)
+		}
 		// Check if error is "Unknown Index name" - that's OK, index doesn't exist
 		if strings.Contains(strings.ToLower(err.Error()), "unknown index name") {
 			s.deleteNamespaceFieldTypes(namespace)
