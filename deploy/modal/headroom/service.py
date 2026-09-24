@@ -9,22 +9,26 @@ import sys
 import tempfile
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, Response
 
 MAX_BODY = 4 * 1024 * 1024
 VERSION = "headroom-ai/0.38.0"
+GATEWAY = {"can_redrive": False, "can_relay_response": False,
+           "session_affinity": False, "plugin_version": "bifrost-headroom/1"}
+CCR_GATEWAY = {**GATEWAY, "can_redrive": True, "plugin_version": "bifrost-headroom/2"}
 
 
-def validate(body):
+def validate(body, allow_ccr=False):
     if not isinstance(body, dict) or set(body) != {"model", "messages", "config", "gateway"}:
         raise ValueError()
     if not isinstance(body["model"], str) or not 1 <= len(body["model"]) <= 256:
         raise ValueError()
-    if body["config"] != {"protect_recent": 0, "compress_user_messages": False}:
+    config = {"protect_recent": 0, "compress_user_messages": False}
+    ccr = allow_ccr and body["config"] == {**config, "ccr": True}
+    if not ccr and body["config"] != config:
         raise ValueError()
-    if body["gateway"] != {"can_redrive": False, "can_relay_response": False,
-                           "session_affinity": False, "plugin_version": "bifrost-headroom/1"}:
+    if body["gateway"] != (CCR_GATEWAY if ccr else GATEWAY):
         raise ValueError()
     messages = body["messages"]
     if not isinstance(messages, list) or not 1 <= len(messages) <= 256:
@@ -82,7 +86,21 @@ async def compress_until_disconnect(request, raw, compressor):
         await asyncio.gather(work, watcher, return_exceptions=True)
 
 
-def create_service(compressor=isolated_compress, *, policy="isolated-marker-free-cpu-v1", lifespan=None):
+async def read_json(request):
+    if request.headers.get("content-type", "").split(";")[0] != "application/json":
+        raise HTTPException(415)
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > MAX_BODY:
+            raise HTTPException(413)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise HTTPException(400) from None
+
+
+def create_service(compressor=isolated_compress, *, policy="isolated-marker-free-cpu-v1", lifespan=None, features=None, embed=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     slots = asyncio.Semaphore(1)
 
@@ -92,7 +110,12 @@ def create_service(compressor=isolated_compress, *, policy="isolated-marker-free
         provided = request.headers.get("x-headroom-proxy-token", "")
         if len(token) < 32 or not hmac.compare_digest(provided.encode(), token.encode()):
             return Response(status_code=401)
-        if (request.method, request.url.path) not in {("POST", "/v1/compress"), ("GET", "/health"), ("GET", "/version")}:
+        allowed = {("POST", "/v1/compress"), ("GET", "/health"), ("GET", "/version")}
+        if features is not None:
+            allowed.add(("POST", "/v1/tools"))
+        if embed is not None:
+            allowed.update({("POST", "/v1/embeddings"), ("GET", "/v1/models")})
+        if (request.method, request.url.path) not in allowed:
             return Response(status_code=404)
         if request.url.query or request.headers.get("content-encoding"):
             return Response(status_code=400)
@@ -106,7 +129,54 @@ def create_service(compressor=isolated_compress, *, policy="isolated-marker-free
 
     @app.get("/version")
     async def version():
-        return {"version": VERSION, "policy": policy, "performance": "unmeasured"}
+        return {"version": VERSION, "policy": policy, "performance": "unmeasured",
+                "ccr": features is not None, "memory": features is not None, "embeddings": embed is not None}
+
+    @app.get("/v1/models")
+    async def models():
+        return {"object": "list", "data": [{"id": "headroom-minilm-v1", "object": "model", "owned_by": "headroom"}]}
+
+    @app.post("/v1/embeddings")
+    async def embeddings(request: Request):
+        body = await read_json(request)
+        if not isinstance(body, dict) or set(body) - {"model", "input", "encoding_format", "dimensions"} or body.get("model") != "headroom-minilm-v1" or body.get("encoding_format", "float") != "float" or body.get("dimensions", 384) != 384:
+            return Response(status_code=400)
+        texts = body.get("input")
+        if isinstance(texts, str):
+            texts = [texts]
+        if not isinstance(texts, list) or not 1 <= len(texts) <= 32 or any(not isinstance(t, str) or not 1 <= len(t.encode()) <= 32768 for t in texts):
+            return Response(status_code=400)
+        if slots.locked():
+            return Response(status_code=429)
+        try:
+            async with slots:
+                vectors = await compress_until_disconnect(request, texts, embed)
+            if vectors is None:
+                return Response(status_code=499)
+            return {"object": "list", "model": "headroom-minilm-v1",
+                    "data": [{"object": "embedding", "index": i, "embedding": vector} for i, vector in enumerate(vectors)]}
+        except (ValueError, asyncio.TimeoutError):
+            return Response(status_code=502)
+
+    @app.post("/v1/tools")
+    async def tools(request: Request):
+        scope = request.headers.get("x-headroom-project", "")
+        body = await read_json(request)
+        if not re.fullmatch(r"[a-f0-9]{64}", scope) or not isinstance(body, dict) or set(body) != {"name", "arguments", "operation_id"} or not isinstance(body["operation_id"], str) or not re.fullmatch(r"[a-f0-9]{64}", body["operation_id"]):
+            return Response(status_code=400)
+        if slots.locked():
+            return Response(status_code=429)
+        from state import StateError
+        try:
+            async def execute(_):
+                return await features.tool(scope, body["name"], body["arguments"], body["operation_id"])
+            async with slots:
+                result = await compress_until_disconnect(request, None, execute)
+            if result is None:
+                return Response(status_code=499)
+            return result
+        except (StateError, ValueError, TypeError, KeyError, asyncio.TimeoutError):
+            return Response(status_code=502)
 
     @app.post("/v1/compress")
     async def compress(request: Request):
@@ -124,15 +194,17 @@ def create_service(compressor=isolated_compress, *, policy="isolated-marker-free
                 return Response(status_code=413)
         try:
             body = json.loads(raw)
-            validate(body)
+            validate(body, allow_ccr=features is not None)
         except (ValueError, TypeError):
             return Response(status_code=400)
         if slots.locked():
             return Response(status_code=429, headers={"retry-after": "1"})
         started = time.monotonic()
         try:
+            ccr = body["config"].get("ccr", False)
+            worker_body = {**body, "gateway": GATEWAY, "config": {"protect_recent": 0, "compress_user_messages": False}}
             async with slots:
-                output = await compress_until_disconnect(request, bytes(raw), compressor)
+                output = await compress_until_disconnect(request, json.dumps(worker_body).encode(), compressor)
             if output is None:
                 return Response(status_code=499)
             data = json.loads(output)
@@ -150,9 +222,23 @@ def create_service(compressor=isolated_compress, *, policy="isolated-marker-free
             before, after = data["tokens_before"], data["tokens_after"]
             if type(before) is not int or type(after) is not int or not 0 <= after <= before:
                 raise ValueError()
+            hashes = []
+            if ccr:
+                from state import StateError
+                from features import state_call
+                try:
+                    async with slots:
+                        texts, hashes = await state_call(features.retain, request.headers["x-headroom-project"],
+                            [m["content"] for m in body["messages"]], [m["content"] for m in messages])
+                except StateError:
+                    return Response(status_code=502)
+                messages = [{**message, "content": text} for message, text in zip(messages, texts)]
+                # Marker overhead is not an upstream tokenizer measurement.
+                # Omit savings rather than undercounting the actual request.
+                after = before
             # Strip diagnostics or text fields that upstream can add in later releases.
             return JSONResponse({"messages": messages, "tokens_before": before, "tokens_after": after,
-                                 "ccr_hashes": [], "obligations": []}, headers={
+                                 "ccr_hashes": hashes, "obligations": []}, headers={
                                      "x-compression-ms": str(round((time.monotonic() - started) * 1000)),
                                      "x-headroom-policy": policy})
         except asyncio.TimeoutError:

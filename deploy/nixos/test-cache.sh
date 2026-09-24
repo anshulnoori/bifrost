@@ -30,3 +30,4 @@ done
 go test -race ./framework/vectorstore -run '^Test(VectorDimensionFromFTInfo|RedisStore_(Integration|FilteringScenarios|VectorSearch|CreateNamespaceRejectsDimensionChange|NamespaceDimensionHandling))$' -count=1
 BIFROST_TEST_VALKEY=1 go test -race ./plugins/semanticcache -run '^TestVirtualKeyCache' -count=2
 VALKEY_TEST_ADDR="$REDIS_ADDR" node --test deploy/nixos/package.test.mjs
+BIFROST_TEST_SEMANTIC=1 VALKEY_TEST_ADDR="$REDIS_ADDR" node --test deploy/nixos/package.test.mjs

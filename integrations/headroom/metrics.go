@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -83,6 +85,10 @@ func (l *eventLedger) handler(token string) http.Handler {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
+		if r.URL.Path == "/v1/embeddings" && r.Method == http.MethodPost && r.URL.RawQuery == "" {
+			proxyEmbedding(w, r)
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
 			return
@@ -108,6 +114,45 @@ func (l *eventLedger) handler(token string) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+}
+
+// The cache provider uses a loopback bearer credential. Modal secrets never enter
+// provider headers persisted in config storage, nor caller-controlled requests.
+func proxyEmbedding(w http.ResponseWriter, r *http.Request) {
+	b := current.Load()
+	if b == nil || !b.config.Enabled || b.client == nil {
+		http.Error(w, "embedding unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, b.config.MaxBodyBytes+1))
+	if err != nil || int64(len(body)) > b.config.MaxBodyBytes {
+		http.Error(w, "invalid embedding request", http.StatusRequestEntityTooLarge)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, b.config.Endpoint+"/v1/embeddings", bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "embedding unavailable", http.StatusBadGateway)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Headroom-Proxy-Token", b.token)
+	if b.modalKey != "" {
+		req.Header.Set("Modal-Key", b.modalKey)
+		req.Header.Set("Modal-Secret", b.modalSecret)
+	}
+	response, err := b.client.Do(req)
+	if err != nil {
+		http.Error(w, "embedding unavailable", http.StatusBadGateway)
+		return
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, b.config.MaxBodyBytes+1))
+	if err != nil || int64(len(data)) > b.config.MaxBodyBytes || response.StatusCode != http.StatusOK || !json.Valid(data) {
+		http.Error(w, "embedding unavailable", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
 }
 
 func configureMonitor(config Config) error {

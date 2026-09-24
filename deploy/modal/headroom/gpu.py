@@ -1,5 +1,7 @@
 """One killable CUDA worker per Modal container, serialized by the ASGI facade."""
 import asyncio
+import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -10,7 +12,10 @@ from service import MAX_BODY
 
 
 class GPUCompressor:
-    def __init__(self):
+    def __init__(self, device="cuda"):
+        if device not in {"cuda", "cpu"}:
+            raise ValueError("invalid worker device")
+        self.device = device
         self.process = None
         self.scratch = None
 
@@ -38,13 +43,14 @@ class GPUCompressor:
                    TRANSFORMERS_OFFLINE="1", HEADROOM_OFFLINE="1",
                    HEADROOM_KOMPRESS_BACKEND="pytorch", HEADROOM_BEACON="off",
                    HEADROOM_TELEMETRY="off", HEADROOM_LOG_PAYLOAD_PREVIEW="0",
-                   HF_HUB_DISABLE_TELEMETRY="1", HEADROOM_CCR_BACKEND="memory")
+                   HF_HUB_DISABLE_TELEMETRY="1", HEADROOM_CCR_BACKEND="memory",
+                   HEADROOM_WORKER_DEVICE=self.device)
         try:
             self.process = await asyncio.create_subprocess_exec(
                 sys.executable, str(Path(__file__).with_name("gpu_worker.py")),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL, cwd=self.scratch.name, env=env)
-            if await asyncio.wait_for(self.process.stdout.readexactly(5), 60) != b"CUDA\n":
+            if await asyncio.wait_for(self.process.stdout.readexactly(5), 60) != f"{self.device.upper():4}\n".encode():
                 raise ValueError()
         except BaseException:
             await self.close()
@@ -69,3 +75,16 @@ class GPUCompressor:
             await self.close()
             # The caller gets a generic failure and Bifrost retains the original input.
             raise ValueError("CUDA worker failed") from None
+
+    async def embed(self, texts):
+        from encoder import DIMENSIONS
+        output = json.loads(await self(json.dumps({"operation": "embed", "input": texts}).encode()))
+        vectors = output.get("vectors")
+        if not isinstance(vectors, list) or len(vectors) != len(texts):
+            raise ValueError("invalid embedding output")
+        for vector in vectors:
+            if not isinstance(vector, list) or len(vector) != DIMENSIONS or any(type(x) not in {int, float} or not math.isfinite(x) for x in vector):
+                raise ValueError("invalid embedding output")
+            if abs(sum(x * x for x in vector) - 1) > 0.01:
+                raise ValueError("invalid embedding normalization")
+        return vectors

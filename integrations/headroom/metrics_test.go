@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -9,6 +11,47 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
+
+func TestEmbeddingProxyBoundary(t *testing.T) {
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/v1/embeddings" || r.Header.Get("X-Headroom-Proxy-Token") != "service-token" || r.Header.Get("Authorization") != "" || r.Header.Get("X-Headroom-Project") != "" {
+			t.Error("wrong route or forwarded caller credentials")
+		}
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != `{"model":"headroom-minilm-v1","input":"hello"}` {
+			t.Error("embedding payload changed")
+		}
+		w.Write([]byte(`{"data":[{"embedding":[1,0]}]}`))
+	}))
+	defer upstream.Close()
+	previous := current.Swap(&bridge{config: Config{Enabled: true, Endpoint: upstream.URL, MaxBodyBytes: 1024}, client: upstream.Client(), token: "service-token"})
+	defer current.Store(previous)
+	handler := ledger.handler("local-token")
+	for _, tc := range []struct {
+		path, token, body string
+		status            int
+	}{
+		{"/v1/embeddings", "wrong", `{}`, 401},
+		{"/v1/embeddings?endpoint=evil", "local-token", `{}`, 405},
+		{"/v1/tools", "local-token", `{}`, 405},
+		{"/v1/embeddings", "local-token", strings.Repeat("x", 1025), 413},
+		{"/v1/embeddings", "local-token", `{"model":"headroom-minilm-v1","input":"hello"}`, 200},
+	} {
+		r := httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
+		r.Header.Set("Authorization", "Bearer "+tc.token)
+		r.Header.Set("X-Headroom-Project", "untrusted")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != tc.status {
+			t.Fatalf("%s: got %d, want %d", tc.path, w.Code, tc.status)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("unexpected upstream calls: %d", calls)
+	}
+}
 
 func TestResponsesStreamUsage(t *testing.T) {
 	response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted}}

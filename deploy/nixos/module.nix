@@ -91,17 +91,41 @@ in {
           type = "redis";
           config = { addr = "127.0.0.1:6379"; password = "env.VALKEY_PASSWORD"; };
         };
-        # Direct caching is enabled. Semantic embeddings and GPU Modal need validation.
+        # Only the plugin holds Modal credentials. The embedding provider reaches
+        # its authenticated loopback facade using a SecretVar-backed key.
+        providers = lib.optionalAttrs (cfg.headroomEndpoint != null) {
+          headroom_embeddings = {
+            keys = [ {
+              name = "headroom-internal";
+              value = "env.HEADROOM_METRICS_TOKEN";
+              models = [ "headroom-minilm-v1" ];
+              weight = 1;
+            } ];
+            custom_provider_config = {
+              base_provider_type = "openai";
+              is_key_less = false;
+              allowed_requests = { embedding = true; };
+            };
+            network_config = {
+              base_url = "http://127.0.0.1:9909";
+              allow_private_network = true;
+              default_request_timeout_in_seconds = 2;
+              max_retries = 0;
+            };
+          };
+        };
         plugins = [ {
           name = "semantic_cache";
           enabled = true;
           config = {
-            provider = "";
-            dimension = 1;
+            provider = if cfg.headroomEndpoint == null then "" else "headroom_embeddings";
+            embedding_model = "headroom-minilm-v1";
+            dimension = if cfg.headroomEndpoint == null then 1 else 384;
+            threshold = 0.98;
             ttl = "5m";
             default_cache_key = "deployment-v1";
             scope_by_virtual_key = true;
-            vector_store_namespace = "BifrostScopedCacheV1";
+            vector_store_namespace = if cfg.headroomEndpoint == null then "BifrostScopedCacheV1" else "BifrostMiniLMCacheV1";
           };
         } {
           name = "headroom";

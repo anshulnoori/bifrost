@@ -6,7 +6,10 @@ import socket
 import struct
 import sys
 import tempfile
+import threading
 import unittest
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
@@ -54,6 +57,22 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.json()["tokens_before"], 99)
         self.assertEqual(res.json()["ccr_hashes"], [])
 
+    async def test_embedding_auth_shape_and_disabled_fallback(self):
+        embed = AsyncMock(return_value=[[1.0] + [0.0] * 383])
+        body = {"model": "headroom-minilm-v1", "input": "private query"}
+        self.assertEqual((await self.client.post("/v1/embeddings", headers=HEADERS, json=body)).status_code, 404)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_service(embed=embed)), base_url="http://service") as client:
+            self.assertEqual((await client.post("/v1/embeddings", json=body)).status_code, 401)
+            for invalid in [{**body, "dimensions": 3}, {**body, "input": [1, 2]}, {**body, "encoding_format": "base64"}, {**body, "user": "other"}]:
+                self.assertEqual((await client.post("/v1/embeddings", headers=HEADERS, json=invalid)).status_code, 400)
+            embed.assert_not_awaited()
+            response = await client.post("/v1/embeddings", headers=HEADERS, json=body)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["data"], [{"object": "embedding", "index": 0, "embedding": [1.0] + [0.0] * 383}])
+            embed.assert_awaited_once_with(["private query"])
+            embed.side_effect = ValueError("unavailable")
+            self.assertEqual((await client.post("/v1/embeddings", headers=HEADERS, json=body)).status_code, 502)
+
     async def test_timeout_and_corruption_rejected(self):
         async def timeout(_): raise asyncio.TimeoutError()
         async def corruption(_): return b'{"messages": [], "tokens_before": 9, "tokens_after": 1}'
@@ -100,6 +119,26 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_waits_for_database_thread(self):
+        from features import state_call
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def transaction():
+            entered.set()
+            release.wait(2)
+            finished.set()
+        task = asyncio.create_task(state_call(transaction))
+        try:
+            while not entered.is_set():
+                await asyncio.sleep(0.001)
+            task.cancel()
+            await asyncio.sleep(0.01)
+            self.assertFalse(task.done(), "a cancelled request must still own the DB work")
+        finally:
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertTrue(finished.is_set())
+
     async def test_http_disconnect_cancels_compression(self):
         import uvicorn
         entered, cleaned = asyncio.Event(), asyncio.Event()
@@ -228,6 +267,158 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
                 patch("gpu.asyncio.create_subprocess_exec", side_effect=spawn):
             await worker.warmup()
             await worker.close()
+
+
+@unittest.skipUnless(os.environ.get("HEADROOM_TEST_POSTGRES") == "1", "disposable loopback PostgreSQL only")
+class StateStoreTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import psycopg
+        from psycopg import sql
+        from state import StateStore
+        cls.database = "headroom_test_" + uuid.uuid4().hex
+        cls.admin = "host=127.0.0.1 user=postgres password=fixture sslmode=disable"
+        with psycopg.connect(cls.admin, autocommit=True) as connection:
+            cls.created_role = connection.execute("SELECT 1 FROM pg_roles WHERE rolname = 'headroom_runtime'").fetchone() is None
+            if cls.created_role:
+                connection.execute("CREATE ROLE headroom_runtime")
+            connection.execute(sql.SQL("CREATE DATABASE {} ").format(sql.Identifier(cls.database)))
+        cls.dsn = cls.admin + " dbname=" + cls.database
+        with psycopg.connect(cls.dsn, autocommit=True) as connection:
+            connection.execute(Path(__file__).resolve().parents[2].joinpath("neon/headroom-state.sql").read_text())
+
+        def restricted(dsn, **kwargs):
+            connection = psycopg.connect(dsn, **kwargs)
+            connection.execute("SET ROLE headroom_runtime")
+            return connection
+
+        cls.store = StateStore(cls.dsn, b"x" * 32, connect=restricted)
+
+    @classmethod
+    def tearDownClass(cls):
+        import psycopg
+        from psycopg import sql
+        with psycopg.connect(cls.admin, autocommit=True) as connection:
+            connection.execute(sql.SQL("DROP DATABASE {} ").format(sql.Identifier(cls.database)))
+            if cls.created_role:
+                connection.execute("DROP ROLE headroom_runtime")
+
+    def setUp(self):
+        self.scope = uuid.uuid4().hex * 2
+
+    def test_official_memory_replay_scope_update_delete(self):
+        from features import StateFeatures
+        from state import StateError
+        features = StateFeatures(self.store, AsyncMock(return_value=[[1.0] + [0.0] * 383]))
+        def call(name, args, operation=None, scope=None):
+            return asyncio.run(features.tool(scope or self.scope, name, args, operation or uuid.uuid4().hex * 2))
+        identifier = "c" * 64
+        args = {"content": "prefer private blue reports", "importance": 0.8}
+        saved = call("memory_save", args, identifier)
+        self.assertEqual(saved, {"success": True, "memory_id": identifier})
+        self.assertEqual(call("memory_save", args, identifier), saved)
+        with self.assertRaises(StateError):
+            call("memory_save", {**args, "content": "changed"}, identifier)
+        self.assertEqual(call("memory_search", {"query": "reports"}, scope="b" * 64)["count"], 0)
+        self.assertEqual(call("memory_search", {"query": "reports"})["count"], 1)
+        updated = call("memory_update", {"memory_id": identifier, "new_content": "prefer green reports", "reason": "changed preference"})
+        self.assertNotEqual(updated["memory_id"], identifier)
+        self.assertEqual(call("memory_search", {"query": "reports"})["count"], 1)
+        call("memory_delete", {"memory_id": updated["memory_id"], "reason": "forget"})
+        self.assertEqual(call("memory_search", {"query": "reports"})["count"], 0)
+        self.assertEqual(call("memory_save", args, identifier), saved)
+        with self.store.transaction(self.scope) as state:
+            self.assertEqual(state.list("memory"), [])
+            journals = json.dumps(state.list("operation"))
+            self.assertNotIn("reports", journals)
+
+    def test_ccr_handles_require_original_scope(self):
+        from features import StateFeatures
+        from state import StateError
+        features = StateFeatures(self.store, None)
+        original = "private detail " * 100
+        texts, handles = features.retain(self.scope, [original, "tiny"], ["summary", "tiny"])
+        self.assertIn(handles[0], texts[0])
+        self.assertEqual(handles[1], "")
+        result = asyncio.run(features.tool(self.scope, "headroom_retrieve", {"hash": handles[0]}, "d" * 64))
+        self.assertEqual(result["content"], original)
+        with self.assertRaises(StateError):
+            asyncio.run(features.tool("b" * 64, "headroom_retrieve", {"hash": handles[0]}, "d" * 64))
+
+    def test_authenticated_facade_ccr_negotiation_and_retrieval(self):
+        from features import StateFeatures
+        from service import CCR_GATEWAY, GATEWAY
+        original = "private omitted detail " * 100
+        async def compressor(raw):
+            body = json.loads(raw)
+            self.assertEqual(body["gateway"], GATEWAY)
+            self.assertNotIn("ccr", body["config"])
+            return json.dumps({"messages": [{**body["messages"][0], "content": "summary"}], "tokens_before": 900, "tokens_after": 10}).encode()
+        async def exercise():
+            features = StateFeatures(self.store, None)
+            app = create_service(compressor, features=features)
+            headers = {**HEADERS, "x-headroom-project": self.scope}
+            body = {**BODY, "messages": [{**BODY["messages"][0], "content": original}],
+                    "gateway": CCR_GATEWAY, "config": {**BODY["config"], "ccr": True}}
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://service") as client:
+                result = await client.post("/v1/compress", headers=headers, json=body)
+                self.assertEqual(result.status_code, 200)
+                handle = result.json()["ccr_hashes"][0]
+                self.assertIn(handle, result.json()["messages"][0]["content"])
+                tool = {"name": "headroom_retrieve", "arguments": {"hash": handle}, "operation_id": "d" * 64}
+                self.assertEqual((await client.post("/v1/tools", json=tool)).status_code, 401)
+                self.assertEqual((await client.post("/v1/tools", headers={**headers, "x-headroom-project": "b" * 64}, json=tool)).status_code, 502)
+                retrieved = await client.post("/v1/tools", headers=headers, json=tool)
+                self.assertEqual(retrieved.json()["content"], original)
+        with patch.dict(os.environ, HEADROOM_PROXY_TOKEN=HEADERS["x-headroom-proxy-token"]):
+            asyncio.run(exercise())
+
+    def test_restart_isolation_ciphertext_and_tamper(self):
+        import psycopg
+        from state import StateStore, StateError
+        secret = {"content": "private-original-7391"}
+        with self.store.transaction(self.scope) as state:
+            state.put("ccr", "aa", secret, 60)
+        restarted = StateStore(self.dsn, b"x" * 32, connect=self.store.connect)
+        with restarted.transaction(self.scope) as state:
+            self.assertEqual(state.get("ccr", "aa"), secret)
+        other = uuid.uuid4().hex * 2
+        with restarted.transaction(other) as state:
+            self.assertIsNone(state.get("ccr", "aa"))
+        with psycopg.connect(self.dsn) as connection:
+            raw = connection.execute("SELECT ciphertext FROM headroom.entries WHERE scope = %s", (self.scope,)).fetchone()[0]
+            self.assertNotIn(b"private-original", bytes(raw))
+            connection.execute("UPDATE headroom.entries SET scope = %s WHERE scope = %s", (other, self.scope))
+        with self.assertRaisesRegex(StateError, "^state operation failed$"):
+            with restarted.transaction(other) as state:
+                state.get("ccr", "aa")
+
+    def test_expiry_quota_and_rollback(self):
+        from state import StateError
+        with patch("state.time.time", return_value=1):
+            with self.store.transaction(self.scope) as state:
+                state.put("ccr", "aa", "expired", 1)
+        with self.store.transaction(self.scope) as state:
+            self.assertIsNone(state.get("ccr", "aa"))
+        with patch("state.MAX_SCOPE_ENTRIES", 1):
+            with self.assertRaises(StateError):
+                with self.store.transaction(self.scope) as state:
+                    state.put("memory", "bb", "one", 60)
+                    state.put("memory", "cc", "two", 60)
+        with self.store.transaction(self.scope) as state:
+            self.assertEqual(state.list("memory"), [])
+
+    def test_concurrent_updates_serialize(self):
+        def increment(_):
+            with self.store.transaction(self.scope) as state:
+                count = state.get("learning", "1") or 0
+                state.put("learning", "1", count + 1, 60)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(increment, range(12)))
+        with self.store.transaction(self.scope) as state:
+            self.assertEqual(state.get("learning", "1"), 12)
+            self.assertTrue(state.delete("learning", "1"))
+            self.assertFalse(state.delete("learning", "1"))
 
 
 if __name__ == "__main__":

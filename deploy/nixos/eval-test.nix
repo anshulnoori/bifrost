@@ -29,6 +29,11 @@ assert builtins.elem "--network=host" private.virtualisation.oci-containers.cont
 assert private.virtualisation.oci-containers.containers.bifrost-valkey.user == "999:999";
 assert private.services.bifrost.settings.vector_store.config.addr == "127.0.0.1:6379";
 assert (builtins.head private.services.bifrost.settings.plugins).config.scope_by_virtual_key;
+assert (builtins.head private.services.bifrost.settings.plugins).config.dimension == 1;
+assert (builtins.head public.services.bifrost.settings.plugins).config.dimension == 384;
+assert (builtins.head public.services.bifrost.settings.plugins).config.provider == "headroom_embeddings";
+assert public.services.bifrost.settings.providers.headroom_embeddings.custom_provider_config.allowed_requests == { embedding = true; };
+assert (builtins.head public.services.bifrost.settings.providers.headroom_embeddings.keys).value == "env.HEADROOM_METRICS_TOKEN";
 assert !(builtins.elemAt private.services.bifrost.settings.plugins 1).config.enabled;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.enabled;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.timeout_ms == 500;

@@ -103,10 +103,14 @@ Bifrost waits for authenticated Search readiness before starting.
 Exact response caching is enabled with a five-minute TTL. Cache keys include the authenticated virtual-key ID.
 Caller-supplied cache labels cannot cross that boundary; requests without a governance identity bypass the cache.
 Codex still bypasses this cache: a hit must not bypass subscription admission or survive an account disconnect.
-Embedding-based semantic matching is not yet enabled. It requires an explicit embedding model and matching index dimension.
+Setting `headroomEndpoint` enables semantic matching with `headroom-minilm-v1`, 384 dimensions, and a 0.98 cosine threshold.
+The GPU endpoint uses pinned MiniLM weights. Inputs longer than 256 tokens bypass semantic matching rather than silently losing their suffix.
+This threshold is an initial policy, not proof that similar prompts have equivalent answers. Test representative questions before public activation.
+The embedding provider calls the authenticated loopback Headroom bridge. Only that bridge holds the Modal proxy credentials.
+Embedding errors fall through to the model. Selecting the CPU-only endpoint retains exact caching but cannot provide semantic hits.
 Changing dimension requires a new namespace; changing embedding models also requires a new namespace even at the same dimension.
 The SDK must register governance before semantic cache when using `scope_by_virtual_key`.
-Disposable cache data has no disk persistence. Learned memory needs a separate durable storage policy.
+Disposable response cache data has no disk persistence. Headroom state uses a separate encrypted PostgreSQL schema, not Valkey.
 Valkey's vector indexes consume memory in addition to cache payloads. Monitor RSS and evictions before increasing the 2 GiB budget.
 
 ## Modal and managed-service privacy
@@ -117,11 +121,14 @@ Modal service-to-service requests therefore need authentication, but do not requ
 The existing ASGI facade requires Modal proxy authentication and a separate service credential; it exposes no dashboard.
 
 `deploy/modal/headroom/app.py` defines separate CPU and L4 GPU endpoints, each with at most two containers and scale-to-zero.
-The GPU image pins CUDA PyTorch dependencies and both Kompress and ModernBERT model revisions.
+The GPU image pins CUDA PyTorch dependencies and Kompress, ModernBERT, and MiniLM model revisions.
 Startup explicitly selects PyTorch and CUDA, verifies a GPU forward pass, then serves requests. ONNX CPU fallback cannot masquerade as CUDA.
 A killable subprocess retains model weights between requests. It receives no Modal or service credentials and uses offline model files.
-Cancellation discards that worker. The next request starts a fresh worker. Request and response caches, CCR, and learned memory remain disabled.
-Those features require tenant-scoped persistence and retrieval support that the current bridge does not provide.
+Cancellation discards that worker. The next request starts a fresh worker.
+Answer caching belongs to Bifrost/Valkey; the Headroom worker does not maintain a second response cache.
+The facade provides durable CCR retrieval and the official Headroom memory tools, with tenant-scoped encrypted storage.
+**Gateway integration of these internal tools remains unfinished.** The configured gateway still sends marker-free compression and rejects `ccr = true`.
+Do not change that flag until bounded internal execution, final-response checks, and cache invalidation are implemented and tested together.
 
 Add these runtime environment variables when enabling Headroom:
 
@@ -129,6 +136,19 @@ Add these runtime environment variables when enabling Headroom:
 - `HEADROOM_SCOPE_KEY`: Independent HMAC secret for request scoping.
 - `HEADROOM_METRICS_TOKEN`: Independent credential for loopback-only metrics.
 - `HEADROOM_MODAL_KEY` and `HEADROOM_MODAL_SECRET`: Modal **proxy auth tokens**, not account API credentials.
+
+The GPU service also requires two values in its private Modal secret, never on the gateway:
+
+- `HEADROOM_DATABASE_URL`: A separate Headroom database and restricted `headroom_runtime` role, with `sslmode=verify-full` on a Neon hostname.
+- `HEADROOM_STATE_KEY`: An independent 32-byte AES key encoded as 64 hexadecimal characters. Do not reuse Bifrost's encryption key.
+
+Before deploying that service, create the dedicated database and role through the owner's authenticated Neon session.
+Apply [headroom-state.sql](../../deploy/neon/headroom-state.sql) using its migrator role. The application never creates schemas at startup.
+CCR originals expire after 30 minutes; learned memories and replay journals expire after seven days.
+Each scope has a 32 MiB encrypted-data limit and a 256-record limit across all state kinds. Exhaustion fails the operation without partial writes.
+Schedule the SQL file's expired-record deletion with an owner-managed database job; reads reject expired records before physical deletion.
+Deleting a learned memory removes its retained version chain. Mutation journals contain identifiers and digests, not remembered text.
+Neon backups have their own retention policy; logical deletion does not erase existing backups.
 
 The first three values must each contain at least 32 characters. Supply them through the secret manager, never shell arguments.
 The gateway compresses only eligible tool text of at least 4 KiB. Its 500 ms timeout preserves the original input on failure or cold start.
@@ -179,6 +199,8 @@ The Headroom race suite also passed. No provider credentials or live cloud resou
 
 The cache suite starts and removes a disposable pinned Valkey container. It tests index dimensions, deletion, filters, vector queries,
 and virtual-key isolation through the plugin and actual gateway. It never uses a shared cache or paid provider.
+Both exact and semantic modes run against the built native plugin. Synthetic embeddings exercise similarity lookup, tenant isolation, and inference during embedding-service failure.
+This verifies integration, not the semantic accuracy or performance of the real embedding model.
 The wire harness also includes `vk-cache-isolation`; it requires two owner-supplied test virtual keys and an enabled scoped cache.
 The index-dimension guard is startup-only and is covered by direct adapter tests rather than an inference request.
 
@@ -190,7 +212,9 @@ BASE_URL=http://127.0.0.1:3107 npx playwright test --config playwright.cache.con
 ```
 
 The Modal application imports with SDK 1.5.5 without authentication or remote deployment.
-Twelve Python tests cover facade authentication, body limits, CPU fidelity, disconnect cleanup, and mocked CUDA selection.
+Python tests cover facade authentication, body limits, CPU fidelity, disconnect cleanup, mocked CUDA selection, and embedding validation.
+With `HEADROOM_TEST_POSTGRES=1`, they create and remove a disposable loopback database to test restricted-role encrypted state,
+cross-scope rejection, expiry, quota rollback, concurrent updates, CCR retrieval, memory replay, and deletion.
 These tests do not validate a CUDA driver, the GPU image, model downloads, or GPU performance.
 
 Before activation, validate these host conditions:

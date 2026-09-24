@@ -17,10 +17,32 @@ test('Nix gateway loads its native plugin, serves UI, enforces auth and stops', 
   await once(listener, 'listening');
   const port = listener.address().port;
   await new Promise(resolve => listener.close(resolve));
+  const semantic = process.env.BIFROST_TEST_SEMANTIC === '1';
+  const monitorListener = net.createServer().listen(0, '127.0.0.1');
+  await once(monitorListener, 'listening');
+  const monitorPort = monitorListener.address().port;
+  await new Promise(resolve => monitorListener.close(resolve));
   let upstreamCalls = 0;
+  let embeddingCalls = 0;
+  let embeddingUnavailable = false;
   const upstream = http.createServer(async (req, res) => {
-    for await (const chunk of req) { /* consume synthetic request */ }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
     res.setHeader('content-type', 'application/json');
+    if (req.method === 'POST' && req.url === '/v1/embeddings') {
+      embeddingCalls++;
+      assert.equal(req.headers['x-headroom-proxy-token'], 's'.repeat(32));
+      assert.equal(req.headers.authorization, undefined);
+      const body = JSON.parse(Buffer.concat(chunks));
+      assert.equal(body.model, 'headroom-minilm-v1');
+      if (embeddingUnavailable) {
+        res.writeHead(503).end(JSON.stringify({ error: 'private upstream diagnostics' }));
+        return;
+      }
+      res.end(JSON.stringify({ object: 'list', model: body.model,
+        data: [{ index: 0, object: 'embedding', embedding: [1, ...Array(383).fill(0)] }] }));
+      return;
+    }
     if (req.method === 'GET' && req.url.endsWith('/models')) {
       res.end(JSON.stringify({ object: 'list', data: [{ id: 'synthetic', object: 'model', owned_by: 'fixture' }] }));
       return;
@@ -37,7 +59,8 @@ test('Nix gateway loads its native plugin, serves UI, enforces auth and stops', 
   await once(upstream, 'listening');
   t.after(() => new Promise(resolve => upstream.close(resolve)));
   const cache = process.env.VALKEY_TEST_ADDR ? [{ name: 'semantic_cache', enabled: true,
-    config: { provider: '', dimension: 1, default_cache_key: 'package-test', scope_by_virtual_key: true,
+    config: { provider: semantic ? 'headroom_embeddings' : '', dimension: semantic ? 384 : 1,
+      embedding_model: 'headroom-minilm-v1', threshold: 0.98, default_cache_key: 'package-test', scope_by_virtual_key: true,
       vector_store_namespace: `PackageCache${port}`, ttl: '1m' } }] : [];
   await writeFile(join(dir, 'config.json'), JSON.stringify({
     encryption_key: 'a'.repeat(64),
@@ -46,7 +69,11 @@ test('Nix gateway loads its native plugin, serves UI, enforces auth and stops', 
     providers: { openai: {
       keys: [{ id: 'synthetic', value: 'fixture-only', models: ['synthetic'], weight: 1 }],
       network_config: { base_url: `http://127.0.0.1:${upstream.address().port}`, allow_private_network: true },
-    } },
+    }, ...(semantic ? { headroom_embeddings: {
+      keys: [{ name: 'internal', value: 'env.HEADROOM_METRICS_TOKEN', models: ['headroom-minilm-v1'], weight: 1 }],
+      custom_provider_config: { base_provider_type: 'openai', is_key_less: false, allowed_requests: { embedding: true } },
+      network_config: { base_url: `http://127.0.0.1:${monitorPort}`, allow_private_network: true, max_retries: 0 },
+    } } : {}) },
     vector_store: process.env.VALKEY_TEST_ADDR ? { enabled: true, type: 'redis',
       config: { addr: process.env.VALKEY_TEST_ADDR, password: 'synthetic-local-only' } } : undefined,
     governance: { auth_config: { is_enabled: true, admin_username: 'fixture', admin_password: 'synthetic-password-for-local-test-only' },
@@ -55,12 +82,17 @@ test('Nix gateway loads its native plugin, serves UI, enforces auth and stops', 
     plugins: [
       { name: 'telemetry', enabled: false },
       ...cache,
-      { name: 'headroom', enabled: true, path: join(process.env.BIFROST_PACKAGE, 'lib/headroom.so'), placement: 'post_builtin', config: { enabled: false, ccr: false } },
+      { name: 'headroom', enabled: true, path: join(process.env.BIFROST_PACKAGE, 'lib/headroom.so'), placement: 'post_builtin', config: {
+        enabled: semantic, ccr: false, endpoint: `http://127.0.0.1:${upstream.address().port}`,
+        token_env: 'HEADROOM_PROXY_TOKEN', scope_key_env: 'HEADROOM_SCOPE_KEY',
+        metrics_token_env: 'HEADROOM_METRICS_TOKEN', metrics_address: semantic ? `127.0.0.1:${monitorPort}` : '',
+      } },
     ],
   }), { mode: 0o600 });
   const child = spawn(join(process.env.BIFROST_PACKAGE, 'bin/bifrost-http'), [
     '-app-dir', dir, '-host', '127.0.0.1', '-port', String(port), '-log-level', 'error',
-  ], { env: { PATH: process.env.PATH, HOME: dir }, stdio: 'ignore' });
+  ], { env: { PATH: process.env.PATH, HOME: dir, HEADROOM_PROXY_TOKEN: 's'.repeat(32),
+    HEADROOM_SCOPE_KEY: 'k'.repeat(32), HEADROOM_METRICS_TOKEN: 'm'.repeat(32) }, stdio: 'ignore' });
   const exited = once(child, 'exit');
   t.after(async () => {
     if (child.exitCode === null) child.kill('SIGTERM');
@@ -93,10 +125,10 @@ test('Nix gateway loads its native plugin, serves UI, enforces auth and stops', 
   assert.ok(asset, 'built UI entry missing');
   assert.equal((await fetch(origin + asset[1])).status, 200);
   await t.test('authenticated tenants cannot read each other’s cache', { skip: !process.env.VALKEY_TEST_ADDR }, async () => {
-    const ask = async key => {
+    const ask = async (key, text = 'synthetic cache isolation') => {
       const response = await fetch(origin + '/v1/chat/completions', { method: 'POST',
         headers: { 'content-type': 'application/json', 'x-bf-vk': key, 'x-bf-cache-key': 'same-caller-key' },
-        body: JSON.stringify({ model: 'openai/synthetic', messages: [{ role: 'user', content: 'synthetic cache isolation' }] }),
+        body: JSON.stringify({ model: 'openai/synthetic', messages: [{ role: 'user', content: text }] }),
       });
       assert.equal(response.status, 200, response.status === 200 ? undefined : await response.text());
       return response.json();
@@ -111,6 +143,18 @@ test('Nix gateway loads its native plugin, serves UI, enforces auth and stops', 
     assert.equal(other.extra_fields.cache_debug.cache_hit, false);
     assert.notEqual(other.choices[0].message.content, first.choices[0].message.content);
     assert.equal(upstreamCalls, 2, 'only the two tenant misses should reach the provider');
+    if (semantic) {
+      const similar = await ask('sk-bf-fixture-a', 'a differently worded synthetic question');
+      assert.equal(similar.extra_fields.cache_debug.cache_hit, true);
+      assert.equal(similar.choices[0].message.content, first.choices[0].message.content);
+      assert.equal(upstreamCalls, 2, 'semantic hit must not call the model');
+      assert.ok(embeddingCalls >= 3, 'the real cache must use the authenticated embedding bridge');
+      embeddingUnavailable = true;
+      const uncached = await ask('sk-bf-fixture-a', 'embedding outage must not break inference');
+      assert.equal(uncached.choices[0].message.content, 'response-3');
+      assert.equal(upstreamCalls, 3);
+      assert.ok(!JSON.stringify(uncached).includes('private upstream diagnostics'));
+    }
   });
   child.kill('SIGTERM');
   const [code, signal] = await exited;

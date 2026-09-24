@@ -30,13 +30,18 @@ gpu_image = (
     modal.Image.debian_slim(python_version="3.11")
     .add_local_file(Path(__file__).with_name("requirements-gpu.lock"), "/tmp/gpu.lock", copy=True)
     .run_commands("python -m pip install --require-hashes -r /tmp/gpu.lock")
+    .add_local_file(Path(__file__).with_name("requirements-state.lock"), "/tmp/state.lock", copy=True)
+    .run_commands("python -m pip install --require-hashes -r /tmp/state.lock")
     .add_local_file(Path(__file__).with_name("bake_models.py"), "/tmp/bake_models.py", copy=True)
     .run_commands("python /tmp/bake_models.py", "chmod -R a-w /opt/headroom-models")
     .env({"HEADROOM_OFFLINE": "1", "HEADROOM_BEACON": "off", "HEADROOM_TELEMETRY": "off",
           "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HEADROOM_KOMPRESS_BACKEND": "pytorch"})
     .add_local_file(Path(__file__).with_name("service.py"), "/root/service.py")
     .add_local_file(Path(__file__).with_name("gpu.py"), "/root/gpu.py")
+    .add_local_file(Path(__file__).with_name("encoder.py"), "/root/encoder.py")
     .add_local_file(Path(__file__).with_name("gpu_worker.py"), "/root/gpu_worker.py")
+    .add_local_file(Path(__file__).with_name("state.py"), "/root/state.py")
+    .add_local_file(Path(__file__).with_name("features.py"), "/root/features.py")
 )
 
 
@@ -49,8 +54,11 @@ def gpu_service():
     from contextlib import asynccontextmanager
     from gpu import GPUCompressor
     from service import create_service
+    from state import StateStore
+    from features import StateFeatures
 
     compressor = GPUCompressor()
+    features = StateFeatures(StateStore.from_environment(), compressor.embed)
 
     @asynccontextmanager
     async def lifespan(_):
@@ -60,4 +68,4 @@ def gpu_service():
         finally:
             await compressor.close()
 
-    return create_service(compressor, policy="cuda-kompress-marker-free-v1", lifespan=lifespan)
+    return create_service(compressor, policy="cuda-kompress-v2", lifespan=lifespan, embed=compressor.embed, features=features)
