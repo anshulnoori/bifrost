@@ -1,10 +1,7 @@
 { config, lib, pkgs, ... }:
 let
   cfg = config.services.bifrostDeployment;
-  valkeyImage = "docker.io/valkey/valkey-bundle@" + {
-    aarch64-linux = "sha256:cc16e0c672ffdfdbee4581e146d41086f408468489e21b8625f877a332b998ba";
-    x86_64-linux = "sha256:203692cbb7d59887cd7723f88cefa0c470d74037e3f82024b17cfac31345d4f5";
-  }.${pkgs.stdenv.hostPlatform.system};
+  valkeySearch = pkgs.callPackage ../../nix/packages/valkey-search.nix {};
   db = {
     host = "env.NEON_HOST";
     port = "5432";
@@ -152,8 +149,9 @@ in {
       };
     };
     systemd.services.bifrost = {
-      after = [ "network-online.target" "podman-bifrost-valkey.service" ];
-      wants = [ "network-online.target" "podman-bifrost-valkey.service" ];
+      after = [ "network-online.target" "bifrost-valkey.service" ];
+      wants = [ "network-online.target" ];
+      requires = [ "bifrost-valkey.service" ];
       preStart = lib.mkBefore (''
         for name in NEON_HOST NEON_USER NEON_PASSWORD NEON_DATABASE BIFROST_ENCRYPTION_KEY BIFROST_ADMIN_PASSWORD; do
           if [ -z "''${!name:-}" ]; then echo "Required deployment setting missing" >&2; exit 1; fi
@@ -212,22 +210,10 @@ in {
       };
     };
 
-    # Official multi-architecture bundle: Valkey 9.1.1 + Search 1.2.1.
-    # Only Search is loaded; no JSON, LDAP or Bloom modules are needed.
-    virtualisation.oci-containers = {
-      backend = "podman";
-      containers.bifrost-valkey = {
-        image = valkeyImage;
-        user = "999:999";
-        entrypoint = "valkey-server";
-        cmd = [ "/etc/valkey.conf" ];
-        volumes = [ "/run/bifrost-valkey/valkey.conf:/etc/valkey.conf:ro" ];
-        extraOptions = [ "--network=host" "--read-only" "--cap-drop=ALL" "--memory=3g"
-          "--security-opt=no-new-privileges" "--mount=type=tmpfs,destination=/data,tmpfs-mode=0700,U=true" ];
-      };
-    };
-    systemd.services.podman-bifrost-valkey = {
-      preStart = lib.mkBefore ''
+    systemd.services.bifrost-valkey = {
+      description = "Bifrost Valkey Search cache";
+      wantedBy = [ "multi-user.target" ];
+      preStart = ''
         set -eu
         password="$(cat "$CREDENTIALS_DIRECTORY/valkey-password")"
         [[ "$password" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Valkey password must be 64 hex characters" >&2; exit 1; }
@@ -238,19 +224,39 @@ in {
         bind 127.0.0.1
         port 6379
         protected-mode yes
-        loadmodule /usr/lib/valkey/libsearch.so
+        supervised systemd
+        loadmodule ${valkeySearch}/lib/valkey/modules/libsearch.so
         save ""
         appendonly no
         maxmemory 2gb
         maxmemory-policy allkeys-lfu
         EOF
         } > /run/bifrost-valkey/valkey.conf
-        chown 999:999 /run/bifrost-valkey/valkey.conf
       '';
       serviceConfig = {
+        Type = "notify";
+        ExecStart = "${pkgs.valkey}/bin/valkey-server /run/bifrost-valkey/valkey.conf";
         LoadCredential = [ "valkey-password:${cfg.redisPasswordFile}" ];
+        DynamicUser = true;
         RuntimeDirectory = "bifrost-valkey";
         RuntimeDirectoryMode = "0700";
+        WorkingDirectory = "/run/bifrost-valkey";
+        UMask = "0077";
+        Restart = "on-failure";
+        RestartSec = 2;
+        TimeoutStartSec = 60;
+        TimeoutStopSec = 30;
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictSUIDSGID = true;
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+        CapabilityBoundingSet = [];
         MemoryMax = "3G";
         LimitCORE = 0;
         StandardOutput = "null";

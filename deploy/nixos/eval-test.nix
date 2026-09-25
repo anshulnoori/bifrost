@@ -24,10 +24,12 @@ let
   public = (evaluate true).config;
 in
 assert private.services.bifrost.host == "127.0.0.1";
-assert private.virtualisation.oci-containers.containers.bifrost-valkey.ports == [];
-assert builtins.elem "--network=host" private.virtualisation.oci-containers.containers.bifrost-valkey.extraOptions;
-assert builtins.elem "--mount=type=tmpfs,destination=/data,tmpfs-mode=0700,U=true" private.virtualisation.oci-containers.containers.bifrost-valkey.extraOptions;
-assert private.virtualisation.oci-containers.containers.bifrost-valkey.user == "999:999";
+assert !private.virtualisation.podman.enable;
+assert private.virtualisation.oci-containers.containers == {};
+assert private.systemd.services.bifrost-valkey.serviceConfig.DynamicUser;
+assert private.systemd.services.bifrost-valkey.serviceConfig.RuntimeDirectoryMode == "0700";
+assert private.systemd.services.bifrost-valkey.serviceConfig.LoadCredential == [ "valkey-password:/run/secrets/valkey-password" ];
+assert builtins.elem "bifrost-valkey.service" private.systemd.services.bifrost.requires;
 assert private.services.bifrost.settings.vector_store.config.addr == "127.0.0.1:6379";
 assert (builtins.head private.services.bifrost.settings.plugins).config.scope_by_virtual_key;
 assert (builtins.head private.services.bifrost.settings.plugins).config.dimension == 1;
