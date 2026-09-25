@@ -282,6 +282,7 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        ExecStartPre = "${pkgs.tailscale}/bin/tailscale wait --timeout=60s";
         ExecStart = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=443 http://127.0.0.1:8081";
         ExecStop = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=443 off";
       };
@@ -289,11 +290,12 @@ in {
     systemd.services.bifrost-admin-serve = {
       description = "Tailnet-only Bifrost administration";
       wantedBy = [ "multi-user.target" ];
-      after = [ "tailscaled.service" "caddy.service" ];
+      after = [ "tailscaled.service" "caddy.service" "bifrost-inference-serve.service" ];
       requires = [ "tailscaled.service" "caddy.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        ExecStartPre = "${pkgs.tailscale}/bin/tailscale wait --timeout=60s";
         ExecStart = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=8443 http://127.0.0.1:8082";
         ExecStop = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=8443 off";
       };
