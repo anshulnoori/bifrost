@@ -46,7 +46,7 @@ assert private.services.bifrost.settings.governance.auth_config.is_enabled;
 assert private.services.bifrost.settings.config_store.config.ssl_mode == "verify-full";
 assert private.networking.firewall.allowedTCPPorts == [];
 assert !(private.systemd.services ? bifrost-inference-funnel);
-assert builtins.match ".*serve --service=svc:ai --https=443 http://127.0.0.1:8081" private.systemd.services.bifrost-inference-serve.serviceConfig.ExecStart != null;
+assert builtins.match ".*serve --service=svc:ai --https=443 http://127.0.0.1:8082" private.systemd.services.bifrost-inference-serve.serviceConfig.ExecStart != null;
 assert builtins.match ".*serve --service=svc:ai --https=8443 http://127.0.0.1:8082" private.systemd.services.bifrost-admin-serve.serviceConfig.ExecStart != null;
 assert builtins.match ".*serve --service=svc:ai --https=8443 off" private.systemd.services.bifrost-admin-serve.serviceConfig.ExecStop != null;
 assert builtins.match ".*--https=443 http://127.0.0.1:8081" public.systemd.services.bifrost-inference-funnel.serviceConfig.ExecStart != null;

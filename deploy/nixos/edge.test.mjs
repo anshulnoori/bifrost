@@ -118,6 +118,20 @@ test('Funnel target is inference-only; private target retains session routes', {
     for (let i = 0; i < 100 && !cancelled; i++) await delay(20);
     assert.equal(cancelled, true);
   });
+  await t.test('private target enforces inference policy without accepting session cookies as API keys', async () => {
+    const endpoint = `http://127.0.0.1:${ports[1]}/v1/chat/completions`;
+    const denied = await fetch(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: 'token=synthetic-admin' }, body: '{}',
+    });
+    assert.equal(denied.status, 401);
+    const accepted = await fetch(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer sk-bf-synthetic', cookie: 'token=synthetic-admin' }, body: '{}',
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(seen.at(-1).headers.cookie, undefined);
+    assert.equal(seen.at(-1).headers['x-bf-vk'], 'sk-bf-synthetic');
+    assert.equal((await fetch(`http://127.0.0.1:${ports[1]}/v1/models`)).status, 404);
+  });
   await t.test('separate private target forwards OIDC callback and session cookie', async () => {
     const response = await fetch(`http://127.0.0.1:${ports[1]}/api/session/oidc/callback?code=synthetic`, {
       headers: { cookie: '__Host-bifrost_oidc=synthetic', 'tailscale-user-login': 'forged', 'cf-access-jwt-assertion': 'forged', 'x-forwarded-proto': 'http', 'x-forwarded-custom': 'forged' },

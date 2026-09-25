@@ -275,7 +275,7 @@ in {
     # A stable TailVIP/DNS identity, independent of the Oracle node hostname.
     # Service endpoints are tailnet-only; Funnel below uses the node identity.
     systemd.services.bifrost-inference-serve = {
-      description = "Tailnet-only ai service inference";
+      description = "Tailnet-only ai dashboard and inference";
       wantedBy = [ "multi-user.target" ];
       after = [ "tailscaled.service" "caddy.service" "bifrost.service" ];
       requires = [ "tailscaled.service" "caddy.service" "bifrost.service" ];
@@ -283,7 +283,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStartPre = "${pkgs.tailscale}/bin/tailscale wait --timeout=60s";
-        ExecStart = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=443 http://127.0.0.1:8081";
+        ExecStart = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=443 http://127.0.0.1:8082";
         ExecStop = "${pkgs.tailscale}/bin/tailscale serve --service=svc:ai --https=443 off";
       };
     };
