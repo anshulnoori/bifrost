@@ -65,10 +65,12 @@ http://:{$INFERENCE_PORT:8081} {
 # Only Tailscale Serve on private HTTPS port 8443 may proxy here. Never Funnel.
 http://:{$ADMIN_PORT:8082} {
 	bind 127.0.0.1
+	request_header -X-Forwarded-*
 	reverse_proxy 127.0.0.1:{$BIFROST_PORT:8080} {
 		header_up -Tailscale-*
 		header_up -Cf-Access-*
-		header_up -X-Forwarded-*
+		header_up -X-Forwarded-For
+		header_up -X-Forwarded-Host
 		header_up X-Forwarded-Proto https
 	}
 }

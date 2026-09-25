@@ -120,11 +120,13 @@ test('Funnel target is inference-only; private target retains session routes', {
   });
   await t.test('separate private target forwards OIDC callback and session cookie', async () => {
     const response = await fetch(`http://127.0.0.1:${ports[1]}/api/session/oidc/callback?code=synthetic`, {
-      headers: { cookie: '__Host-bifrost_oidc=synthetic', 'tailscale-user-login': 'forged', 'cf-access-jwt-assertion': 'forged' },
+      headers: { cookie: '__Host-bifrost_oidc=synthetic', 'tailscale-user-login': 'forged', 'cf-access-jwt-assertion': 'forged', 'x-forwarded-proto': 'http', 'x-forwarded-custom': 'forged' },
     });
     assert.equal(await response.text(), 'private fixture');
     assert.equal(seen.at(-1).headers.cookie, '__Host-bifrost_oidc=synthetic');
     assert.equal(seen.at(-1).headers['tailscale-user-login'], undefined);
     assert.equal(seen.at(-1).headers['cf-access-jwt-assertion'], undefined);
+    assert.equal(seen.at(-1).headers['x-forwarded-custom'], undefined);
+    assert.equal(seen.at(-1).headers['x-forwarded-proto'], 'https');
   });
 });
