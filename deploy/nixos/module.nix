@@ -160,6 +160,8 @@ in {
             modal_app = if cfg.headroomModalApp != null then cfg.headroomModalApp else if cfg.semanticCacheModalApp != null then cfg.semanticCacheModalApp else "";
             modal_environment = "main";
             scope = "gateway";
+            cache_dir = "${config.services.bifrost.stateDir}/headroom-cache";
+            # Retrieval references require a connected, authenticated client tool.
             ccr = false;
             scope_key_env = "HEADROOM_SCOPE_KEY";
             modal_key_env = "HEADROOM_MODAL_TOKEN_ID";

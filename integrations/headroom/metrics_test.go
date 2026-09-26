@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -113,6 +114,43 @@ func TestResponsesStreamUsage(t *testing.T) {
 	usage := providerUsage(response)
 	if gjson.GetBytes(usage, "input_tokens").Int() != 112 || gjson.GetBytes(usage, "output_tokens").Int() != 12 {
 		t.Fatalf("stream accounting lost: %s", usage)
+	}
+}
+
+func TestRetrieveOwnerBoundary(t *testing.T) {
+	key := []byte(strings.Repeat("k", 32))
+	cache, err := openDecisionCache(t.TempDir(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &bridge{config: Config{CCR: true}, key: key, cache: cache}
+	owner := b.scopeID("owner", "project-a", "vk:alice")
+	record, err := cache.put("partition", owner, "secret original", "short", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := current.Swap(b)
+	defer current.Store(previous)
+	handler := ledger.handler("token")
+	request := func(principal, project string) *httptest.ResponseRecorder {
+		body := fmt.Sprintf(`{"handle":%q,"principal":%q,"project":%q}`, record.Handle, principal, project)
+		r := httptest.NewRequest("POST", "/v1/retrieve", strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	if w := request("vk:alice", "project-a"); w.Code != 200 || gjson.GetBytes(w.Body.Bytes(), "content").Str != "secret original" {
+		t.Fatalf("owner retrieval failed: %d %s", w.Code, w.Body.String())
+	}
+	for _, tc := range [][2]string{{"vk:bob", "project-a"}, {"vk:alice", "project-b"}} {
+		if w := request(tc[0], tc[1]); w.Code != 404 || strings.Contains(w.Body.String(), "secret") {
+			t.Fatal("cross-owner retrieval disclosed content")
+		}
+	}
+	w := request("gateway", "project-a")
+	if w.Code != 400 {
+		t.Fatalf("accepted unauthenticated owner: %d", w.Code)
 	}
 }
 

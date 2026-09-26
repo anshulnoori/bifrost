@@ -33,9 +33,20 @@ func Init(raw any) error {
 	if err = decoder.Decode(&config); err != nil {
 		return err
 	}
+	if old := current.Load(); old != nil && (old.config.CacheDir != config.CacheDir || old.config.CCR != config.CCR) {
+		return errors.New("headroom cache configuration requires gateway restart")
+	}
 	b, err := newBridge(config)
 	if err != nil {
 		return err
+	}
+	if old := current.Load(); old != nil && old.cache != nil && b.cache != nil {
+		if !bytes.Equal(old.key, b.key) {
+			b.close()
+			return errors.New("headroom cache key changes require gateway restart")
+		}
+		// In-flight hooks and the replacement must share one decision authority.
+		b.cache, b.cacheSlot = old.cache, old.cacheSlot
 	}
 	if err = configureMonitor(config); err != nil {
 		b.close()
@@ -114,10 +125,10 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 		project = id.Project().ID
 	}
 	principal := ""
-	if id.VirtualKey() != nil {
+	if id.VirtualKey() != nil && id.VirtualKey().ID != "" {
 		principal = "vk:" + id.VirtualKey().ID
 	}
-	if principal == "" && id.User() != nil {
+	if principal == "" && id.User() != nil && id.User().ID != "" {
 		principal = "user:" + id.User().ID
 	}
 	if principal == "" && b.config.Scope == "gateway" {
@@ -137,7 +148,8 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 	} else if (b.config.ProjectID == "" && b.config.Scope != "gateway") || (b.config.ProjectID != "" && project != b.config.ProjectID) {
 		return bypass("project_not_enabled")
 	}
-	session, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
+	explicitSession, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
+	session := explicitSession
 	if session == "" {
 		// Marker-free compression has no continuation state. A single request
 		// is its own partition when the client does not supply a session.
@@ -169,7 +181,26 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 	}
 	event.Eligible = true
 	start := time.Now()
-	out, counts, err := b.compress(ctx, model, scope, texts)
+	owner := ""
+	if principal != "gateway" && grant.Access() != nil {
+		owner = b.scopeID("owner", event.Project, principal)
+	}
+	cachePartition := ""
+	if b.cache != nil && owner != "" {
+		partitionLabel := explicitSession
+		if partitionLabel == "" {
+			partitionLabel = promptCacheKey(body)
+		}
+		if partitionLabel != "" {
+			cachePartition = b.scopeID("cache", event.Project, principal, partitionLabel, string(provider), model)
+		}
+	}
+	retrievalTool := ""
+	if b.config.CCR && owner != "" {
+		retrievalTool = advertisedRetrievalTool(body, protocol)
+	}
+	out, counts, cacheHits, cacheMisses, err := b.compressStable(ctx, model, scope, cachePartition, owner, retrievalTool, texts)
+	event.CacheHits, event.CacheMisses = cacheHits, cacheMisses
 	event.CompressionMS = float64(time.Since(start).Microseconds()) / 1000
 	if event.BudgetAlert {
 		ctx.Log(schemas.LogLevelWarn, "headroom monthly cost reservations reached the proposed $10 alert threshold")
@@ -185,7 +216,9 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 			event.Status = "compressed"
 		}
 		if err == nil {
-			event.Estimate = &counts
+			if cacheHits == 0 && counts.Before > 0 {
+				event.Estimate = &counts
+			}
 			if event.Status != "compressed" {
 				event.Reason = "unchanged"
 			}

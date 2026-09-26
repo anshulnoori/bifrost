@@ -70,6 +70,8 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		"plugins":      []any{map[string]any{"name": "telemetry", "enabled": false}},
 	}
 	config["governance"].(map[string]any)["auth_config"] = map[string]any{"is_enabled": true, "admin_username": "fixture-admin", "admin_password": "fixture-admin-password"}
+	keys := config["governance"].(map[string]any)["virtual_keys"].([]any)
+	config["governance"].(map[string]any)["virtual_keys"] = append(keys, map[string]any{"id": "owner-b", "name": "owner-b", "value": "sk-bf-other-fixture", "is_active": true})
 	data, _ := json.Marshal(config)
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0600); err != nil {
 		t.Fatal(err)
@@ -107,6 +109,7 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		t.Fatalf("gateway not ready: %s", contents)
 	}
 	withIdentity := true
+	virtualKey := "sk-bf-headroom-fixture"
 	call := func(method, path string, body any) (int, []byte) {
 		encoded, _ := json.Marshal(body)
 		req, _ := http.NewRequest(method, base+path, bytes.NewReader(encoded))
@@ -116,7 +119,7 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		}
 		req.SetBasicAuth("fixture-admin", "fixture-admin-password")
 		if withIdentity {
-			req.Header.Set("x-bf-vk", "sk-bf-headroom-fixture")
+			req.Header.Set("x-bf-vk", virtualKey)
 			req.Header.Set("x-bf-session-id", "fixture-session")
 			req.Header.Set("x-headroom-thread", "fixture-thread")
 		}
@@ -130,6 +133,8 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		return resp.StatusCode, data
 	}
 	settings := map[string]any{"name": "headroom", "path": plugin, "enabled": true, "placement": "post_builtin", "config": map[string]any{"enabled": true, "virtual_key_id": "owner-a", "endpoint": endpoint, "token_env": "HEADROOM_PROXY_TOKEN", "scope_key_env": "HEADROOM_SCOPE_KEY", "metrics_address": fmt.Sprintf("127.0.0.1:%d", metricsPort), "metrics_token_env": "HEADROOM_METRICS_TOKEN", "retention_seconds": 900, "timeout_ms": 30000}}
+	settings["config"].(map[string]any)["cache_dir"] = filepath.Join(dir, "decisions")
+	settings["config"].(map[string]any)["ccr"] = true
 	if os.Getenv("HEADROOM_MODAL_KEY") != "" || os.Getenv("HEADROOM_MODAL_SECRET") != "" {
 		settings["config"].(map[string]any)["modal_key_env"] = "HEADROOM_MODAL_KEY"
 		settings["config"].(map[string]any)["modal_secret_env"] = "HEADROOM_MODAL_SECRET"
@@ -139,6 +144,7 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 	}
 	text := strings.Repeat("2026-09-22 INFO request completed successfully\n", 250) + "FATAL transaction=TX-731 amount=1949.37 failed integrity check\n"
 	request := map[string]any{"model": "openai/gpt-4.1", "prompt_cache_key": "fixture-session", "messages": []any{map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": "c", "type": "function", "function": map[string]any{"name": "read_logs", "arguments": "{}"}}}}, map[string]any{"role": "tool", "tool_call_id": "c", "content": text}}}
+	request["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{"name": "headroom_retrieve", "parameters": map[string]any{"type": "object", "properties": map[string]any{"hash": map[string]any{"type": "string"}}, "required": []string{"hash"}}}}}
 	if status, data := call("POST", "/v1/chat/completions", request); status != 200 {
 		t.Fatalf("inference=%d %s", status, data)
 	}
@@ -153,6 +159,22 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 	if status != 200 || gjson.GetBytes(events, "events.0.status").String() != "compressed" || gjson.GetBytes(events, "events.0.provider_usage.prompt_tokens").Int() != 317 {
 		t.Fatalf("monitor=%d %s", status, events)
 	}
+	markerStart := strings.LastIndex(first[0], `{"hash":"`)
+	if markerStart < 0 || len(first[0]) < markerStart+9+64 {
+		t.Fatal("gateway did not emit a CCR handle")
+	}
+	handle := first[0][markerStart+9 : markerStart+9+64]
+	if status, data := call("POST", "/v1/headroom/mcp", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}); status != 200 || gjson.GetBytes(data, "result.tools.#").Int() != 1 || gjson.GetBytes(data, "result.tools.0.name").String() != "headroom_retrieve" {
+		t.Fatalf("CCR tool list=%d %s", status, data)
+	}
+	if status, data := call("POST", "/v1/headroom/mcp", map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": "headroom_retrieve", "arguments": map[string]any{"hash": handle}}}); status != 200 || gjson.GetBytes(data, "result.isError").Bool() || gjson.GetBytes(data, "result.content.0.text").String() != text {
+		t.Fatalf("CCR exact retrieval failed: status=%d isError=%v", status, gjson.GetBytes(data, "result.isError").Bool())
+	}
+	virtualKey = "sk-bf-other-fixture"
+	if status, data := call("POST", "/v1/headroom/mcp", map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": "headroom_retrieve", "arguments": map[string]any{"hash": handle}}}); status != 200 || !gjson.GetBytes(data, "result.isError").Bool() || bytes.Contains(data, []byte("TX-731")) {
+		t.Fatalf("CCR cross-owner denial failed: status=%d", status)
+	}
+	virtualKey = "sk-bf-headroom-fixture"
 	settings["config"].(map[string]any)["enabled"] = false
 	delete(settings, "path") // The UI omits an unchanged native path.
 	if status, data := call("PUT", "/api/plugins/headroom", settings); status != 200 {
@@ -176,7 +198,7 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		t.Fatalf("raw SSE changed=%d %s", status, data)
 	}
 	mu.Lock()
-	streamOK := len(seen) == 3 && len(seen[2]) < len(text) && strings.Contains(seen[2], "TX-731")
+	streamOK := len(seen) == 3 && seen[2] == first[0]
 	mu.Unlock()
 	if !streamOK {
 		_, events := call("GET", "/api/headroom/events", nil)
@@ -198,5 +220,5 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		_, events := call("GET", "/api/headroom/events", nil)
 		t.Fatalf("normal provider without virtual key not compressed: %s", events)
 	}
-	t.Logf("gateway -> live Headroom -> fixture provider: %d -> %d bytes; native usage=317; monitoring, runtime disable/re-enable and byte-identical raw SSE verified", len(text), len(first[0]))
+	t.Logf("gateway -> local Headroom -> fixture provider: %d -> %d bytes; CCR exact retrieval and cross-owner denial, stable replay, runtime disable/re-enable and byte-identical raw SSE verified", len(text), len(first[0]))
 }

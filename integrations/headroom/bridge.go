@@ -44,6 +44,7 @@ type Config struct {
 	MaxBodyBytes          int64  `json:"max_body_bytes"`
 	MinTextBytes          int    `json:"min_text_bytes"`
 	CCR                   bool   `json:"ccr"`
+	CacheDir              string `json:"cache_dir"`
 	MetricsAddress        string `json:"metrics_address"`
 	MetricsTokenEnv       string `json:"metrics_token_env"`
 	RetentionSeconds      int    `json:"retention_seconds"`
@@ -59,6 +60,8 @@ type bridge struct {
 	modalSecret string
 	modal       *modal.Client
 	modalMethod *modal.Function // accessed only while holding modalSlot
+	cache       *decisionCache
+	cacheSlot   chan struct{}
 }
 
 func (b *bridge) close() {
@@ -74,8 +77,8 @@ func newBridge(config Config) (*bridge, error) {
 	if config.Scope != "" && config.Scope != "gateway" && config.Scope != "restricted" {
 		return nil, errors.New("scope must be gateway or restricted")
 	}
-	if config.CCR {
-		return nil, errors.New("ccr is not supported: internal tools and continuations cannot be safely exposed")
+	if config.CCR && config.CacheDir == "" {
+		return nil, errors.New("ccr requires cache_dir")
 	}
 	if config.FailurePolicy == "" {
 		config.FailurePolicy = "open"
@@ -95,7 +98,7 @@ func newBridge(config Config) (*bridge, error) {
 	if config.TimeoutMS < 1 || config.TimeoutMS > 30000 || config.MaxBodyBytes < 1024 || config.MaxBodyBytes > 16<<20 || config.MinTextBytes < 1 {
 		return nil, errors.New("invalid timeout or size limits")
 	}
-	b := &bridge{config: config}
+	b := &bridge{config: config, cacheSlot: make(chan struct{}, 1)}
 	if !config.Enabled && !config.EmbeddingProxyEnabled {
 		return b, nil
 	}
@@ -103,6 +106,11 @@ func newBridge(config Config) (*bridge, error) {
 		b.key = []byte(os.Getenv(config.ScopeKeyEnv))
 		if len(b.key) < 32 {
 			return nil, errors.New("scope_key_env must resolve to a secret of at least 32 bytes")
+		}
+		var cacheErr error
+		b.cache, cacheErr = openDecisionCache(config.CacheDir, b.key)
+		if cacheErr != nil {
+			return nil, cacheErr
 		}
 	}
 	if config.ModalApp != "" {
@@ -226,6 +234,97 @@ func (b *bridge) compress(ctx context.Context, model, scope string, texts []stri
 		out[i] = text
 	}
 	return out, estimate{Before: *result.Before, After: *result.After}, nil
+}
+
+// compressStable makes the durable decision store the serialization point for
+// equal inputs. Holding this lock across the remote miss ensures concurrent
+// callers expose the same winning bytes rather than racing independent results.
+func (b *bridge) compressStable(ctx context.Context, model, scope, partition, owner, retrievalTool string, texts []string) ([]string, estimate, int, int, error) {
+	if b.cache == nil || partition == "" {
+		out, counts, err := b.compress(ctx, model, scope, texts)
+		return out, counts, 0, len(texts), err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(b.config.TimeoutMS)*time.Millisecond)
+	defer cancel()
+	select {
+	case b.cacheSlot <- struct{}{}:
+		defer func() { <-b.cacheSlot }()
+	case <-ctx.Done():
+		return nil, estimate{}, 0, 0, ctx.Err()
+	}
+	out := make([]string, len(texts))
+	type miss struct {
+		index            int
+		original, prefix string
+		prefixRecord     cacheRecord
+	}
+	misses := make([]miss, 0, len(texts))
+	hits := 0
+	for i, text := range texts {
+		record, ok, err := b.cache.lookup(partition, text)
+		if err != nil {
+			return nil, estimate{}, hits, len(misses), err
+		}
+		if ok {
+			out[i] = record.Forwarded
+			if retrievalTool != "" && record.Handle != "" && record.Forwarded != record.Original {
+				out[i] += ccrMarker(retrievalTool, record.Handle)
+			}
+			hits++
+			continue
+		}
+		m := miss{index: i, original: text}
+		// Prefix reuse is deliberately best effort. Exact records remain the
+		// authority; only a byte-identical beginning in this partition is reused.
+		b.cache.mu.Lock()
+		prefix, prefixOK := b.cache.bestPrefix(partition, text)
+		b.cache.mu.Unlock()
+		if prefixOK && len(prefix.Original) < len(text) {
+			m.prefixRecord, m.prefix = prefix, text[len(prefix.Original):]
+		}
+		misses = append(misses, m)
+	}
+	if len(misses) == 0 {
+		return out, estimate{}, hits, 0, nil
+	}
+	inputs := make([]string, len(misses))
+	for i, m := range misses {
+		inputs[i] = m.original
+		if m.prefix != "" {
+			inputs[i] = m.prefix
+		}
+	}
+	compressed, counts, compressErr := b.compress(ctx, model, scope, inputs)
+	if compressErr != nil && b.config.FailurePolicy == "closed" {
+		return nil, estimate{}, hits, len(misses), compressErr
+	}
+	for i, m := range misses {
+		forwarded := m.original
+		if compressErr == nil {
+			forwarded = compressed[i]
+			if m.prefix != "" {
+				forwarded = m.prefixRecord.Forwarded + forwarded
+				counts = estimate{} // Remote counts cover only the appended suffix.
+			}
+		}
+		record, putErr := b.cache.put(partition, owner, m.original, forwarded, b.config.CCR && owner != "")
+		if putErr != nil {
+			return nil, estimate{}, hits, len(misses), putErr
+		}
+		out[m.index] = record.Forwarded
+		if retrievalTool != "" && record.Handle != "" && record.Forwarded != record.Original {
+			out[m.index] += ccrMarker(retrievalTool, record.Handle)
+		}
+	}
+	// A healthy store pins originals on compressor failure. This fail-open
+	// decision is replayed exactly and prevents repeated paid attempts.
+	if compressErr != nil {
+		return out, estimate{}, hits, len(misses), nil
+	}
+	if retrievalTool != "" {
+		counts = estimate{} // Modal token counts exclude gateway retrieval markers.
+	}
+	return out, counts, hits, len(misses), nil
 }
 
 // call is shared by compression and embeddings. Admission has already reserved

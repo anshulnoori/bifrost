@@ -87,7 +87,6 @@ function ConfigurationForm({ plugin }: { plugin?: Plugin }) {
 							config: {
 								...config,
 								...parsed.data,
-								ccr: false,
 								token_env: "HEADROOM_PROXY_TOKEN",
 								scope_key_env: "HEADROOM_SCOPE_KEY",
 								metrics_address: "127.0.0.1:9909",

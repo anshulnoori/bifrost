@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,8 @@ type Event struct {
 	ReservedRequestUSD float64         `json:"cost_reservation_usd"`
 	ReservedMonthUSD   float64         `json:"month_cost_reservations_usd"`
 	BudgetAlert        bool            `json:"budget_alert"`
+	CacheHits          int             `json:"cache_hits,omitempty"`
+	CacheMisses        int             `json:"cache_misses,omitempty"`
 }
 
 type eventLedger struct {
@@ -91,6 +94,10 @@ func (l *eventLedger) handler(token string) http.Handler {
 			proxyEmbedding(w, r)
 			return
 		}
+		if r.URL.Path == "/v1/retrieve" && r.Method == http.MethodPost && r.URL.RawQuery == "" {
+			retrieveOriginal(w, r)
+			return
+		}
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", 405)
 			return
@@ -105,7 +112,7 @@ func (l *eventLedger) handler(token string) http.Handler {
 			if events == nil {
 				events = []json.RawMessage{}
 			}
-			json.NewEncoder(w).Encode(map[string]any{"schema_version": 1, "events": events, "retention_seconds": int(l.retention.Seconds()), "limit": 1000, "quality": "not_evaluated", "ccr": "unsupported", "cost_savings": nil, "attempt_coverage": "primary_and_fallback_hooks; internal_retry_usage_unknown"})
+			json.NewEncoder(w).Encode(map[string]any{"schema_version": 1, "events": events, "retention_seconds": int(l.retention.Seconds()), "limit": 1000, "quality": "not_evaluated", "ccr": "gateway_owned", "cost_savings": nil, "attempt_coverage": "primary_and_fallback_hooks; internal_retry_usage_unknown"})
 		case "/metrics":
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 			fmt.Fprintln(w, "# HELP bifrost_headroom_attempts_total Completed plugin attempts, not network requests\n# TYPE bifrost_headroom_attempts_total counter")
@@ -116,6 +123,35 @@ func (l *eventLedger) handler(token string) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+}
+
+func retrieveOriginal(w http.ResponseWriter, r *http.Request) {
+	var request struct{ Handle, Principal, Project string }
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 4097))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || len(request.Handle) != 64 || request.Principal == "" || (request.Principal[:min(len(request.Principal), 3)] != "vk:" && request.Principal[:min(len(request.Principal), 5)] != "user:") {
+		http.Error(w, "malformed request", http.StatusBadRequest)
+		return
+	}
+	if decoded, err := hex.DecodeString(request.Handle); err != nil || len(decoded) != 32 {
+		http.Error(w, "malformed request", http.StatusBadRequest)
+		return
+	}
+	b := current.Load()
+	if b == nil || !b.config.CCR || b.cache == nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Project is bound separately so identical principal IDs in different
+	// governance projects cannot retrieve one another's records.
+	boundOwner := b.scopeID("owner", request.Project, request.Principal)
+	content, ok := b.cache.retrieve(request.Handle, boundOwner)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"content": content})
 }
 
 // The cache provider uses a loopback bearer credential. Modal secrets never enter

@@ -82,7 +82,7 @@ test('Funnel target is inference-only; private target retains session routes', {
 
   await t.test('rejects admin, metrics, unknown paths, methods and encoded/query variants before upstream', async () => {
     const before = seen.length;
-    for (const path of ['/api/config', '/api/session/oidc/callback?code=synthetic', '/health', '/metrics', '/v1/models', '/v1/compress', '/v1/responses/abc', '/v1/responses?x=1', '/v1/%72esponses', '//v1/responses', '/login']) {
+    for (const path of ['/api/config', '/api/session/oidc/callback?code=synthetic', '/health', '/metrics', '/mcp', '/mcp/headroom', '/v1/mcp', '/v1/headroom/mcp/other', '/v1/headroom/mcp?x=1', '/v1/models', '/v1/compress', '/v1/responses/abc', '/v1/responses?x=1', '/v1/%72esponses', '//v1/responses', '/login']) {
       assert.equal((await request(path)).status, 404, path);
     }
     assert.equal((await request('/v1/responses', {}, '', 'GET')).status, 404);
@@ -119,6 +119,14 @@ test('Funnel target is inference-only; private target retains session routes', {
     // Funnel preserves the public host; listeners must not require Host: localhost.
     assert.equal((await request('/v1/chat/completions', { host: 'bifrost.example.ts.net' })).status, 200);
     assert.equal(serviceRequests.at(-1), '/v1/chat/completions', 'public inference must traverse the Service');
+  });
+  await t.test('allows only the exact POST Headroom MCP route', async () => {
+    assert.equal((await request('/v1/headroom/mcp')).status, 200);
+    assert.equal(serviceRequests.at(-1), '/v1/headroom/mcp');
+    assert.equal(seen.at(-1).path, '/v1/headroom/mcp');
+    assert.equal((await request('/v1/headroom/mcp', {}, '', 'GET')).status, 404);
+    assert.equal((await request('/mcp')).status, 404);
+    assert.equal((await request('/v1/headroom/mcp?session=synthetic')).status, 404);
   });
   await t.test('preserves body bytes, maps Anthropic, strips cookies, identity and routing overrides', async () => {
     const body = '{ "model": "synthetic", "messages": [] }';

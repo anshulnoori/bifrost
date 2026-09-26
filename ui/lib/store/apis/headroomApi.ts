@@ -24,7 +24,7 @@ export const headroomReportSchema = z.object({
 	events: z.array(eventSchema).max(1000),
 	retention_seconds: z.number(),
 	quality: z.literal("not_evaluated"),
-	ccr: z.literal("unsupported"),
+	ccr: z.enum(["unsupported", "gateway_owned"]),
 	cost_savings: z.null(),
 	attempt_coverage: z.string(),
 });

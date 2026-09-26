@@ -158399,6 +158399,39 @@
           "pm.test('Codex client compatibility preserves output and reports drops', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var body = pm.response.json(); pm.expect(body.status).to.equal('completed'); var text = body.output.flatMap(function (item) { return item.content || []; }).map(function (content) { return content.text || ''; }).join(''); pm.expect(text.trim()).to.equal('AMP_OK'); pm.expect(body.extra_fields.dropped_compat_plugin_params).to.include.members(['max_output_tokens', 'temperature', 'top_p']); });"
         ]}}]
       }]
+    },
+    {
+      "name": "111. Headroom dedicated retrieval boundary (headroom-ccr)",
+      "description": "Requires the Headroom monitoring credential configured on the gateway and headroomVirtualKey set to an admitted virtual key. Set headroomCCRReady=1 explicitly. These MCP requests make no provider or compression calls. The unavailable handle must not exist in the disposable fixture store.",
+      "event": [{"listen":"prerequest","script":{"type":"text/javascript","exec":[
+        "if (String(pm.variables.get('headroomCCRReady')) !== '1') { throw new Error('Configure the authenticated Headroom MCP fixture first'); }"
+      ]}}],
+      "item": [
+        {
+          "name": "OpenAI gateway lists only the Headroom retrieval tool (headroom-ccr)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{headroomVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"},
+            "url": "{{baseUrl}}/v1/headroom/mcp"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Only retrieval is exposed', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var tools = pm.response.json().result.tools; pm.expect(tools).to.have.lengthOf(1); pm.expect(tools[0].name).to.equal('headroom_retrieve'); pm.expect(tools[0].inputSchema.required).to.deep.equal(['hash']); });"
+          ]}}]
+        },
+        {
+          "name": "OpenAI gateway rejects an unavailable Headroom handle (headroom-ccr)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{headroomVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"headroom_retrieve\",\"arguments\":{\"hash\":\"0000000000000000000000000000000000000000000000000000000000000000\"}}}"},
+            "url": "{{baseUrl}}/v1/headroom/mcp"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Unavailable handles reveal no content', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var result = pm.response.json().result; pm.expect(result.isError).to.equal(true); pm.expect(result.content[0].text).to.equal('Tool execution failed: Headroom retrieval unavailable'); });"
+          ]}}]
+        }
+      ]
     }
   ]
 }

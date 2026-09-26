@@ -37,11 +37,17 @@ func NewHeadroomHandler() *HeadroomHandler {
 }
 
 func newHeadroomHandler(token string, port int) *HeadroomHandler {
+	return &HeadroomHandler{token: token, endpoint: headroomEndpoint(port, "/v1/events"), client: newHeadroomHTTPClient(2 * time.Second)}
+}
+
+func headroomEndpoint(port int, path string) string {
+	return "http://127.0.0.1:" + strconv.Itoa(port) + path
+}
+
+func newHeadroomHTTPClient(timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	return &HeadroomHandler{token: token, endpoint: "http://127.0.0.1:" + strconv.Itoa(port) + "/v1/events", client: &http.Client{
-		Transport: transport, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}
+	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 func (h *HeadroomHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {

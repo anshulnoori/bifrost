@@ -20,10 +20,12 @@
     "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 30000, "default": 2000},
     "max_body_bytes": {"type": "integer", "minimum": 1024, "maximum": 16777216, "default": 4194304},
     "min_text_bytes": {"type": "integer", "minimum": 1, "default": 1024},
-    "ccr": {"const": false},
+    "ccr": {"type": "boolean", "default": false, "description": "Append retrieval references when cache_dir is configured and the caller advertises a headroom retrieval tool."},
+    "cache_dir": {"type": "string", "description": "Absolute directory for encrypted, bounded, 24-hour compression decisions. Retention and prefix reuse are best effort, not indefinite guarantees."},
     "metrics_address": {"type": "string"},
     "metrics_token_env": {"type": "string"},
     "cost_ledger_path": {"type": "string"},
     "retention_seconds": {"type": "integer", "minimum": 0, "maximum": 86400, "default": 0}
-  }
+  },
+  "allOf": [{"if": {"properties": {"ccr": {"const": true}}, "required": ["ccr"]}, "then": {"required": ["cache_dir"]}}]
 }

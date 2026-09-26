@@ -2352,12 +2352,19 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
 	s.MCPServerHandler = mcpServerHandler
+	headroomMCPHandler, err := handlers.NewHeadroomMCPHandler(ctx, s.Config, s, s.OAuth2IdentityResolver, vkCache)
+	if err != nil {
+		return fmt.Errorf("failed to initialize Headroom MCP server handler: %v", err)
+	}
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	s.MCPServerHandler.RegisterRoutes(s.Router, middlewares...)
+	if headroomMCPHandler != nil {
+		headroomMCPHandler.RegisterRoutes(s.Router, middlewares...)
+	}
 	return nil
 }
 

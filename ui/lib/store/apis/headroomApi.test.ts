@@ -3,6 +3,11 @@ import { headroomReportSchema } from "./headroomApi";
 import fixture from "../../../../integrations/headroom/testdata/dashboard.json";
 
 describe("Headroom report contract", () => {
+	it("accepts gateway-owned CCR capability without claiming cost savings", () => {
+		const report = headroomReportSchema.parse({ ...fixture, ccr: "gateway_owned" });
+		expect(report.ccr).toBe("gateway_owned");
+		expect(report.cost_savings).toBeNull();
+	});
 	it("accepts embedding events alongside compression without inventing token savings", () => {
 		const report = headroomReportSchema.parse({
 			...fixture,

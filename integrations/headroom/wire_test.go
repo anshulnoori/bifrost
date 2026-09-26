@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -73,6 +75,25 @@ func TestCacheHintsDoNotBlockCompression(t *testing.T) {
 	}
 }
 
+func TestCCRToolAdvertisementAndRetrievedOutputExclusion(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"tenant__headroom_retrieve"}}],"messages":[{"role":"assistant","tool_calls":[{"id":"r1","function":{"name":"tenant__headroom_retrieve"}},{"id":"c1","function":{"name":"other"}}]},{"role":"tool","tool_call_id":"r1","content":"retrieved original output"},{"role":"tool","tool_call_id":"c1","content":"ordinary tool output"}]}`)
+	if got := advertisedRetrievalTool(body, "chat"); got != "tenant__headroom_retrieve" {
+		t.Fatalf("actual advertised name lost: %q", got)
+	}
+	paths, texts, reason := slots(body, "chat", 8)
+	if reason != "" || len(paths) != 1 || texts[0] != "ordinary tool output" {
+		t.Fatalf("retrieval output replayed/compressed: %v %v %s", paths, texts, reason)
+	}
+	without := []byte(`{"tools":[{"type":"function","function":{"name":"other"}}]}`)
+	if advertisedRetrievalTool(without, "chat") != "" {
+		t.Fatal("CCR marker allowed without exact advertised tool")
+	}
+	marker := ccrMarker("tenant__headroom_retrieve", strings.Repeat("a", 64))
+	if !strings.Contains(marker, "tenant__headroom_retrieve") || !strings.Contains(marker, `{"hash":"`) {
+		t.Fatal("marker contract changed")
+	}
+}
+
 func TestUnknownEndpointsBypass(t *testing.T) {
 	for _, path := range []string{"/v1/batches", "/v1/responses/id"} {
 		body := []byte(`{"model":"m","stream":true,"input":[{"type":"function_call_output","output":"original output"}]}`)
@@ -106,6 +127,41 @@ func TestTypedCodexCacheHintCompression(t *testing.T) {
 		if *out.ResponsesRequest.Params.PromptCacheKey != "caller-session" || out.ResponsesRequest.Provider != schemas.Codex || out.RequestType != requestType {
 			t.Fatal("cache key or routing changed")
 		}
+	}
+}
+
+func TestPromptCacheKeyReplaysAcrossRequestIDsButNotOwners(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	var err error
+	b.cache, err = openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.config.CCR = true
+	body := []byte(`{"model":"m","prompt_cache_key":"stable-key","tools":[{"type":"function","name":"mcp__headroom_retrieve"}],"input":[{"type":"function_call_output","call_id":"c","output":"original output for retrieval"}]}`)
+	req := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Provider: schemas.Codex, Method: "POST", Path: "/v1/responses", Model: "m", Body: body,
+	}}
+	var first []byte
+	for i, owner := range []string{"vk-a", "vk-a", "vk-b"} {
+		ctx := admitted("project-a", owner)
+		ctx.SetValue(schemas.BifrostContextKeySessionID, "")
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, []string{"request-a", "request-b", "request-c"}[i])
+		out, sc, err := b.pre(ctx, req)
+		if err != nil || sc != nil || !bytes.Contains(out.PassthroughRequest.Body, []byte("mcp__headroom_retrieve with")) {
+			t.Fatal("CCR hook did not expose retrieval marker", err)
+		}
+		if i == 0 {
+			first = out.PassthroughRequest.Body
+		} else if i == 1 && (!bytes.Equal(first, out.PassthroughRequest.Body) || calls.Load() != 1) {
+			t.Fatal("request ID changed stable output or invoked compressor")
+		} else if i == 2 && (bytes.Equal(first, out.PassthroughRequest.Body) || calls.Load() != 2) {
+			t.Fatal("different owner reused another owner's record")
+		}
+	}
+	if !bytes.Equal(body, req.PassthroughRequest.Body) {
+		t.Fatal("original request mutated")
 	}
 }
 

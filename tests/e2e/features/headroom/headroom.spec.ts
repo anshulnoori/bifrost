@@ -2,7 +2,7 @@ import { test, expect } from '../../core/fixtures/base.fixture'
 import report from '../../../../integrations/headroom/testdata/dashboard.json'
 
 test('embedding events do not prevent compression metrics from loading', async ({ page }) => {
-  const mixed = { ...report, events: [...report.events, {
+  const mixed = { ...report, ccr: 'gateway_owned', events: [...report.events, {
     ...report.events[1], started: '2026-09-22T12:02:00Z', status: 'embedded', reason: 'embedding',
     provider: '', model: '', thread_hash: '', principal_hash: '', project: '',
   }] }
@@ -16,6 +16,26 @@ test('embedding events do not prevent compression metrics from loading', async (
   const closeSetup = page.getByTestId('onboarding-widget-close')
   if (await closeSetup.isVisible()) await closeSetup.click()
   await page.getByRole('table').screenshot({ path: '../../.amp/in/artifacts/headroom-mixed-events.png' })
+})
+
+test('configuration saves preserve operator-managed cache and CCR settings', async ({ page }) => {
+  const plugin = { name: 'headroom', enabled: true, path: '/tmp/headroom.so', order: 0, config: {
+    enabled: true, scope: 'gateway', endpoint: 'http://127.0.0.1:8787',
+    ccr: true, cache_dir: '/var/lib/bifrost/headroom-cache',
+  } }
+  await page.route('**/api/plugins', route => route.fulfill({ json: { plugins: [plugin] } }))
+  await page.route('**/api/plugins/headroom', async route => {
+    expect(route.request().method()).toBe('PUT')
+    const saved = route.request().postDataJSON()
+    expect(saved.config.ccr).toBe(true)
+    expect(saved.config.cache_dir).toBe('/var/lib/bifrost/headroom-cache')
+    await route.fulfill({ json: { plugin } })
+  })
+  await page.route('**/api/headroom/events', route => route.fulfill({ json: report }))
+  await page.goto('/workspace/headroom')
+  await page.getByTestId('headroom-configuration-tab').click()
+  await page.getByRole('button', { name: 'Save configuration', exact: true }).click()
+  await expect(page.getByRole('status')).toHaveText('Configuration saved.')
 })
 
 test('overview automatically loads estimates, filters chart, and separates configuration', async ({ page }) => {

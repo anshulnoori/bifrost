@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,6 +126,143 @@ func TestCompressContract(t *testing.T) {
 		if b.scopeID(parts...) == b.scopeID(other...) {
 			t.Fatal("scope omitted dimension", i)
 		}
+	}
+}
+
+func TestDurableStableCompressionDecisions(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	dir := t.TempDir()
+	cache, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache, b.config.CacheDir = cache, dir
+	partition, owner := "partition", "owner"
+	first, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, "", []string{"original one", "original two"})
+	if err != nil || hits != 0 || misses != 2 || calls.Load() != 1 {
+		t.Fatalf("first decision: %v %d %d calls=%d", err, hits, misses, calls.Load())
+	}
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, "", []string{"original one", "original two", "original three"})
+	if err != nil || hits != 2 || misses != 1 || calls.Load() != 2 || second[0] != first[0] {
+		t.Fatalf("partial replay: %v %d %d calls=%d", err, hits, misses, calls.Load())
+	}
+
+	// Reload from disk and race equal callers. No caller may invoke Modal again.
+	restarted, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = restarted
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, _, _, _, e := b.compressStable(context.Background(), "m", "s", partition, owner, "", []string{"original one"})
+			if e != nil || got[0] != first[0] {
+				t.Errorf("non-convergent replay: %v %q", e, got)
+			}
+		}()
+	}
+	wg.Wait()
+	if calls.Load() != 2 {
+		t.Fatalf("restart/concurrency called compressor: %d", calls.Load())
+	}
+	data, err := os.ReadFile(dir + "/" + cache.id(partition, "original one") + ".cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "original one") || strings.Contains(string(data), "short") {
+		t.Fatal("cache plaintext exposed on disk")
+	}
+}
+
+func TestCacheFailurePinExpiryAndCapacity(t *testing.T) {
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) })
+	cache, err := openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = cache
+	out, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "owner", "", []string{"original failure"})
+	if err != nil || out[0] != "original failure" {
+		t.Fatalf("failure not pinned: %v %q", err, out)
+	}
+	record, ok, err := cache.lookup("p", "original failure")
+	if err != nil || !ok || record.Forwarded != record.Original {
+		t.Fatal("missing pinned original", err)
+	}
+	cache.mu.Lock()
+	record.Expires = time.Now().Add(-time.Second)
+	cache.records[record.Key] = record
+	cache.mu.Unlock()
+	if _, ok, err = cache.lookup("p", "original failure"); err != nil || ok {
+		t.Fatal("expired record retained", err)
+	}
+	cache.mu.Lock()
+	for i := 0; i < cacheMaxEntries; i++ {
+		key := fmt.Sprint(i)
+		cache.records[key] = cacheRecord{Key: key, Expires: time.Now().Add(time.Hour)}
+	}
+	cache.mu.Unlock()
+	if _, err = cache.put("p", "owner", "new original", "new", false); err == nil {
+		t.Fatal("capacity silently evicted a live record")
+	}
+}
+
+func TestStableCompressionCancellationAndClosedPolicy(t *testing.T) {
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) })
+	var err error
+	b.cache, err = openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cacheSlot <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, _, err := b.compressStable(ctx, "m", "s", "p", "o", "", []string{"original failure"}); err != context.Canceled {
+		t.Fatalf("cache wait ignored cancellation: %v", err)
+	}
+	<-b.cacheSlot
+	b.config.FailurePolicy = "closed"
+	if _, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "o", "", []string{"original failure"}); err == nil {
+		t.Fatal("closed policy silently forwarded original")
+	}
+	if _, ok, err := b.cache.lookup("p", "original failure"); err != nil || ok {
+		t.Fatal("closed failure cached a successful decision", err)
+	}
+}
+
+func TestCCRCompressionProducesRetrievableStableBytes(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	var err error
+	b.cache, err = openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.config.CCR = true
+	owner := b.scopeID("owner", "project-a", "vk:alice")
+	original := "important original tool output"
+	first, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, "mcp__headroom_retrieve", []string{original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := b.cache.lookup("p", original)
+	if err != nil || !ok || len(record.Handle) != 64 || first[0] != "short"+ccrMarker("mcp__headroom_retrieve", record.Handle) {
+		t.Fatal("missing durable CCR marker", err)
+	}
+	if got, ok := b.cache.retrieve(record.Handle, owner); !ok || got != original {
+		t.Fatal("marker does not retrieve exact original")
+	}
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", "p", owner, "mcp__headroom_retrieve", []string{original})
+	if err != nil || first[0] != second[0] || hits != 1 || misses != 0 || calls.Load() != 1 {
+		t.Fatal("CCR replay changed forwarded bytes or invoked compressor", err)
+	}
+	withoutTool, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, "", []string{original})
+	if err != nil || withoutTool[0] != "short" {
+		t.Fatal("reference exposed without retrieval tool", err)
 	}
 }
 

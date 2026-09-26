@@ -1,6 +1,6 @@
 # Experimental Headroom integration
 
-This integration is **not production-ready**. It provides marker-free tool-result compression through the official Headroom service. It does not implement CCR.
+This integration is **experimental**. It provides tool-result compression through Headroom, optional durable compression decisions, and gateway-owned CCR retrieval.
 
 The native Bifrost plugin runs after governance and routing (`post_builtin`). Headroom remains the only compression implementation. No Go compressor or provider proxy exists here.
 
@@ -26,7 +26,8 @@ The plugin patches selected text fields without changing admitted model, provide
 | Provider-managed conversation state or Anthropic `cache_control` | Bypass |
 | Multimedia tool results | Preserve unchanged |
 | Missing governance/configured scope/session/thread | Bypass |
-| CCR or internal retrieval obligations | Reject configuration or sidecar response |
+| Sidecar CCR or internal retrieval obligations | Reject sidecar response |
+| Gateway CCR | Require encrypted storage, authenticated ownership, and an advertised retrieval tool |
 
 OpenAI cache keys do not identify stored conversation state. Cache reuse still requires a matching prompt prefix.
 Compression can reduce cache hits after the changed text; it does not disable caching or change the caller's cache key.
@@ -36,7 +37,44 @@ These reasons replace the ambiguous `provider_cache_or_state` reason. Events con
 
 Responses and SSE chunks remain unchanged. The plugin never executes client tools or makes provider calls.
 Compression failure preserves the original request in `open` mode. In `closed` mode, failure returns 503 without fallbacks.
-Cancellation also stops the compression request. No compression-result memoization or semantic answer cache exists in this plugin.
+Cancellation also stops the compression request. The optional decision cache stores compression results, not model answers.
+
+## Durable decisions and explicit retrieval
+
+Both features default to off. `cache_dir` selects an absolute, private directory on the gateway. `ccr: true` also requires this directory.
+Changes to either field require a gateway restart. Each directory belongs to one gateway process, not concurrent replicas.
+The dashboard preserves these configuration fields but does not enable them.
+
+The cache encrypts original and forwarded tool text with AES-GCM. It derives its encryption key from `scope_key_env`.
+Directory permissions are `0700`, and record permissions are `0600`. Losing or changing the key makes existing records unreadable.
+Records expire after 24 hours. Access or startup removes expired records, so idle files can remain on disk beyond expiry.
+The cache permits at most 10,000 records and 256 MiB of encrypted records. It refuses new records rather than evicting unexpired records.
+This storage contains original tool output even when request logging is off. Operators must approve that retention before activation.
+
+Partitions include the authenticated principal, project, provider, model, and explicit session ID or `prompt_cache_key`.
+Request IDs and anonymous gateway scope never enable persistent replay.
+An exact match reuses saved text without calling Headroom. Unchanged prefixes can also reuse saved text when a tool appends output.
+Compressor failures in `open` mode save unchanged text. In `closed` mode, compressor failures remain errors.
+Replay estimates remain unknown when cached and new text mix. Cache reuse does not guarantee a provider cache hit.
+Expiry, storage failure, changed tool availability, or a different partition can change forwarded text. This is bounded reuse, not permanent prefix stability.
+
+CCR adds an opaque retrieval handle only when the request advertises `headroom_retrieve` or a name ending in `__headroom_retrieve`.
+The gateway stores the original before exposing its handle. Modal remains stateless and emits no retrieval markers.
+The gateway neither injects tools nor makes continuation calls. Results from retrieval tools bypass compression and replay.
+
+The dedicated MCP endpoint is `POST /v1/headroom/mcp`. It advertises only `headroom_retrieve`, with one required `hash` argument.
+The MCP connection must use the same admitted virtual key or user as inference, with the same project when present.
+Ownership is principal-level, not thread-level. A holder of that credential can retrieve its handles across sessions until expiry.
+Missing, expired, disabled, and wrong-owner retrievals return an opaque unavailable error.
+The public edge exposes only this exact POST route, not the general `/mcp` endpoint.
+
+Before production activation:
+
+1. Approve encrypted original-text retention and provision a private, persistent `cache_dir` outside the Nix store.
+2. Deploy the matching gateway, native plugin, and exact edge route.
+3. Connect Amp to the MCP endpoint with its existing inference virtual key through private credential input.
+4. Verify that Amp advertises the retrieval tool in inference requests before enabling `ccr` and restarting the gateway.
+5. Verify exact retrieval and cross-key denial with disposable content before relying on CCR.
 
 ## Private Modal deployment
 
@@ -376,8 +414,8 @@ Zero disables event storage. Restart removes events. Metrics contain finite outc
 The private snapshot includes provider, model, project, and opaque principal/thread hashes. It contains no prompt text or credentials.
 Disable upstream request logging separately if prompt retention is prohibited. This plugin does not change Bifrost logging policy.
 
-The HMAC scope is an attribution partition, not a CCR capability. No CCR handles exist in this implementation.
-There is no shared event database, durable turn state, migration, affinity router, or restart recovery.
+The HMAC attribution scope differs from the owner-bound CCR handle. A handle alone does not authorize retrieval.
+There is no shared event database, durable turn state, or affinity router. Only compression records survive gateway restart.
 Monitor configuration changes require a gateway restart. Drain active requests before plugin removal or restart.
 The monitor listener lives until gateway exit because native-plugin reloads share package state.
 Removing the plugin stops new hook events. Restart the gateway to close the listener immediately.
@@ -414,7 +452,7 @@ No database migration is necessary because this patch adds no durable tables.
 Production remains blocked by:
 
 - Strict isolation of Headroom learned state across threads.
-- Scoped CCR capabilities, expiry, durable continuations, affinity, and bounded safe redrive.
+- Multi-replica CCR storage and routing. Automatic continuations and redrive remain unsupported.
 - Complete provider-attempt accounting and cost attribution.
 - Durable metadata storage and HA aggregation.
 - End-to-end Codex OAuth and real-provider protocol harness coverage.
