@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -139,11 +140,11 @@ func TestDurableStableCompressionDecisions(t *testing.T) {
 	}
 	b.cache, b.config.CacheDir = cache, dir
 	partition, owner := "partition", "owner"
-	first, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, "", []string{"original one", "original two"})
+	first, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, retrievalDescriptor{}, []string{"original one", "original two"})
 	if err != nil || hits != 0 || misses != 2 || calls.Load() != 1 {
 		t.Fatalf("first decision: %v %d %d calls=%d", err, hits, misses, calls.Load())
 	}
-	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, "", []string{"original one", "original two", "original three"})
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, retrievalDescriptor{}, []string{"original one", "original two", "original three"})
 	if err != nil || hits != 2 || misses != 1 || calls.Load() != 2 || second[0] != first[0] {
 		t.Fatalf("partial replay: %v %d %d calls=%d", err, hits, misses, calls.Load())
 	}
@@ -159,7 +160,7 @@ func TestDurableStableCompressionDecisions(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got, _, _, _, e := b.compressStable(context.Background(), "m", "s", partition, owner, "", []string{"original one"})
+			got, _, _, _, e := b.compressStable(context.Background(), "m", "s", partition, owner, retrievalDescriptor{}, []string{"original one"})
 			if e != nil || got[0] != first[0] {
 				t.Errorf("non-convergent replay: %v %q", e, got)
 			}
@@ -185,7 +186,7 @@ func TestCacheFailurePinExpiryAndCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.cache = cache
-	out, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "owner", "", []string{"original failure"})
+	out, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "owner", retrievalDescriptor{}, []string{"original failure"})
 	if err != nil || out[0] != "original failure" {
 		t.Fatalf("failure not pinned: %v %q", err, out)
 	}
@@ -221,12 +222,12 @@ func TestStableCompressionCancellationAndClosedPolicy(t *testing.T) {
 	b.cacheSlot <- struct{}{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, _, _, err := b.compressStable(ctx, "m", "s", "p", "o", "", []string{"original failure"}); err != context.Canceled {
+	if _, _, _, _, err := b.compressStable(ctx, "m", "s", "p", "o", retrievalDescriptor{}, []string{"original failure"}); err != context.Canceled {
 		t.Fatalf("cache wait ignored cancellation: %v", err)
 	}
 	<-b.cacheSlot
 	b.config.FailurePolicy = "closed"
-	if _, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "o", "", []string{"original failure"}); err == nil {
+	if _, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "o", retrievalDescriptor{}, []string{"original failure"}); err == nil {
 		t.Fatal("closed policy silently forwarded original")
 	}
 	if _, ok, err := b.cache.lookup("p", "original failure"); err != nil || ok {
@@ -245,7 +246,8 @@ func TestCCRCompressionProducesRetrievableStableBytes(t *testing.T) {
 	b.config.CCR = true
 	owner := b.scopeID("owner", "project-a", "vk:alice")
 	original := "important original tool output"
-	first, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, "mcp__headroom_retrieve", []string{original})
+	direct := retrievalDescriptor{mode: ccrDirect, tool: "mcp__headroom_retrieve"}
+	first, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, direct, []string{original})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,13 +258,106 @@ func TestCCRCompressionProducesRetrievableStableBytes(t *testing.T) {
 	if got, ok := b.cache.retrieve(record.Handle, owner); !ok || got != original {
 		t.Fatal("marker does not retrieve exact original")
 	}
-	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", "p", owner, "mcp__headroom_retrieve", []string{original})
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", "p", owner, direct, []string{original})
 	if err != nil || first[0] != second[0] || hits != 1 || misses != 0 || calls.Load() != 1 {
 		t.Fatal("CCR replay changed forwarded bytes or invoked compressor", err)
 	}
-	withoutTool, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, "", []string{original})
+	withoutTool, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, retrievalDescriptor{}, []string{original})
 	if err != nil || withoutTool[0] != "short" {
 		t.Fatal("reference exposed without retrieval tool", err)
+	}
+}
+
+func TestDeferredCCRRestartAndLegacyRecordStability(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	dir := t.TempDir()
+	cache, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache, b.config.CacheDir = cache, dir
+	owner := "owner"
+	legacy := "legacy original output"
+	if _, _, _, _, err = b.compressStable(context.Background(), "m", "s", "legacy", owner, retrievalDescriptor{}, []string{legacy}); err != nil {
+		t.Fatal(err)
+	}
+	b.config.CCR = true
+	deferred := retrievalDescriptor{mode: ccrAmpDeferred}
+	legacyReplay, _, _, _, err := b.compressStable(context.Background(), "m", "s", "legacy", owner, deferred, []string{legacy})
+	if err != nil || legacyReplay[0] != "short" {
+		t.Fatalf("legacy record gained a retroactive marker: %q %v", legacyReplay, err)
+	}
+
+	fresh := "fresh original output"
+	first, _, _, _, err := b.compressStable(context.Background(), "m", "s", "fresh", owner, deferred, []string{fresh})
+	if err != nil || !strings.Contains(first[0], "advertised tool_search") {
+		t.Fatalf("missing deferred marker: %q %v", first, err)
+	}
+	reopened, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = reopened
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", "fresh", owner, deferred, []string{fresh})
+	if err != nil || second[0] != first[0] || hits != 1 || misses != 0 || calls.Load() != 2 {
+		t.Fatalf("deferred replay changed after restart: %q %d %d calls=%d %v", second, hits, misses, calls.Load(), err)
+	}
+}
+
+func TestOptedAmpOutputNeverReplaysCachedCompression(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	b.config.AmpDeferredRetrievalVirtualKeyID = "vk-a"
+	cache, err := openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = cache
+	ordinary := []byte(`{"model":"m","prompt_cache_key":"stable","input":[{"type":"function_call","call_id":"ordinary","name":"shell"},{"type":"function_call_output","call_id":"ordinary","output":"original output"}]}`)
+	req := func(body []byte) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Codex, Method: "POST", Path: "/v1/responses", Model: "m", Body: body}}
+	}
+	first, _, err := b.pre(admitted("project-a", "vk-a"), req(ordinary))
+	if err != nil || gjson.GetBytes(first.PassthroughRequest.Body, "input.1.output").Str != "short" || calls.Load() != 1 {
+		t.Fatal("failed to seed shortened record", err)
+	}
+	amp := []byte(`{"model":"m","prompt_cache_key":"stable","input":[{"type":"custom_tool_call","name":"code_exec","call_id":"exec"},{"type":"custom_tool_call_output","call_id":"exec","output":"original output"}]}`)
+	secondCtx := admitted("project-a", "vk-a")
+	second, _, err := b.pre(secondCtx, req(amp))
+	if err != nil || !bytes.Equal(second.PassthroughRequest.Body, amp) || calls.Load() != 1 || secondCtx.Value(eventKey).(*Event).CCRMode != ccrNone {
+		t.Fatalf("opted Amp output was compressed or replayed with CCR off: %s calls=%d %v", second.PassthroughRequest.Body, calls.Load(), err)
+	}
+}
+
+func TestDeferredCCRRequiresConfiguredAuthenticatedCapability(t *testing.T) {
+	b := testBridge(t, goodReply)
+	b.config.CCR = true
+	b.config.AmpDeferredRetrievalVirtualKeyID = "vk-a"
+	cache, err := openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = cache
+	body := []byte(`{"model":"m","prompt_cache_key":"stable","tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"code_exec"},{"type":"function","name":"tool_search"}]}],"input":[{"type":"function_call","call_id":"ordinary","name":"shell"},{"type":"function_call_output","call_id":"ordinary","output":"original output"}]}`)
+	req := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Codex, Method: "POST", Path: "/v1/responses", Model: "m", Body: body}}
+	}
+	ctx := admitted("project-a", "vk-a")
+	out, _, err := b.pre(ctx, req())
+	if err != nil || ctx.Value(eventKey).(*Event).CCRMode != ccrAmpDeferred || !bytes.Contains(out.PassthroughRequest.Body, []byte("advertised tool_search")) {
+		t.Fatalf("authenticated capability did not select deferred CCR: %s %v", out.PassthroughRequest.Body, err)
+	}
+	wrong := admitted("project-a", "vk-b")
+	out, _, err = b.pre(wrong, req())
+	if err != nil || wrong.Value(eventKey).(*Event).CCRMode != ccrNone || bytes.Contains(out.PassthroughRequest.Body, []byte("advertised tool_search")) {
+		t.Fatal("wrong virtual key selected deferred CCR")
+	}
+	missing := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	missingReq := req()
+	out, _, err = b.pre(missing, missingReq)
+	if err != nil || out != missingReq || missing.Value(eventKey).(*Event).CCRMode != ccrNone {
+		t.Fatal("missing principal selected deferred CCR")
 	}
 }
 

@@ -38,6 +38,11 @@ in {
       default = null;
       description = "Private Modal app for Headroom compression.";
     };
+    headroomAmpVirtualKeyID = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "Virtual key ID whose Amp client has authenticated Headroom MCP retrieval configured; enables CCR.";
+    };
     semanticCacheModalApp = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -162,7 +167,8 @@ in {
             scope = "gateway";
             cache_dir = "${config.services.bifrost.stateDir}/headroom-cache";
             # Retrieval references require a connected, authenticated client tool.
-            ccr = false;
+            ccr = cfg.headroomAmpVirtualKeyID != "";
+            amp_deferred_retrieval_virtual_key_id = cfg.headroomAmpVirtualKeyID;
             scope_key_env = "HEADROOM_SCOPE_KEY";
             modal_key_env = "HEADROOM_MODAL_TOKEN_ID";
             modal_secret_env = "HEADROOM_MODAL_TOKEN_SECRET";

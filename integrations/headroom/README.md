@@ -27,7 +27,7 @@ The plugin patches selected text fields without changing admitted model, provide
 | Multimedia tool results | Preserve unchanged |
 | Missing governance/configured scope/session/thread | Bypass |
 | Sidecar CCR or internal retrieval obligations | Reject sidecar response |
-| Gateway CCR | Require encrypted storage, authenticated ownership, and an advertised retrieval tool |
+| Gateway CCR | Require encrypted storage, authenticated ownership, and direct or opted-in Amp deferred retrieval capability |
 
 OpenAI cache keys do not identify stored conversation state. Cache reuse still requires a matching prompt prefix.
 Compression can reduce cache hits after the changed text; it does not disable caching or change the caller's cache key.
@@ -42,7 +42,8 @@ Cancellation also stops the compression request. The optional decision cache sto
 ## Durable decisions and explicit retrieval
 
 Both features default to off. `cache_dir` selects an absolute, private directory on the gateway. `ccr: true` also requires this directory.
-Changes to either field require a gateway restart. Each directory belongs to one gateway process, not concurrent replicas.
+`amp_deferred_retrieval_virtual_key_id` defaults to an empty string. A non-empty value opts in only the authenticated inference principal with that exact virtual key ID.
+Changes to these three fields require a gateway restart. Each directory belongs to one gateway process, not concurrent replicas.
 The dashboard preserves these configuration fields but does not enable them.
 
 The cache encrypts original and forwarded tool text with AES-GCM. It derives its encryption key from `scope_key_env`.
@@ -58,9 +59,12 @@ Compressor failures in `open` mode save unchanged text. In `closed` mode, compre
 Replay estimates remain unknown when cached and new text mix. Cache reuse does not guarantee a provider cache hit.
 Expiry, storage failure, changed tool availability, or a different partition can change forwarded text. This is bounded reuse, not permanent prefix stability.
 
-CCR adds an opaque retrieval handle only when the request advertises `headroom_retrieve` or a name ending in `__headroom_retrieve`.
+Direct CCR adds an opaque retrieval handle only when the request structurally advertises `headroom_retrieve`, a name ending in `__headroom_retrieve`, or a qualified name ending in `.headroom_retrieve`.
+For the opted-in Amp key, deferred CCR is selected only when the same request structurally advertises both `code_exec` and `tool_search`, either as flat functions or inside the same Responses namespace declaration. Descriptions and other request text never establish capability.
+The deferred marker tells Amp to discover `headroom.headroom_retrieve` with the advertised `tool_search`, then import and invoke `headroom_retrieve` from the `headroom` MCP server through the advertised `code_exec`. The gateway does not claim that retrieval is in the provider tool schema.
 The gateway stores the original before exposing its handle. Modal remains stateless and emits no retrieval markers.
 The gateway neither injects tools nor makes continuation calls. Results from retrieval tools bypass compression and replay.
+For the opted-in Amp key, outputs correlated by non-empty call/result IDs to `code_exec` or `tool_search` also bypass compression and replay. This protection remains active when `ccr` is false and when later requests omit tool declarations. Uncorrelated outputs remain untouched; correlated ordinary tools such as shell and read remain eligible.
 
 The dedicated MCP endpoint is `POST /v1/headroom/mcp`. It advertises only `headroom_retrieve`, with one required `hash` argument.
 The MCP connection must use the same admitted virtual key or user as inference, with the same project when present.

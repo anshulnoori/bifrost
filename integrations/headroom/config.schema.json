@@ -21,6 +21,7 @@
     "max_body_bytes": {"type": "integer", "minimum": 1024, "maximum": 16777216, "default": 4194304},
     "min_text_bytes": {"type": "integer", "minimum": 1, "default": 1024},
     "ccr": {"type": "boolean", "default": false, "description": "Append retrieval references when cache_dir is configured and the caller advertises a headroom retrieval tool."},
+    "amp_deferred_retrieval_virtual_key_id": {"type": "string", "default": "", "description": "Authenticated virtual key ID allowed to receive Amp deferred-retrieval instructions when code_exec and tool_search are structurally advertised. Changes require a gateway restart."},
     "cache_dir": {"type": "string", "description": "Absolute directory for encrypted, bounded, 24-hour compression decisions. Retention and prefix reuse are best effort, not indefinite guarantees."},
     "metrics_address": {"type": "string"},
     "metrics_token_env": {"type": "string"},

@@ -23,6 +23,9 @@ let
   };
   private = (evaluate false false).config;
   public = (evaluate true true).config;
+  ampCCR = ((evaluate true true).extendModules {
+    modules = [{ services.bifrostDeployment.headroomAmpVirtualKeyID = "fixture-amp-owner"; }];
+  }).config;
   semanticOnly = (evaluate false true).config;
   mismatched = ((evaluate true true).extendModules {
     modules = [{ services.bifrostDeployment.semanticCacheModalApp = flake.inputs.nixpkgs.lib.mkForce "other-app"; }];
@@ -44,6 +47,9 @@ assert public.services.bifrost.settings.providers.headroom_embeddings.custom_pro
 assert (builtins.head public.services.bifrost.settings.providers.headroom_embeddings.keys).value == "env.HEADROOM_METRICS_TOKEN";
 assert !(builtins.elemAt private.services.bifrost.settings.plugins 1).config.enabled;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.enabled;
+assert !(builtins.elemAt public.services.bifrost.settings.plugins 1).config.ccr;
+assert (builtins.elemAt ampCCR.services.bifrost.settings.plugins 1).config.ccr;
+assert (builtins.elemAt ampCCR.services.bifrost.settings.plugins 1).config.amp_deferred_retrieval_virtual_key_id == "fixture-amp-owner";
 assert !(builtins.elemAt semanticOnly.services.bifrost.settings.plugins 1).config.enabled;
 assert (builtins.elemAt semanticOnly.services.bifrost.settings.plugins 1).config.embedding_proxy_enabled;
 assert (builtins.head semanticOnly.services.bifrost.settings.plugins).config.dimension == 384;

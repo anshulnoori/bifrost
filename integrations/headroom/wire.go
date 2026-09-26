@@ -12,7 +12,7 @@ import (
 // slots recognizes only known tool-result text positions. Patching the original
 // JSON preserves all other bytes, including signed/encrypted reasoning, strict
 // schemas, tool arguments, multimodal blocks and unknown extension fields.
-func slots(body []byte, protocol string, minBytes int) ([]string, []string, string) {
+func slots(body []byte, protocol string, minBytes int, excludeAmpDeferred bool) ([]string, []string, string) {
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return nil, nil, "invalid_json"
 	}
@@ -33,7 +33,11 @@ func slots(body []byte, protocol string, minBytes int) ([]string, []string, stri
 		return nil, nil, "background"
 	}
 	var paths, texts []string
-	retrievalIDs := retrievalCallIDs(body, protocol)
+	retrievalIDs := protectedCallIDs(body, protocol, excludeAmpDeferred)
+	protected := func(id string) bool {
+		value, known := retrievalIDs[id]
+		return value || (excludeAmpDeferred && !known)
+	}
 	add := func(path string) {
 		value := gjson.GetBytes(body, path)
 		if value.Type == gjson.String && len(value.Str) >= minBytes && !strings.Contains(value.Str, "<<ccr:") && !strings.Contains(value.Str, "headroom_retrieve") {
@@ -44,13 +48,13 @@ func slots(body []byte, protocol string, minBytes int) ([]string, []string, stri
 	switch protocol {
 	case "chat":
 		for i, msg := range gjson.GetBytes(body, "messages").Array() {
-			if msg.Get("role").Str == "tool" && !retrievalIDs[msg.Get("tool_call_id").Str] {
+			if msg.Get("role").Str == "tool" && !protected(msg.Get("tool_call_id").Str) {
 				add("messages." + strconv.Itoa(i) + ".content")
 			}
 		}
 	case "responses":
 		for i, item := range gjson.GetBytes(body, "input").Array() {
-			if (item.Get("type").Str == "function_call_output" || item.Get("type").Str == "custom_tool_call_output") && !retrievalIDs[item.Get("call_id").Str] {
+			if (item.Get("type").Str == "function_call_output" || item.Get("type").Str == "custom_tool_call_output") && !protected(item.Get("call_id").Str) {
 				add("input." + strconv.Itoa(i) + ".output")
 			}
 		}
@@ -60,7 +64,7 @@ func slots(body []byte, protocol string, minBytes int) ([]string, []string, stri
 				continue
 			}
 			for j, part := range msg.Get("content").Array() {
-				if part.Get("type").Str == "tool_result" && !part.Get("is_error").Bool() && !retrievalIDs[part.Get("tool_use_id").Str] {
+				if part.Get("type").Str == "tool_result" && !part.Get("is_error").Bool() && !protected(part.Get("tool_use_id").Str) {
 					add("messages." + strconv.Itoa(i) + ".content." + strconv.Itoa(j) + ".content")
 				}
 			}
@@ -75,54 +79,158 @@ func slots(body []byte, protocol string, minBytes int) ([]string, []string, stri
 }
 
 func isRetrievalTool(name string) bool {
-	return name == "headroom_retrieve" || strings.HasSuffix(name, "__headroom_retrieve")
+	return name == "headroom_retrieve" || strings.HasSuffix(name, "__headroom_retrieve") || strings.HasSuffix(name, ".headroom_retrieve")
+}
+
+type ccrMode string
+
+const (
+	ccrNone        ccrMode = "none"
+	ccrDirect      ccrMode = "direct"
+	ccrAmpDeferred ccrMode = "amp_deferred"
+)
+
+type retrievalDescriptor struct {
+	mode ccrMode
+	tool string
+}
+
+func (r retrievalDescriptor) enabled() bool {
+	return r.mode == ccrDirect || r.mode == ccrAmpDeferred
+}
+
+func (r retrievalDescriptor) marker(handle string) string {
+	if r.mode == ccrAmpDeferred {
+		return "\n\n[Exact original available. Use the advertised tool_search to discover headroom.headroom_retrieve; then use the advertised code_exec with: import {headroom_retrieve} from \"headroom\"; text(await headroom_retrieve({hash:\"" + handle + "\"}))]"
+	}
+	if r.mode != ccrDirect {
+		return ""
+	}
+	return ccrMarker(r.tool, handle)
 }
 
 func advertisedRetrievalTool(body []byte, protocol string) string {
-	paths := []string{"tools"}
-	if protocol != "anthropic" {
-		paths = append(paths, "params.tools", "params.extra_params.tools")
-	}
-	for _, path := range paths {
-		for _, tool := range gjson.GetBytes(body, path).Array() {
-			name := tool.Get("name").Str
-			if name == "" {
-				name = tool.Get("function.name").Str
+	for _, tool := range advertisedTools(body, protocol) {
+		if tool.Get("type").Str == "namespace" {
+			for _, child := range tool.Get("tools").Array() {
+				if child.Get("type").Str == "function" && isRetrievalTool(child.Get("name").Str) && tool.Get("name").Str != "" {
+					return tool.Get("name").Str + "." + child.Get("name").Str
+				}
 			}
-			if isRetrievalTool(name) {
-				return name
-			}
+			continue
+		}
+		if kind := tool.Get("type").Str; kind != "" && kind != "function" {
+			continue
+		}
+		name := tool.Get("name").Str
+		if name == "" {
+			name = tool.Get("function.name").Str
+		}
+		if isRetrievalTool(name) {
+			return name
 		}
 	}
 	return ""
 }
 
-func retrievalCallIDs(body []byte, protocol string) map[string]bool {
+func toolLeaf(name string) string {
+	if i := strings.LastIndexByte(name, '.'); i >= 0 && i+1 < len(name) {
+		return name[i+1:]
+	}
+	return name
+}
+
+func isAmpDeferredTool(name string) bool {
+	leaf := toolLeaf(name)
+	return leaf == "code_exec" || leaf == "tool_search"
+}
+
+func advertisedTools(body []byte, protocol string) []gjson.Result {
+	paths := []string{"tools"}
+	if protocol != "anthropic" {
+		paths = append(paths, "params.tools", "params.extra_params.tools")
+	}
+	var tools []gjson.Result
+	for _, path := range paths {
+		tools = append(tools, gjson.GetBytes(body, path).Array()...)
+	}
+	return tools
+}
+
+func advertisesAmpDeferredTools(body []byte, protocol string) bool {
+	byNamespace := map[string]map[string]bool{}
+	for _, declaration := range advertisedTools(body, protocol) {
+		if declaration.Get("type").Str == "namespace" {
+			namespace := declaration.Get("name").Str
+			if namespace == "" {
+				continue
+			}
+			for _, tool := range declaration.Get("tools").Array() {
+				name := tool.Get("name").Str
+				if tool.Get("type").Str == "function" && (name == "code_exec" || name == "tool_search") {
+					if byNamespace[namespace] == nil {
+						byNamespace[namespace] = map[string]bool{}
+					}
+					byNamespace[namespace][name] = true
+				}
+			}
+			continue
+		}
+		if kind := declaration.Get("type").Str; kind != "" && kind != "function" && kind != "custom" {
+			continue
+		}
+		name := declaration.Get("name").Str
+		if name == "" {
+			name = declaration.Get("function.name").Str
+		}
+		if name == "code_exec" || name == "tool_search" {
+			if byNamespace[""] == nil {
+				byNamespace[""] = map[string]bool{}
+			}
+			byNamespace[""][name] = true
+		}
+	}
+	for _, names := range byNamespace {
+		if names["code_exec"] && names["tool_search"] {
+			return true
+		}
+	}
+	return false
+}
+
+func protectedCallIDs(body []byte, protocol string, excludeAmpDeferred bool) map[string]bool {
 	ids := map[string]bool{}
+	protect := func(name, id string) {
+		if id != "" && name != "" {
+			ids[id] = ids[id] || isRetrievalTool(name) || (excludeAmpDeferred && isAmpDeferredTool(name))
+		}
+	}
 	switch protocol {
 	case "chat":
 		for _, msg := range gjson.GetBytes(body, "messages").Array() {
 			for _, call := range msg.Get("tool_calls").Array() {
-				if isRetrievalTool(call.Get("function.name").Str) {
-					ids[call.Get("id").Str] = true
-				}
+				protect(call.Get("function.name").Str, call.Get("id").Str)
 			}
 		}
 	case "responses":
 		for _, item := range gjson.GetBytes(body, "input").Array() {
-			if (item.Get("type").Str == "function_call" || item.Get("type").Str == "custom_tool_call") && isRetrievalTool(item.Get("name").Str) {
+			if item.Get("type").Str == "function_call" || item.Get("type").Str == "custom_tool_call" {
 				id := item.Get("call_id").Str
 				if id == "" {
 					id = item.Get("id").Str
 				}
-				ids[id] = true
+				name := item.Get("name").Str
+				if namespace := item.Get("namespace").Str; namespace != "" && !strings.Contains(name, ".") {
+					name = namespace + "." + name
+				}
+				protect(name, id)
 			}
 		}
 	case "anthropic":
 		for _, msg := range gjson.GetBytes(body, "messages").Array() {
 			for _, part := range msg.Get("content").Array() {
-				if part.Get("type").Str == "tool_use" && isRetrievalTool(part.Get("name").Str) {
-					ids[part.Get("id").Str] = true
+				if part.Get("type").Str == "tool_use" {
+					protect(part.Get("name").Str, part.Get("id").Str)
 				}
 			}
 		}

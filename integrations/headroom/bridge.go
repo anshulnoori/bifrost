@@ -27,28 +27,29 @@ import (
 // Config is also described by config.schema.json. Secrets are environment names,
 // never literal values: Bifrost persists and displays custom plugin configuration.
 type Config struct {
-	Enabled               bool   `json:"enabled"`
-	EmbeddingProxyEnabled bool   `json:"embedding_proxy_enabled"`
-	Scope                 string `json:"scope"`
-	ProjectID             string `json:"project_id"`
-	VirtualKeyID          string `json:"virtual_key_id"`
-	Endpoint              string `json:"endpoint"`
-	ModalApp              string `json:"modal_app"`
-	ModalEnvironment      string `json:"modal_environment"`
-	TokenEnv              string `json:"token_env"`
-	ModalKeyEnv           string `json:"modal_key_env"`
-	ModalSecretEnv        string `json:"modal_secret_env"`
-	ScopeKeyEnv           string `json:"scope_key_env"`
-	FailurePolicy         string `json:"failure_policy"`
-	TimeoutMS             int    `json:"timeout_ms"`
-	MaxBodyBytes          int64  `json:"max_body_bytes"`
-	MinTextBytes          int    `json:"min_text_bytes"`
-	CCR                   bool   `json:"ccr"`
-	CacheDir              string `json:"cache_dir"`
-	MetricsAddress        string `json:"metrics_address"`
-	MetricsTokenEnv       string `json:"metrics_token_env"`
-	RetentionSeconds      int    `json:"retention_seconds"`
-	CostLedgerPath        string `json:"cost_ledger_path"`
+	Enabled                          bool   `json:"enabled"`
+	EmbeddingProxyEnabled            bool   `json:"embedding_proxy_enabled"`
+	Scope                            string `json:"scope"`
+	ProjectID                        string `json:"project_id"`
+	VirtualKeyID                     string `json:"virtual_key_id"`
+	Endpoint                         string `json:"endpoint"`
+	ModalApp                         string `json:"modal_app"`
+	ModalEnvironment                 string `json:"modal_environment"`
+	TokenEnv                         string `json:"token_env"`
+	ModalKeyEnv                      string `json:"modal_key_env"`
+	ModalSecretEnv                   string `json:"modal_secret_env"`
+	ScopeKeyEnv                      string `json:"scope_key_env"`
+	FailurePolicy                    string `json:"failure_policy"`
+	TimeoutMS                        int    `json:"timeout_ms"`
+	MaxBodyBytes                     int64  `json:"max_body_bytes"`
+	MinTextBytes                     int    `json:"min_text_bytes"`
+	CCR                              bool   `json:"ccr"`
+	AmpDeferredRetrievalVirtualKeyID string `json:"amp_deferred_retrieval_virtual_key_id"`
+	CacheDir                         string `json:"cache_dir"`
+	MetricsAddress                   string `json:"metrics_address"`
+	MetricsTokenEnv                  string `json:"metrics_token_env"`
+	RetentionSeconds                 int    `json:"retention_seconds"`
+	CostLedgerPath                   string `json:"cost_ledger_path"`
 }
 
 type bridge struct {
@@ -239,7 +240,7 @@ func (b *bridge) compress(ctx context.Context, model, scope string, texts []stri
 // compressStable makes the durable decision store the serialization point for
 // equal inputs. Holding this lock across the remote miss ensures concurrent
 // callers expose the same winning bytes rather than racing independent results.
-func (b *bridge) compressStable(ctx context.Context, model, scope, partition, owner, retrievalTool string, texts []string) ([]string, estimate, int, int, error) {
+func (b *bridge) compressStable(ctx context.Context, model, scope, partition, owner string, retrieval retrievalDescriptor, texts []string) ([]string, estimate, int, int, error) {
 	if b.cache == nil || partition == "" {
 		out, counts, err := b.compress(ctx, model, scope, texts)
 		return out, counts, 0, len(texts), err
@@ -267,8 +268,8 @@ func (b *bridge) compressStable(ctx context.Context, model, scope, partition, ow
 		}
 		if ok {
 			out[i] = record.Forwarded
-			if retrievalTool != "" && record.Handle != "" && record.Forwarded != record.Original {
-				out[i] += ccrMarker(retrievalTool, record.Handle)
+			if retrieval.enabled() && record.Handle != "" && record.Forwarded != record.Original {
+				out[i] += retrieval.marker(record.Handle)
 			}
 			hits++
 			continue
@@ -312,8 +313,8 @@ func (b *bridge) compressStable(ctx context.Context, model, scope, partition, ow
 			return nil, estimate{}, hits, len(misses), putErr
 		}
 		out[m.index] = record.Forwarded
-		if retrievalTool != "" && record.Handle != "" && record.Forwarded != record.Original {
-			out[m.index] += ccrMarker(retrievalTool, record.Handle)
+		if retrieval.enabled() && record.Handle != "" && record.Forwarded != record.Original {
+			out[m.index] += retrieval.marker(record.Handle)
 		}
 	}
 	// A healthy store pins originals on compressor failure. This fail-open
@@ -321,7 +322,7 @@ func (b *bridge) compressStable(ctx context.Context, model, scope, partition, ow
 	if compressErr != nil {
 		return out, estimate{}, hits, len(misses), nil
 	}
-	if retrievalTool != "" {
+	if retrieval.enabled() {
 		counts = estimate{} // Modal token counts exclude gateway retrieval markers.
 	}
 	return out, counts, hits, len(misses), nil

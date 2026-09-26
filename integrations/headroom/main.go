@@ -33,7 +33,7 @@ func Init(raw any) error {
 	if err = decoder.Decode(&config); err != nil {
 		return err
 	}
-	if old := current.Load(); old != nil && (old.config.CacheDir != config.CacheDir || old.config.CCR != config.CCR) {
+	if old := current.Load(); old != nil && (old.config.CacheDir != config.CacheDir || old.config.CCR != config.CCR || old.config.AmpDeferredRetrievalVirtualKeyID != config.AmpDeferredRetrievalVirtualKeyID) {
 		return errors.New("headroom cache configuration requires gateway restart")
 	}
 	b, err := newBridge(config)
@@ -100,7 +100,7 @@ func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*sche
 
 func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	provider, model, _ := req.GetRequestFields()
-	event := &Event{Started: time.Now(), Provider: string(provider), Model: model, Status: "bypassed", Quality: "not_evaluated"}
+	event := &Event{Started: time.Now(), Provider: string(provider), Model: model, Status: "bypassed", Quality: "not_evaluated", CCRMode: ccrNone}
 	ctx.SetValue(eventKey, event)
 	bypass := func(reason string) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 		event.Reason = reason
@@ -175,7 +175,17 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 	if int64(len(body)) > b.config.MaxBodyBytes {
 		return bypass("body_limit")
 	}
-	paths, texts, reason := slots(body, protocol, b.config.MinTextBytes)
+	ampOptedIn := b.config.AmpDeferredRetrievalVirtualKeyID != "" && id.VirtualKey() != nil && id.VirtualKey().ID == b.config.AmpDeferredRetrievalVirtualKeyID
+	retrieval := retrievalDescriptor{mode: ccrNone}
+	if b.config.CCR && principal != "gateway" && grant.Access() != nil {
+		if tool := advertisedRetrievalTool(body, protocol); tool != "" {
+			retrieval = retrievalDescriptor{mode: ccrDirect, tool: tool}
+		} else if ampOptedIn && advertisesAmpDeferredTools(body, protocol) {
+			retrieval = retrievalDescriptor{mode: ccrAmpDeferred}
+		}
+	}
+	event.CCRMode = retrieval.mode
+	paths, texts, reason := slots(body, protocol, b.config.MinTextBytes, ampOptedIn)
 	if reason != "" {
 		return bypass(reason)
 	}
@@ -195,11 +205,11 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 			cachePartition = b.scopeID("cache", event.Project, principal, partitionLabel, string(provider), model)
 		}
 	}
-	retrievalTool := ""
-	if b.config.CCR && owner != "" {
-		retrievalTool = advertisedRetrievalTool(body, protocol)
+	if owner == "" {
+		retrieval = retrievalDescriptor{mode: ccrNone}
+		event.CCRMode = ccrNone
 	}
-	out, counts, cacheHits, cacheMisses, err := b.compressStable(ctx, model, scope, cachePartition, owner, retrievalTool, texts)
+	out, counts, cacheHits, cacheMisses, err := b.compressStable(ctx, model, scope, cachePartition, owner, retrieval, texts)
 	event.CacheHits, event.CacheMisses = cacheHits, cacheMisses
 	event.CompressionMS = float64(time.Since(start).Microseconds()) / 1000
 	if event.BudgetAlert {

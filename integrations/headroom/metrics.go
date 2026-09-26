@@ -43,6 +43,7 @@ type Event struct {
 	BudgetAlert        bool            `json:"budget_alert"`
 	CacheHits          int             `json:"cache_hits,omitempty"`
 	CacheMisses        int             `json:"cache_misses,omitempty"`
+	CCRMode            ccrMode         `json:"ccr_mode"`
 }
 
 type eventLedger struct {

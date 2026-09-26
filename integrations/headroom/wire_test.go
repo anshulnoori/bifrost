@@ -19,7 +19,7 @@ func TestNativeProtocolPreservation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.protocol, func(t *testing.T) {
-			paths, _, reason := slots([]byte(tc.body), tc.protocol, 8)
+			paths, _, reason := slots([]byte(tc.body), tc.protocol, 8, false)
 			if reason != "" || len(paths) != 1 {
 				t.Fatal(paths, reason)
 			}
@@ -34,17 +34,17 @@ func TestNativeProtocolPreservation(t *testing.T) {
 
 func TestBypassBoundaries(t *testing.T) {
 	for _, body := range []string{`{"previous_response_id":"r","input":[]}`, `{"params":{"prompt_cache_key":"prefix"},"messages":[]}`, `{"messages":[{"content":[{"cache_control":{"type":"ephemeral"}}]}]}`, `{"background":true}`, `garbage`, `[]`, `{"messages":[{"role":"tool","content":[{"type":"image_url"}]}]}`} {
-		if p, _, reason := slots([]byte(body), "chat", 8); len(p) != 0 || reason == "" {
+		if p, _, reason := slots([]byte(body), "chat", 8, false); len(p) != 0 || reason == "" {
 			t.Fatal("unsafe eligibility", body)
 		}
 	}
 	for _, text := range []string{"1234567", "<<ccr:abc>>", "headroom_retrieve"} {
 		body := []byte(`{"messages":[{"role":"tool","content":"` + text + `"}]}`)
-		if p, _, _ := slots(body, "chat", 8); len(p) != 0 {
+		if p, _, _ := slots(body, "chat", 8, false); len(p) != 0 {
 			t.Fatal("threshold/CCR boundary")
 		}
 	}
-	if p, _, _ := slots([]byte(`{"messages":[{"role":"tool","content":"12345678"}]}`), "chat", 8); len(p) != 1 {
+	if p, _, _ := slots([]byte(`{"messages":[{"role":"tool","content":"12345678"}]}`), "chat", 8, false); len(p) != 1 {
 		t.Fatal("off-by-one threshold")
 	}
 }
@@ -57,7 +57,7 @@ func TestCacheHintsDoNotBlockCompression(t *testing.T) {
 				hints += `,"` + state + `":"opaque"`
 			}
 			body := []byte(`{"input":[{"type":"function_call_output","call_id":"c","output":"original output"}],` + strings.Replace(wrapper, "%s", hints, 1) + `}`)
-			paths, _, reason := slots(body, "responses", 8)
+			paths, _, reason := slots(body, "responses", 8, false)
 			if state != "" {
 				if len(paths) != 0 || reason != "provider_state_"+state {
 					t.Fatalf("continuation admitted or wrong reason: %s %v %s", state, paths, reason)
@@ -80,7 +80,7 @@ func TestCCRToolAdvertisementAndRetrievedOutputExclusion(t *testing.T) {
 	if got := advertisedRetrievalTool(body, "chat"); got != "tenant__headroom_retrieve" {
 		t.Fatalf("actual advertised name lost: %q", got)
 	}
-	paths, texts, reason := slots(body, "chat", 8)
+	paths, texts, reason := slots(body, "chat", 8, false)
 	if reason != "" || len(paths) != 1 || texts[0] != "ordinary tool output" {
 		t.Fatalf("retrieval output replayed/compressed: %v %v %s", paths, texts, reason)
 	}
@@ -91,6 +91,51 @@ func TestCCRToolAdvertisementAndRetrievedOutputExclusion(t *testing.T) {
 	marker := ccrMarker("tenant__headroom_retrieve", strings.Repeat("a", 64))
 	if !strings.Contains(marker, "tenant__headroom_retrieve") || !strings.Contains(marker, `{"hash":"`) {
 		t.Fatal("marker contract changed")
+	}
+}
+
+func TestAmpDeferredCapabilityAndOutputExclusion(t *testing.T) {
+	flat := []byte(`{"tools":[{"type":"function","name":"code_exec"},{"type":"function","name":"tool_search"}]}`)
+	namespace := []byte(`{"tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"code_exec"},{"type":"function","name":"tool_search"}]}]}`)
+	for name, body := range map[string][]byte{"flat": flat, "namespace": namespace} {
+		t.Run(name, func(t *testing.T) {
+			if !advertisesAmpDeferredTools(body, "responses") {
+				t.Fatal("missed structural Amp capability")
+			}
+		})
+	}
+	falsePositives := [][]byte{
+		[]byte(`{"description":"Use code_exec and tool_search"}`),
+		[]byte(`{"tools":[{"type":"function","name":"code_exec"}]}`),
+		[]byte(`{"tools":[{"type":"function","name":"code_exec"},{"type":"web_search","name":"tool_search"}]}`),
+		[]byte(`{"tools":[{"type":"namespace","name":"one","tools":[{"type":"function","name":"code_exec"}]},{"type":"namespace","name":"two","tools":[{"type":"function","name":"tool_search"}]}]}`),
+	}
+	for _, body := range falsePositives {
+		if advertisesAmpDeferredTools(body, "responses") {
+			t.Fatalf("inferred capability from non-capability input: %s", body)
+		}
+	}
+
+	body := []byte(`{"input":[{"type":"function_call","namespace":"functions","name":"code_exec","call_id":"exec"},{"type":"function_call_output","call_id":"exec","output":"retrieved original output"},{"type":"custom_tool_call","name":"functions.tool_search","id":"search"},{"type":"custom_tool_call_output","call_id":"search","output":"search results here"},{"type":"function_call","name":"shell","call_id":"shell"},{"type":"function_call_output","call_id":"shell","output":"ordinary shell output"},{"type":"function_call","name":"code_exec","call_id":""},{"type":"function_call_output","call_id":"","output":"uncorrelated output"}]}`)
+	paths, texts, reason := slots(body, "responses", 8, true)
+	if reason != "" || len(paths) != 1 || texts[0] != "ordinary shell output" {
+		t.Fatalf("wrong Amp correlation protection: %v %v %s", paths, texts, reason)
+	}
+	_, unprotected, reason := slots(body, "responses", 8, false)
+	if reason != "" || len(unprotected) != 4 {
+		t.Fatalf("non-opted caller was changed: %v %s", unprotected, reason)
+	}
+	if got := advertisedRetrievalTool([]byte(`{"tools":[{"type":"function","name":"headroom.headroom_retrieve"}]}`), "responses"); got != "headroom.headroom_retrieve" {
+		t.Fatalf("qualified direct retrieval not recognized: %q", got)
+	}
+	if got := advertisedRetrievalTool([]byte(`{"tools":[{"type":"namespace","name":"headroom","tools":[{"type":"function","name":"headroom_retrieve"}]}]}`), "responses"); got != "headroom.headroom_retrieve" {
+		t.Fatalf("namespaced direct retrieval not recognized: %q", got)
+	}
+	marker := (retrievalDescriptor{mode: ccrAmpDeferred}).marker(strings.Repeat("a", 64))
+	for _, exact := range []string{"advertised tool_search", "headroom.headroom_retrieve", `import {headroom_retrieve} from "headroom"`, `text(await headroom_retrieve({hash:"`} {
+		if !strings.Contains(marker, exact) {
+			t.Fatalf("deferred marker omitted %q", exact)
+		}
 	}
 }
 
@@ -190,7 +235,7 @@ func FuzzPatchOnlyText(f *testing.F) {
 		if err != nil {
 			return
 		}
-		paths, _, reason := slots(body, "chat", 1)
+		paths, _, reason := slots(body, "chat", 1, false)
 		if reason != "" {
 			return
 		}

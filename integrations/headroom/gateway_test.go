@@ -135,6 +135,7 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 	settings := map[string]any{"name": "headroom", "path": plugin, "enabled": true, "placement": "post_builtin", "config": map[string]any{"enabled": true, "virtual_key_id": "owner-a", "endpoint": endpoint, "token_env": "HEADROOM_PROXY_TOKEN", "scope_key_env": "HEADROOM_SCOPE_KEY", "metrics_address": fmt.Sprintf("127.0.0.1:%d", metricsPort), "metrics_token_env": "HEADROOM_METRICS_TOKEN", "retention_seconds": 900, "timeout_ms": 30000}}
 	settings["config"].(map[string]any)["cache_dir"] = filepath.Join(dir, "decisions")
 	settings["config"].(map[string]any)["ccr"] = true
+	settings["config"].(map[string]any)["amp_deferred_retrieval_virtual_key_id"] = "owner-a"
 	if os.Getenv("HEADROOM_MODAL_KEY") != "" || os.Getenv("HEADROOM_MODAL_SECRET") != "" {
 		settings["config"].(map[string]any)["modal_key_env"] = "HEADROOM_MODAL_KEY"
 		settings["config"].(map[string]any)["modal_secret_env"] = "HEADROOM_MODAL_SECRET"
@@ -215,10 +216,49 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		t.Fatalf("normal provider=%d %s", status, data)
 	}
 	mu.Lock()
-	defer mu.Unlock()
-	if len(seen) != 4 || len(seen[3]) >= len(text) {
+	normalOK := len(seen) == 4 && len(seen[3]) < len(text)
+	mu.Unlock()
+	if !normalOK {
 		_, events := call("GET", "/api/headroom/events", nil)
 		t.Fatalf("normal provider without virtual key not compressed: %s", events)
+	}
+	withIdentity = true
+	fresh := text + "INFO deferred retrieval fixture\n"
+	request["messages"].([]any)[1].(map[string]any)["content"] = fresh
+	request["tools"] = []any{
+		map[string]any{"type": "function", "function": map[string]any{"name": "tool_search", "parameters": map[string]any{"type": "object"}}},
+		map[string]any{"type": "function", "function": map[string]any{"name": "code_exec", "parameters": map[string]any{"type": "object"}}},
+	}
+	if status, data := call("POST", "/v1/chat/completions", request); status != 200 {
+		t.Fatalf("deferred inference=%d %s", status, data)
+	}
+	mu.Lock()
+	deferred := seen[len(seen)-1]
+	mu.Unlock()
+	start := strings.LastIndex(deferred, `hash:"`)
+	if start < 0 || len(deferred) < start+6+64 || !strings.Contains(deferred, "advertised tool_search") {
+		t.Fatal("missing deferred discovery marker")
+	}
+	handle = deferred[start+6 : start+6+64]
+	retrieve := map[string]any{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": map[string]any{"name": "headroom_retrieve", "arguments": map[string]any{"hash": handle}}}
+	if status, data := call("POST", "/v1/headroom/mcp", retrieve); status != 200 || gjson.GetBytes(data, "result.isError").Bool() || gjson.GetBytes(data, "result.content.0.text").String() != fresh {
+		t.Fatalf("deferred exact retrieval failed: status=%d", status)
+	}
+	virtualKey = "sk-bf-other-fixture"
+	if status, data := call("POST", "/v1/headroom/mcp", retrieve); status != 200 || !gjson.GetBytes(data, "result.isError").Bool() {
+		t.Fatalf("deferred cross-owner denial failed: status=%d", status)
+	}
+	virtualKey = "sk-bf-headroom-fixture"
+	request["messages"].([]any)[0].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"] = "code_exec"
+	delete(request, "tools") // Protection survives absent declarations and cached originals.
+	if status, data := call("POST", "/v1/chat/completions", request); status != 200 {
+		t.Fatalf("retrieval continuation=%d %s", status, data)
+	}
+	mu.Lock()
+	untouched := seen[len(seen)-1] == fresh
+	mu.Unlock()
+	if !untouched {
+		t.Fatal("retrieved original was recompressed or shortened from cache")
 	}
 	t.Logf("gateway -> local Headroom -> fixture provider: %d -> %d bytes; CCR exact retrieval and cross-owner denial, stable replay, runtime disable/re-enable and byte-identical raw SSE verified", len(text), len(first[0]))
 }
