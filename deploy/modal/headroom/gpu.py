@@ -37,14 +37,17 @@ class GPUCompressor:
             return
         self.scratch = tempfile.TemporaryDirectory(prefix="headroom-cuda-")
         env = {k: v for k, v in os.environ.items() if k in {
-            "PATH", "LD_LIBRARY_PATH", "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"}}
+            "PATH", "LD_LIBRARY_PATH", "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES",
+            "HEADROOM_ATTENTION", "HEADROOM_PRECISION"}}
         env.update(HOME=self.scratch.name, TMPDIR=self.scratch.name,
                    HF_HUB_CACHE="/opt/headroom-models", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HEADROOM_OFFLINE="1",
-                   HEADROOM_KOMPRESS_BACKEND="pytorch", HEADROOM_BEACON="off",
+                   HEADROOM_KOMPRESS_BACKEND="onnx_cpu" if self.device == "cpu" else "pytorch", HEADROOM_BEACON="off",
                    HEADROOM_TELEMETRY="off", HEADROOM_LOG_PAYLOAD_PREVIEW="0",
                    HF_HUB_DISABLE_TELEMETRY="1", HEADROOM_CCR_BACKEND="memory",
                    HEADROOM_WORKER_DEVICE=self.device)
+        if self.device == "cpu":
+            env["HEADROOM_KOMPRESS_ONNX_FILENAME"] = "onnx/kompress-int8-wo.onnx"
         try:
             self.process = await asyncio.create_subprocess_exec(
                 sys.executable, str(Path(__file__).with_name("gpu_worker.py")),

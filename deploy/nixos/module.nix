@@ -33,10 +33,15 @@ in {
       description = "Separate owner-only direct Neon URL for the manual migration unit.";
     };
     publicInference = lib.mkEnableOption "public Funnel after private validation";
-    headroomEndpoint = lib.mkOption {
+    headroomModalApp = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Authenticated Modal HTTPS origin, set only after CPU/CUDA benchmark acceptance.";
+      description = "Private Modal app for Headroom compression.";
+    };
+    semanticCacheModalApp = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Private Modal app for MiniLM embeddings, independent of Headroom compression.";
     };
   };
 
@@ -45,8 +50,14 @@ in {
       assertion = lib.hasPrefix "/" path && !(lib.hasPrefix "/nix/store/" path);
       message = "Bifrost deployment secrets must be runtime absolute paths outside /nix/store.";
     }) [ cfg.environmentFile cfg.redisPasswordFile cfg.migrationEnvironmentFile ] ++ [ {
-      assertion = cfg.headroomEndpoint == null || builtins.match "https://[a-zA-Z0-9-]+\\.modal\\.run" cfg.headroomEndpoint != null;
-      message = "Headroom requires a Modal HTTPS origin without credentials, path or query.";
+      assertion = cfg.headroomModalApp == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9-]*" cfg.headroomModalApp != null;
+      message = "Headroom requires a valid Modal app name.";
+    } {
+      assertion = cfg.semanticCacheModalApp == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9-]*" cfg.semanticCacheModalApp != null;
+      message = "Semantic cache requires a valid Modal app name.";
+    } {
+      assertion = cfg.headroomModalApp == null || cfg.semanticCacheModalApp == null || cfg.headroomModalApp == cfg.semanticCacheModalApp;
+      message = "Headroom compression and semantic cache must use the same Modal app.";
     } ];
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
@@ -66,6 +77,10 @@ in {
         encryption_key = "env.BIFROST_ENCRYPTION_KEY";
         client = {
           enforce_auth_on_inference = true;
+          allowed_origins = [
+            "https://ai.mongoose-silverside.ts.net"
+            "https://ai.mongoose-silverside.ts.net:8443"
+          ];
           enable_logging = true;
           disable_content_logging = true;
           allow_per_request_content_storage_override = false;
@@ -88,9 +103,17 @@ in {
           type = "redis";
           config = { addr = "127.0.0.1:6379"; password = "env.VALKEY_PASSWORD"; };
         };
+        # Enable stable prompt prefixes for every configured provider. Per-provider
+        # prompt_cache settings remain authoritative, including auto_inject = false.
+        provider_defaults.prompt_cache = { auto_inject = true; };
         # Only the plugin holds Modal credentials. The embedding provider reaches
         # its authenticated loopback facade using a SecretVar-backed key.
-        providers = lib.optionalAttrs (cfg.headroomEndpoint != null) {
+        providers = {
+          # Codex/OpenAI cache prompts automatically. This opts the provider into
+          # Bifrost's cache policy without inventing a wire boolean; caller-supplied
+          # prompt_cache_key/retention/options remain authoritative.
+          codex.prompt_cache = { auto_inject = true; };
+        } // lib.optionalAttrs (cfg.semanticCacheModalApp != null || cfg.headroomModalApp != null) {
           headroom_embeddings = {
             keys = [ {
               name = "headroom-internal";
@@ -115,14 +138,14 @@ in {
           name = "semantic_cache";
           enabled = true;
           config = {
-            provider = if cfg.headroomEndpoint == null then "" else "headroom_embeddings";
+            provider = if cfg.semanticCacheModalApp == null && cfg.headroomModalApp == null then "" else "headroom_embeddings";
             embedding_model = "headroom-minilm-v1";
-            dimension = if cfg.headroomEndpoint == null then 1 else 384;
+            dimension = if cfg.semanticCacheModalApp == null && cfg.headroomModalApp == null then 1 else 384;
             threshold = 0.98;
             ttl = "5m";
             default_cache_key = "deployment-v1";
             scope_by_virtual_key = true;
-            vector_store_namespace = if cfg.headroomEndpoint == null then "BifrostScopedCacheV1" else "BifrostMiniLMCacheV1";
+            vector_store_namespace = if cfg.semanticCacheModalApp == null && cfg.headroomModalApp == null then "BifrostScopedCacheV1" else "BifrostMiniLMCacheV1";
           };
         } {
           name = "headroom";
@@ -130,18 +153,21 @@ in {
           enabled = true;
           placement = "post_builtin";
           config = {
-            enabled = cfg.headroomEndpoint != null;
-            endpoint = if cfg.headroomEndpoint == null then "" else cfg.headroomEndpoint;
+            enabled = cfg.headroomModalApp != null;
+            embedding_proxy_enabled = cfg.semanticCacheModalApp != null || cfg.headroomModalApp != null;
+            modal_app = if cfg.headroomModalApp != null then cfg.headroomModalApp else if cfg.semanticCacheModalApp != null then cfg.semanticCacheModalApp else "";
+            modal_environment = "main";
             scope = "gateway";
             ccr = false;
-            token_env = "HEADROOM_PROXY_TOKEN";
             scope_key_env = "HEADROOM_SCOPE_KEY";
-            modal_key_env = "HEADROOM_MODAL_KEY";
-            modal_secret_env = "HEADROOM_MODAL_SECRET";
+            modal_key_env = "HEADROOM_MODAL_TOKEN_ID";
+            modal_secret_env = "HEADROOM_MODAL_TOKEN_SECRET";
             failure_policy = "open";
             timeout_ms = 500;
-            min_text_bytes = 4096;
-            metrics_address = if cfg.headroomEndpoint == null then "" else "127.0.0.1:9909";
+            # Initial cost policy: bypass small results before waking Modal.
+            min_text_bytes = 16384;
+            cost_ledger_path = "${config.services.bifrost.stateDir}/headroom-budget.json";
+            metrics_address = if cfg.semanticCacheModalApp == null && cfg.headroomModalApp == null then "" else "127.0.0.1:9909";
             metrics_token_env = "HEADROOM_METRICS_TOKEN";
             retention_seconds = 900;
           };
@@ -152,17 +178,22 @@ in {
       after = [ "network-online.target" "bifrost-valkey.service" ];
       wants = [ "network-online.target" ];
       requires = [ "bifrost-valkey.service" ];
+      # Modal reads a config file even with explicit credentials. System services
+      # need no home directory or ambient CLI profile; credentials come from env.
+      environment = lib.optionalAttrs (cfg.semanticCacheModalApp != null || cfg.headroomModalApp != null) {
+        MODAL_CONFIG_PATH = "/dev/null";
+      };
       preStart = lib.mkBefore (''
         for name in NEON_HOST NEON_USER NEON_PASSWORD NEON_DATABASE BIFROST_ENCRYPTION_KEY BIFROST_ADMIN_PASSWORD; do
           if [ -z "''${!name:-}" ]; then echo "Required deployment setting missing" >&2; exit 1; fi
         done
         [[ "$NEON_HOST" == *-pooler.*.neon.tech ]] || exit 1
         [[ ''${#BIFROST_ENCRYPTION_KEY} -ge 32 && ''${#BIFROST_ADMIN_PASSWORD} -ge 32 ]] || exit 1
-      '' + lib.optionalString (cfg.headroomEndpoint != null) ''
-        for name in HEADROOM_PROXY_TOKEN HEADROOM_SCOPE_KEY HEADROOM_METRICS_TOKEN HEADROOM_MODAL_KEY HEADROOM_MODAL_SECRET; do
+      '' + lib.optionalString (cfg.semanticCacheModalApp != null || cfg.headroomModalApp != null) ''
+        for name in HEADROOM_MODAL_TOKEN_ID HEADROOM_MODAL_TOKEN_SECRET HEADROOM_SCOPE_KEY HEADROOM_METRICS_TOKEN; do
           if [ -z "''${!name:-}" ]; then echo "Required Headroom setting missing" >&2; exit 1; fi
         done
-        [[ ''${#HEADROOM_PROXY_TOKEN} -ge 32 && ''${#HEADROOM_SCOPE_KEY} -ge 32 && ''${#HEADROOM_METRICS_TOKEN} -ge 32 ]] || exit 1
+        [[ ''${#HEADROOM_SCOPE_KEY} -ge 32 && ''${#HEADROOM_METRICS_TOKEN} -ge 32 ]] || exit 1
       '');
       serviceConfig = {
         LoadCredential = [ "valkey-password:${cfg.redisPasswordFile}" ];

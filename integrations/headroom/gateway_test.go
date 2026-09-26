@@ -127,6 +127,10 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		return resp.StatusCode, data
 	}
 	settings := map[string]any{"name": "headroom", "path": plugin, "enabled": true, "placement": "post_builtin", "config": map[string]any{"enabled": true, "virtual_key_id": "owner-a", "endpoint": endpoint, "token_env": "HEADROOM_PROXY_TOKEN", "scope_key_env": "HEADROOM_SCOPE_KEY", "metrics_address": fmt.Sprintf("127.0.0.1:%d", metricsPort), "metrics_token_env": "HEADROOM_METRICS_TOKEN", "retention_seconds": 900, "timeout_ms": 30000}}
+	if os.Getenv("HEADROOM_MODAL_KEY") != "" || os.Getenv("HEADROOM_MODAL_SECRET") != "" {
+		settings["config"].(map[string]any)["modal_key_env"] = "HEADROOM_MODAL_KEY"
+		settings["config"].(map[string]any)["modal_secret_env"] = "HEADROOM_MODAL_SECRET"
+	}
 	if status, data := call("POST", "/api/plugins", settings); status != 200 && status != 201 {
 		t.Fatalf("create plugin=%d %s", status, data)
 	}

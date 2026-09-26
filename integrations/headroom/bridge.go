@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,28 +21,33 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	modal "github.com/modal-labs/modal-client/go"
 )
 
 // Config is also described by config.schema.json. Secrets are environment names,
 // never literal values: Bifrost persists and displays custom plugin configuration.
 type Config struct {
-	Enabled          bool   `json:"enabled"`
-	Scope            string `json:"scope"`
-	ProjectID        string `json:"project_id"`
-	VirtualKeyID     string `json:"virtual_key_id"`
-	Endpoint         string `json:"endpoint"`
-	TokenEnv         string `json:"token_env"`
-	ModalKeyEnv      string `json:"modal_key_env"`
-	ModalSecretEnv   string `json:"modal_secret_env"`
-	ScopeKeyEnv      string `json:"scope_key_env"`
-	FailurePolicy    string `json:"failure_policy"`
-	TimeoutMS        int    `json:"timeout_ms"`
-	MaxBodyBytes     int64  `json:"max_body_bytes"`
-	MinTextBytes     int    `json:"min_text_bytes"`
-	CCR              bool   `json:"ccr"`
-	MetricsAddress   string `json:"metrics_address"`
-	MetricsTokenEnv  string `json:"metrics_token_env"`
-	RetentionSeconds int    `json:"retention_seconds"`
+	Enabled               bool   `json:"enabled"`
+	EmbeddingProxyEnabled bool   `json:"embedding_proxy_enabled"`
+	Scope                 string `json:"scope"`
+	ProjectID             string `json:"project_id"`
+	VirtualKeyID          string `json:"virtual_key_id"`
+	Endpoint              string `json:"endpoint"`
+	ModalApp              string `json:"modal_app"`
+	ModalEnvironment      string `json:"modal_environment"`
+	TokenEnv              string `json:"token_env"`
+	ModalKeyEnv           string `json:"modal_key_env"`
+	ModalSecretEnv        string `json:"modal_secret_env"`
+	ScopeKeyEnv           string `json:"scope_key_env"`
+	FailurePolicy         string `json:"failure_policy"`
+	TimeoutMS             int    `json:"timeout_ms"`
+	MaxBodyBytes          int64  `json:"max_body_bytes"`
+	MinTextBytes          int    `json:"min_text_bytes"`
+	CCR                   bool   `json:"ccr"`
+	MetricsAddress        string `json:"metrics_address"`
+	MetricsTokenEnv       string `json:"metrics_token_env"`
+	RetentionSeconds      int    `json:"retention_seconds"`
+	CostLedgerPath        string `json:"cost_ledger_path"`
 }
 
 type bridge struct {
@@ -51,6 +57,17 @@ type bridge struct {
 	key         []byte
 	modalKey    string
 	modalSecret string
+	modal       *modal.Client
+	modalMethod *modal.Function // accessed only while holding modalSlot
+}
+
+func (b *bridge) close() {
+	if b.client != nil {
+		b.client.CloseIdleConnections()
+	}
+	if b.modal != nil {
+		b.modal.Close()
+	}
 }
 
 func newBridge(config Config) (*bridge, error) {
@@ -79,7 +96,36 @@ func newBridge(config Config) (*bridge, error) {
 		return nil, errors.New("invalid timeout or size limits")
 	}
 	b := &bridge{config: config}
-	if !config.Enabled {
+	if !config.Enabled && !config.EmbeddingProxyEnabled {
+		return b, nil
+	}
+	if config.Enabled {
+		b.key = []byte(os.Getenv(config.ScopeKeyEnv))
+		if len(b.key) < 32 {
+			return nil, errors.New("scope_key_env must resolve to a secret of at least 32 bytes")
+		}
+	}
+	if config.ModalApp != "" {
+		if config.Endpoint != "" || config.TokenEnv != "" {
+			return nil, errors.New("modal_app cannot be combined with endpoint or token_env")
+		}
+		id, secret := os.Getenv(config.ModalKeyEnv), os.Getenv(config.ModalSecretEnv)
+		if id == "" || secret == "" {
+			return nil, errors.New("private Modal calls require both API credential environment references")
+		}
+		if b.config.ModalEnvironment == "" {
+			b.config.ModalEnvironment = "main"
+		}
+		var err error
+		b.modal, err = modal.NewClientWithOptions(&modal.ClientParams{
+			TokenID: id, TokenSecret: secret, Environment: b.config.ModalEnvironment,
+			// Remote exceptions can contain tool content. Only the gateway's
+			// metadata ledger is permitted to log request outcomes.
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+		if err != nil {
+			return nil, errors.New("cannot initialize private Modal client")
+		}
 		return b, nil
 	}
 	u, err := url.Parse(config.Endpoint)
@@ -87,9 +133,9 @@ func newBridge(config Config) (*bridge, error) {
 		return nil, errors.New("endpoint must be an HTTP(S) service origin without credentials, path, query or fragment")
 	}
 	b.config.Endpoint = strings.TrimRight(config.Endpoint, "/")
-	b.token, b.key = os.Getenv(config.TokenEnv), []byte(os.Getenv(config.ScopeKeyEnv))
-	if len(b.token) < 32 || len(b.key) < 32 {
-		return nil, errors.New("token_env and scope_key_env must resolve to secrets of at least 32 bytes")
+	b.token = os.Getenv(config.TokenEnv)
+	if len(b.token) < 32 {
+		return nil, errors.New("token_env must resolve to a secret of at least 32 bytes")
 	}
 	if config.ModalKeyEnv != "" || config.ModalSecretEnv != "" {
 		b.modalKey, b.modalSecret = os.Getenv(config.ModalKeyEnv), os.Getenv(config.ModalSecretEnv)
@@ -145,28 +191,18 @@ func (b *bridge) compress(ctx context.Context, model, scope string, texts []stri
 	if int64(len(body)) > b.config.MaxBodyBytes {
 		return nil, estimate{}, errors.New("compression request exceeds limit")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.config.Endpoint+"/v1/compress", bytes.NewReader(body))
+	var event *Event
+	if bfCtx, ok := ctx.(*schemas.BifrostContext); ok {
+		event, _ = bfCtx.Value(eventKey).(*Event)
+	}
+	release, err := b.admitModal(event)
 	if err != nil {
 		return nil, estimate{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Headroom-Proxy-Token", b.token)
-	req.Header.Set("X-Headroom-Project", scope)
-	if b.modalKey != "" {
-		req.Header.Set("Modal-Key", b.modalKey)
-		req.Header.Set("Modal-Secret", b.modalSecret)
-	}
-	response, err := b.client.Do(req)
+	defer release()
+	data, err := b.call(ctx, "/v1/compress", scope, body, time.Duration(b.config.TimeoutMS)*time.Millisecond)
 	if err != nil {
-		return nil, estimate{}, errors.New("headroom unavailable or request cancelled")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, estimate{}, fmt.Errorf("headroom returned status %d", response.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, b.config.MaxBodyBytes+1))
-	if err != nil || int64(len(data)) > b.config.MaxBodyBytes {
-		return nil, estimate{}, errors.New("headroom response unreadable or exceeds limit")
+		return nil, estimate{}, err
 	}
 	var result compressReply
 	if err = json.Unmarshal(data, &result); err != nil || len(result.Messages) != len(messages) || result.Before == nil || result.After == nil || *result.Before < 0 || *result.After < 0 || *result.After > *result.Before || len(result.CCRHashes) != 0 || len(result.Obligations) != 0 {
@@ -190,4 +226,42 @@ func (b *bridge) compress(ctx context.Context, model, scope string, texts []stri
 		out[i] = text
 	}
 	return out, estimate{Before: *result.Before, After: *result.After}, nil
+}
+
+// call is shared by compression and embeddings. Admission has already reserved
+// cost and acquired the single outbound slot; no additional requests are queued.
+func (b *bridge) call(ctx context.Context, path, scope string, body []byte, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	if b.modal != nil {
+		return b.callModal(ctx, path, scope, body, deadline.UnixMilli())
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.config.Endpoint+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Headroom-Proxy-Token", b.token)
+	req.Header.Set("X-Headroom-Project", scope)
+	req.Header.Set("X-Headroom-Deadline-Ms", fmt.Sprint(deadline.UnixMilli()))
+	if b.modalKey != "" {
+		req.Header.Set("Modal-Key", b.modalKey)
+		req.Header.Set("Modal-Secret", b.modalSecret)
+	}
+	client := *b.client
+	client.Timeout = timeout
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, errors.New("headroom unavailable or request cancelled")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("headroom returned status %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, b.config.MaxBodyBytes+1))
+	if err != nil || int64(len(data)) > b.config.MaxBodyBytes {
+		return nil, errors.New("headroom response unreadable or exceeds limit")
+	}
+	return data, nil
 }

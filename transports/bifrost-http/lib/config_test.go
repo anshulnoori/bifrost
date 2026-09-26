@@ -17222,6 +17222,52 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	}
 }
 
+func TestProviderPromptCacheDefaults(t *testing.T) {
+	t.Run("loads from top-level config", func(t *testing.T) {
+		var data ConfigData
+		require.NoError(t, json.Unmarshal([]byte(`{"provider_defaults":{"prompt_cache":{"auto_inject":true}}}`), &data))
+		require.NotNil(t, data.ProviderDefaults.PromptCache)
+		assert.True(t, data.ProviderDefaults.PromptCache.AutoInject)
+	})
+
+	t.Run("applies to every provider including providers added later", func(t *testing.T) {
+		cfg := &Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {},
+			},
+			ProviderDefaults: ProviderDefaults{PromptCache: &schemas.PromptCacheConfig{AutoInject: true}},
+		}
+		account := NewBaseAccount(cfg)
+
+		openAI, err := account.GetConfigForProvider(schemas.OpenAI)
+		require.NoError(t, err)
+		require.NotNil(t, openAI.PromptCache)
+		assert.True(t, openAI.PromptCache.AutoInject)
+
+		// Runtime provider creation only adds to this map; inheritance happens when the
+		// account resolves the provider, so providers added after startup inherit too.
+		cfg.Providers[schemas.Anthropic] = configstore.ProviderConfig{}
+		anthropic, err := account.GetConfigForProvider(schemas.Anthropic)
+		require.NoError(t, err)
+		require.NotNil(t, anthropic.PromptCache)
+		assert.True(t, anthropic.PromptCache.AutoInject)
+	})
+
+	t.Run("explicit provider false overrides global true", func(t *testing.T) {
+		cfg := &Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.Codex: {PromptCache: &schemas.PromptCacheConfig{AutoInject: false}},
+			},
+			ProviderDefaults: ProviderDefaults{PromptCache: &schemas.PromptCacheConfig{AutoInject: true}},
+		}
+
+		codex, err := NewBaseAccount(cfg).GetConfigForProvider(schemas.Codex)
+		require.NoError(t, err)
+		require.NotNil(t, codex.PromptCache)
+		assert.False(t, codex.PromptCache.AutoInject)
+	})
+}
+
 // TestSQLite_VKProviderConfig_WeightZero_RoundTrip tests that a virtual key provider config
 // with weight=0 survives a database round-trip correctly.
 func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {

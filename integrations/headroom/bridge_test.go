@@ -43,6 +43,31 @@ func goodReply(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"messages": req.Messages, "tokens_before": 53, "tokens_after": 12, "ccr_hashes": []string{}, "obligations": []string{}})
 }
 
+func TestPrivateModalConfiguration(t *testing.T) {
+	t.Setenv("PRIVATE_MODAL_ID", "test-id")
+	t.Setenv("PRIVATE_MODAL_SECRET", "test-secret")
+	t.Setenv("PRIVATE_SCOPE_KEY", strings.Repeat("k", 32))
+	c := Config{Enabled: true, ModalApp: "bifrost-headroom", ModalEnvironment: "main",
+		ModalKeyEnv: "PRIVATE_MODAL_ID", ModalSecretEnv: "PRIVATE_MODAL_SECRET", ScopeKeyEnv: "PRIVATE_SCOPE_KEY"}
+	b, err := newBridge(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.close()
+	if b.client != nil || b.config.Endpoint != "" || b.token != "" {
+		t.Fatal("private SDK mode configured an HTTP endpoint or proxy credential")
+	}
+	c.Endpoint = "https://public.modal.run"
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted ambiguous private and HTTP transports")
+	}
+	c.Endpoint = ""
+	t.Setenv("PRIVATE_MODAL_SECRET", "")
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted missing SDK credential")
+	}
+}
+
 func TestModalProxyAuth(t *testing.T) {
 	t.Setenv("MODAL_TEST_ID", "fixture-id")
 	t.Setenv("MODAL_TEST_SECRET", "fixture-secret")

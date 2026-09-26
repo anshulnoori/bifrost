@@ -95,6 +95,10 @@ func dashboardAuthType(isEnabled bool) string {
 
 // login handles POST /api/session/login - Login a user
 func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
+	if !passwordAuthAllowed() {
+		SendError(ctx, fasthttp.StatusForbidden, "Password authentication is disabled; use OIDC sign-in")
+		return
+	}
 	if h.configStore == nil {
 		SendError(ctx, fasthttp.StatusForbidden, "Authentication is not enabled")
 		return

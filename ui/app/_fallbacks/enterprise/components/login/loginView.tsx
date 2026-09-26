@@ -35,7 +35,6 @@ export default function LoginView() {
 	const [password, setPassword] = useState("");
 	const [showPassword, setShowPassword] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
-	const [showRecovery, setShowRecovery] = useState(false);
 	const { data: auth } = useIsAuthEnabledQuery();
 	const navigate = useNavigate();
 	const [isLoading, setIsLoading] = useState(false);
@@ -51,7 +50,7 @@ export default function LoginView() {
 					: error === "cancelled"
 						? "Sign-in was cancelled. You can try again."
 						: error === "unavailable"
-							? "Tailscale sign-in is unavailable. Try again or use your recovery password."
+							? "Tailscale sign-in is unavailable. Please try again later."
 							: "Sign-in expired or could not be verified. Please try again.",
 			);
 	}, []);
@@ -93,25 +92,21 @@ export default function LoginView() {
 						</div>
 					)}
 					{auth?.oidc_enabled && (
-						<div className="space-y-3">
-							<form action="/api/session/oidc/login" method="post">
-								<Button type="submit" className="w-full" data-testid="login-tailscale">
-									Sign in with Tailscale
-								</Button>
-							</form>
-							<Button
-								type="button"
-								variant="ghost"
-								className="w-full"
-								onClick={() => setShowRecovery(!showRecovery)}
-								aria-expanded={showRecovery}
-								data-testid="login-recovery"
-							>
-								{showRecovery ? "Hide recovery password" : "Use recovery password"}
+						<form action="/api/session/oidc/login" method="post">
+							<Button type="submit" size="lg" className="w-full gap-2" data-testid="login-tailscale">
+								{/* Unmodified icons from https://tailscale.com/press, October 2025 brand toolkit. */}
+								<img
+									src={mounted && resolvedTheme === "dark" ? "/tailscale-icon-dark.svg" : "/tailscale-icon-light.svg"}
+									alt=""
+									width={20}
+									height={20}
+									className="size-5 shrink-0"
+								/>
+								Sign in with Tailscale
 							</Button>
-						</div>
+						</form>
 					)}
-					{(!auth?.oidc_enabled || showRecovery) && (
+					{auth && !auth.oidc_enabled && (
 						<form onSubmit={handleSubmit} className="space-y-5">
 							<div className="space-y-2">
 								<Label htmlFor="username" className="text-sm font-medium">

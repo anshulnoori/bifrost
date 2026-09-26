@@ -1,7 +1,7 @@
 # nix eval --impure --json --file deploy/nixos/eval-test.nix
 let
   flake = builtins.getFlake "git+file://${toString ../..}";
-  evaluate = public: flake.inputs.nixpkgs.lib.nixosSystem {
+  evaluate = public: semantic: flake.inputs.nixpkgs.lib.nixosSystem {
     system = "aarch64-linux";
     modules = [
       flake.nixosModules.deployment
@@ -12,7 +12,8 @@ let
         services.bifrostDeployment = {
           enable = true;
           publicInference = public;
-          headroomEndpoint = if public then "https://synthetic-headroom.modal.run" else null;
+          headroomModalApp = if public then "bifrost-headroom" else null;
+          semanticCacheModalApp = if semantic then "bifrost-headroom" else null;
         };
         system.stateVersion = "26.05";
         boot.loader.grub.enable = false;
@@ -20,8 +21,12 @@ let
       })
     ];
   };
-  private = (evaluate false).config;
-  public = (evaluate true).config;
+  private = (evaluate false false).config;
+  public = (evaluate true true).config;
+  semanticOnly = (evaluate false true).config;
+  mismatched = ((evaluate true true).extendModules {
+    modules = [{ services.bifrostDeployment.semanticCacheModalApp = flake.inputs.nixpkgs.lib.mkForce "other-app"; }];
+  }).config;
 in
 assert private.services.bifrost.host == "127.0.0.1";
 assert !private.virtualisation.podman.enable;
@@ -39,9 +44,33 @@ assert public.services.bifrost.settings.providers.headroom_embeddings.custom_pro
 assert (builtins.head public.services.bifrost.settings.providers.headroom_embeddings.keys).value == "env.HEADROOM_METRICS_TOKEN";
 assert !(builtins.elemAt private.services.bifrost.settings.plugins 1).config.enabled;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.enabled;
+assert !(builtins.elemAt semanticOnly.services.bifrost.settings.plugins 1).config.enabled;
+assert (builtins.elemAt semanticOnly.services.bifrost.settings.plugins 1).config.embedding_proxy_enabled;
+assert (builtins.head semanticOnly.services.bifrost.settings.plugins).config.dimension == 384;
+assert (builtins.head semanticOnly.services.bifrost.settings.plugins).config.provider == "headroom_embeddings";
+assert semanticOnly.services.bifrost.settings.providers ? headroom_embeddings;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.timeout_ms == 500;
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.failure_policy == "open";
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.min_text_bytes == 16384;
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.cost_ledger_path == "${public.services.bifrost.stateDir}/headroom-budget.json";
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.modal_app == "bifrost-headroom";
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.modal_environment == "main";
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.modal_key_env == "HEADROOM_MODAL_TOKEN_ID";
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.modal_secret_env == "HEADROOM_MODAL_TOKEN_SECRET";
+assert public.systemd.services.bifrost.environment.MODAL_CONFIG_PATH == "/dev/null";
+assert semanticOnly.systemd.services.bifrost.environment.MODAL_CONFIG_PATH == "/dev/null";
+assert !(private.systemd.services.bifrost.environment ? MODAL_CONFIG_PATH);
+assert !(builtins.elemAt public.services.bifrost.settings.plugins 1).config ? endpoint;
+assert !(builtins.elemAt public.services.bifrost.settings.plugins 1).config ? token_env;
+assert (builtins.elemAt semanticOnly.services.bifrost.settings.plugins 1).config.modal_app == "bifrost-headroom";
+assert !(builtins.all (a: a.assertion) mismatched.assertions);
 assert private.systemd.services.bifrost-migrate.wantedBy == [];
 assert private.services.bifrost.settings.client.enforce_auth_on_inference;
+assert private.services.bifrost.settings.client.allowed_origins == [
+  "https://ai.mongoose-silverside.ts.net"
+  "https://ai.mongoose-silverside.ts.net:8443"
+];
+assert public.services.bifrost.settings.client.allowed_origins == private.services.bifrost.settings.client.allowed_origins;
 assert private.services.bifrost.settings.governance.auth_config.is_enabled;
 assert private.services.bifrost.settings.config_store.config.ssl_mode == "verify-full";
 assert private.networking.firewall.allowedTCPPorts == [];

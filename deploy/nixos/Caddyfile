@@ -63,7 +63,15 @@
 
 http://:{$INFERENCE_PORT:8081} {
 	bind 127.0.0.1
-	import inference_routes
+	# The public edge must traverse the Service, not this node's Bifrost process.
+	# Reject everything except inference before reaching the private listener.
+	route {
+		@invalid expression `{http.request.method} != "POST" || !({http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages"])`
+		respond @invalid 404
+		reverse_proxy {$INFERENCE_SERVICE_URL:https://ai.mongoose-silverside.ts.net} {
+			header_up Host {upstream_hostport}
+		}
+	}
 }
 
 http://:{$ADMIN_PORT:8082} {

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import os
@@ -7,16 +8,19 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import uuid
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 import httpx
 from service import create_service, isolated_compress, compress_until_disconnect, MAX_BODY
 from gpu import GPUCompressor
 from gpu_worker import serve, load_compressor
+from modal_private import PrivateTransport
 
 BODY = {"model": "gpt-4.1", "messages": [{"role": "tool", "tool_call_id": "slot-0", "content": "original content"}],
         "config": {"protect_recent": 0, "compress_user_messages": False},
@@ -56,6 +60,39 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.json()["messages"][0], {"role": "tool", "tool_call_id": "slot-0", "content": "short"})
         self.assertEqual(res.json()["tokens_before"], 99)
         self.assertEqual(res.json()["ccr_hashes"], [])
+
+    async def test_expired_and_invalid_deadlines_do_not_compute(self):
+        for deadline, status in [("1", 408), ("invalid", 400)]:
+            res = await self.client.post("/v1/compress", headers={**HEADERS, "x-headroom-deadline-ms": deadline}, json=BODY)
+            self.assertEqual(res.status_code, status)
+        self.assertEqual(self.calls, 0)
+
+    async def test_deadline_expired_during_body_read_does_not_start_work(self):
+        work = AsyncMock(return_value=b"{}")
+        request = SimpleNamespace(headers={"x-headroom-deadline-ms": "1"}, receive=AsyncMock(return_value={"type": "http.disconnect"}))
+        with self.assertRaises(asyncio.TimeoutError):
+            await compress_until_disconnect(request, b"{}", work)
+        work.assert_not_awaited()
+
+    async def test_deadline_cancels_work_and_cost_logs_exclude_payloads(self):
+        cleaned = asyncio.Event()
+        async def blocked(_):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_service(blocked, cost_per_second=0.00019908)), base_url="http://service") as client:
+            output = io.StringIO()
+            with patch("sys.stdout", output):
+                res = await client.post("/v1/compress", headers={**HEADERS, "x-headroom-deadline-ms": str(int(time.time() * 1000) + 100)}, json=BODY)
+            self.assertEqual(res.status_code, 504)
+            self.assertTrue(cleaned.is_set())
+            record = json.loads(output.getvalue())
+            self.assertEqual(record["status"], 504)
+            self.assertGreater(record["estimated_active_usd"], 0)
+            self.assertTrue(record["excludes_startup_idle_builds"])
+            for secret in [HEADERS["x-headroom-proxy-token"], HEADERS["x-headroom-project"], "original content"]:
+                self.assertNotIn(secret, output.getvalue())
 
     async def test_embedding_auth_shape_and_disabled_fallback(self):
         embed = AsyncMock(return_value=[[1.0] + [0.0] * 383])
@@ -108,6 +145,127 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await first).status_code, 200)
             self.assertEqual((await client.post("/v1/compress", headers=HEADERS, json=BODY)).status_code, 200)
 
+
+class PrivateTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.env = patch.dict(os.environ, HEADROOM_PROXY_TOKEN=HEADERS["x-headroom-proxy-token"])
+        self.env.start()
+        self.calls = 0
+        self.cleaned = asyncio.Event()
+
+        async def compressor(raw):
+            self.calls += 1
+            body = json.loads(raw)
+            body["messages"][0]["content"] = "short"
+            return json.dumps({"messages": body["messages"], "tokens_before": 99, "tokens_after": 20}).encode()
+
+        self.transport = PrivateTransport(create_service(compressor))
+
+    async def asyncTearDown(self):
+        self.env.stop()
+
+    async def test_private_success_returns_string_envelope(self):
+        result = json.loads(await self.transport.request(
+            "/v1/compress", json.dumps(BODY), HEADERS["x-headroom-project"],
+            int(time.time() * 1000) + 5_000))
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(json.loads(result["body"])["messages"][0]["content"], "short")
+        self.assertEqual(self.calls, 1)
+
+    async def test_packed_replies_are_opt_in_and_lossless(self):
+        async def compressor(raw):
+            body = json.loads(raw)
+            return json.dumps({"messages": body["messages"], "tokens_before": 99, "tokens_after": 99}).encode()
+        transport = PrivateTransport(create_service(compressor))
+        body = {**BODY, "messages": [{**BODY["messages"][0], "content": "é sample " * 1000}]}
+        raw = json.dumps(body)
+        packed = "zlib:" + base64.b64encode(zlib.compress(raw.encode())).decode()
+        args = (HEADERS["x-headroom-project"], int(time.time() * 1000) + 5_000)
+        plain_reply = await transport.request("/v1/compress", raw, *args)
+        packed_reply = await transport.request("/v1/compress", packed, *args)
+        self.assertTrue(packed_reply.startswith("zlib:"))
+        self.assertEqual(zlib.decompress(base64.b64decode(packed_reply[5:])).decode(), plain_reply)
+
+    async def test_short_embedding_request_can_pack_large_vector_reply(self):
+        vectors = [[(i - 193) / 1000000000009 for i in range(384)] for _ in range(2)]
+        transport = PrivateTransport(create_service(embed=AsyncMock(return_value=vectors)))
+        raw = json.dumps({"model": "headroom-minilm-v1", "input": ["hello", "world"]})
+        self.assertLess(len(raw), 4096)
+        packed = "zlib:" + base64.b64encode(zlib.compress(raw.encode())).decode()
+        args = ("", int(time.time() * 1000) + 5_000)
+        plain_reply = await transport.request("/v1/embeddings", raw, *args)
+        packed_reply = await transport.request("/v1/embeddings", packed, *args)
+        self.assertGreater(len(plain_reply), 8192)
+        self.assertTrue(packed_reply.startswith("zlib:"))
+        self.assertLess(len(packed_reply), 7000)
+        self.assertEqual(zlib.decompress(base64.b64decode(packed_reply[5:])).decode(), plain_reply)
+
+    async def test_private_rejects_expired_unsupported_and_large_before_work(self):
+        future = int(time.time() * 1000) + 5_000
+        cases = [
+            (([], "{}", HEADERS["x-headroom-project"], future), 400),
+            (("/health", "{}", HEADERS["x-headroom-project"], future), 404),
+            (("/v1/compress", "x" * (MAX_BODY + 1), HEADERS["x-headroom-project"], future), 413),
+            (("/v1/compress", json.dumps(BODY), HEADERS["x-headroom-project"], 1), 408),
+        ]
+        for arguments, status in cases:
+            self.assertEqual(json.loads(await self.transport.request(*arguments))["status"], status)
+        self.assertEqual(self.calls, 0)
+
+    async def test_private_lossless_transport_bounds(self):
+        raw = json.dumps(BODY).encode()
+        packed = zlib.compress(raw)
+        future = int(time.time() * 1000) + 5_000
+        for payload, status in [(packed, 200), (packed[:-1], 400),
+                                (packed + b"trailing", 400),
+                                (zlib.compress(b"x" * (MAX_BODY + 1)), 413)]:
+            result = json.loads(await self.transport.request(
+                "/v1/compress", "zlib:" + base64.b64encode(payload).decode(),
+                HEADERS["x-headroom-project"], future))
+            self.assertEqual(result["status"], status)
+        for payload, deadline, status in [("zlib:!", future, 400), ("zlib:!", 1, 408)]:
+            result = json.loads(await self.transport.request(
+                "/v1/compress", payload, HEADERS["x-headroom-project"], deadline))
+            self.assertEqual(result["status"], status)
+        self.assertEqual(self.calls, 1)
+
+    async def test_private_deadline_cleans_up_worker(self):
+        entered = asyncio.Event()
+
+        async def blocked(_):
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+            finally:
+                self.cleaned.set()
+
+        transport = PrivateTransport(create_service(blocked))
+        result = json.loads(await transport.request(
+            "/v1/compress", json.dumps(BODY), HEADERS["x-headroom-project"],
+            int(time.time() * 1000) + 100))
+        self.assertEqual(result["status"], 504)
+        self.assertTrue(self.cleaned.is_set())
+
+    async def test_private_cancellation_cleans_up_worker(self):
+        entered = asyncio.Event()
+
+        async def blocked(_):
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+            finally:
+                self.cleaned.set()
+
+        transport = PrivateTransport(create_service(blocked))
+        task = asyncio.create_task(transport.request(
+            "/v1/compress", json.dumps(BODY), HEADERS["x-headroom-project"],
+            int(time.time() * 1000) + 5_000))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(self.cleaned.is_set())
+
     @unittest.skipUnless(os.environ.get("HEADROOM_REAL_TEST") == "1", "opt-in official package integration")
     async def test_official_headroom_fidelity(self):
         text = json.dumps([{"id": i, "status": "healthy", "target_fact": "KEEP-7391", "region": "east"} for i in range(150)])
@@ -119,6 +277,128 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_modal_deploys_one_private_l4_class_with_scale_controls(self):
+        modal = MagicMock()
+        modal.is_local.return_value = False
+        modal.App.return_value.cls.side_effect = lambda **kwargs: lambda cls: cls
+        modal.concurrent.side_effect = lambda **kwargs: lambda fn: fn
+        modal.method.side_effect = lambda **kwargs: lambda fn: fn
+        modal.enter.side_effect = lambda **kwargs: lambda fn: fn
+        modal.exit.side_effect = lambda **kwargs: lambda fn: fn
+        source = Path(__file__).with_name("app.py").read_text()
+        namespace = {"__file__": "/root/app.py", "__name__": "app"}
+        with patch.dict(sys.modules, modal=modal):
+            exec(compile(source, "/root/app.py", "exec"), namespace)
+        modal.Image.from_registry.assert_called_once_with(namespace["REGISTRY_IMAGE"], secret=namespace["registry_secret"])
+        self.assertRegex(namespace["REGISTRY_IMAGE"], r"^docker\.io/anshulnoori/headroom@sha256:[0-9a-f]{64}$")
+        modal.App.return_value.cls.assert_called_once()
+        options = modal.App.return_value.cls.call_args.kwargs
+        self.assertEqual(options["gpu"], "L4")
+        self.assertEqual(options["region"], "us")
+        self.assertEqual(options["timeout"], 90)
+        self.assertEqual(options["max_containers"], 1)
+        self.assertEqual(options["min_containers"], 0)
+        self.assertEqual(options["buffer_containers"], 0)
+        self.assertEqual(options["scaledown_window"], 30)
+        self.assertEqual(options["retries"], 0)
+        self.assertTrue(options["enable_memory_snapshot"])
+        self.assertEqual(options["experimental_options"], {"enable_gpu_snapshot": True})
+        self.assertEqual(options["volumes"], {"/opt/headroom-models": modal.Volume.from_name.return_value.read_only.return_value})
+        self.assertEqual([call.kwargs for call in modal.enter.call_args_list], [{"snap": True}, {"snap": False}])
+        self.assertEqual(modal.concurrent.call_args.kwargs, {"max_inputs": 1})
+        modal.asgi_app.assert_not_called()
+        self.assertNotIn("web_endpoint", source)
+        self.assertNotIn("web_server", source)
+        self.assertIn("class Headroom", source)
+
+        worker = AsyncMock()
+        def validate_warmup(raw):
+            from service import validate
+            if json.loads(raw) != {"operation": "snapshot"}:
+                validate(json.loads(raw))
+            return b'{}'
+        worker.side_effect = validate_warmup
+        with patch("gpu.GPUCompressor", return_value=worker), patch("service.create_service") as service, \
+                patch("modal_private.PrivateTransport") as transport, patch("builtins.print"), \
+                patch.object(Path, "exists", return_value=True):
+            instance = namespace["Headroom"]()
+            await instance.load()
+            worker.warmup.assert_awaited_once()
+            self.assertEqual(worker.await_count, 2)
+            self.assertEqual(worker.await_args_list[-1].args, (b'{"operation":"snapshot"}',))
+            service.assert_not_called()
+            transport.assert_not_called()
+            await instance.restore()
+            service.assert_called_once()
+            transport.assert_called_once()
+            await instance.close()
+            worker.close.assert_awaited_once()
+
+    def test_snapshot_cleanup_waits_and_preserves_live_weights(self):
+        from gpu_worker import prepare_snapshot
+        torch = MagicMock()
+        torch.cuda.memory_reserved.side_effect = [900, 600]
+        torch.cuda.memory_allocated.return_value = 550
+        canary = MagicMock()
+        canary.is_alive.return_value = False
+        compressor = SimpleNamespace(_canary_thread=canary)
+        with patch.dict(sys.modules, torch=torch), patch("gpu_worker.gc.collect") as collect:
+            result = prepare_snapshot(compressor)
+            self.assertEqual(result, {"cuda_reserved_before": 900, "cuda_reserved_after": 600, "cuda_allocated": 550})
+            canary.join.assert_called_once_with(timeout=5)
+            collect.assert_called_once()
+            torch.cuda.empty_cache.assert_called_once()
+            self.assertEqual(torch.cuda.synchronize.call_count, 2)
+            canary.is_alive.return_value = True
+            with self.assertRaisesRegex(RuntimeError, "startup probe"):
+                prepare_snapshot(compressor)
+            self.assertEqual(torch.cuda.empty_cache.call_count, 1)
+
+    def test_loader_patch_rejects_changed_source(self):
+        from optimize_loader import optimize
+        with self.assertRaisesRegex(ValueError, "loader changed"):
+            optimize(b"unexpected source")
+
+    def test_registry_credential_is_only_used_for_image_import(self):
+        modal = MagicMock()
+        modal.is_local.return_value = True
+        modal.Secret.from_name.side_effect = lambda name: name
+        path = Path(__file__).with_name("app.py")
+        with patch.dict(sys.modules, modal=modal), patch.dict(os.environ, {}, clear=True):
+            exec(compile(path.read_text(), str(path), "exec"), {"__file__": str(path), "__name__": "app"})
+        self.assertEqual(modal.Image.from_registry.call_args.kwargs["secret"], "headroom-dockerhub")
+        self.assertEqual(modal.App.return_value.cls.call_args.kwargs["secrets"], ["bifrost-headroom"])
+        modal.Secret.from_dict.assert_not_called()
+
+    def test_l4_rate_ignores_obsolete_t4_override(self):
+        path = Path(__file__).with_name("app.py")
+        for variable in ["HEADROOM_DEPLOY_GPU", "HEADROOM_ACCELERATOR"]:
+            modal = MagicMock()
+            namespace = {"__file__": str(path), "__name__": "app"}
+            with patch.dict(sys.modules, modal=modal), patch.dict(os.environ, {variable: "T4"}, clear=True):
+                exec(compile(path.read_text(), str(path), "exec"), namespace)
+            self.assertEqual(modal.App.return_value.cls.call_args.kwargs["gpu"], "L4")
+            self.assertAlmostEqual(namespace["COST_PER_SECOND"], 0.000295642)
+
+    async def test_http_benchmark_requires_edge_auth_and_reuses_service(self):
+        modal = MagicMock()
+        modal.App.return_value.cls.side_effect = lambda **kwargs: lambda cls: cls
+        modal.concurrent.side_effect = lambda **kwargs: lambda cls: cls
+        modal.asgi_app.side_effect = lambda **kwargs: lambda fn: fn
+        path = Path(__file__).with_name("app.py")
+        namespace = {"__file__": str(path), "__name__": "app"}
+        with patch.dict(sys.modules, modal=modal), patch.dict(os.environ, HEADROOM_HTTP_BENCHMARK="1", HEADROOM_PROXY_TOKEN="internal-test"):
+            exec(compile(path.read_text(), str(path), "exec"), namespace)
+            modal.asgi_app.assert_called_once_with(requires_proxy_auth=True)
+            worker = namespace["Headroom"]()
+            service = AsyncMock()
+            worker.transport = SimpleNamespace(service=service)
+            scope = {"type": "http", "headers": [(b"x-headroom-proxy-token", b"external"), (b"x-headroom-deadline-ms", b"1")]}
+            await worker.http()(scope, None, None)
+            forwarded = service.call_args.args[0]
+            self.assertEqual(forwarded["headers"], [(b"x-headroom-deadline-ms", b"1"), (b"x-headroom-proxy-token", b"internal-test")])
+            self.assertEqual(scope["headers"][0][1], b"external")
+
     async def test_cancel_waits_for_database_thread(self):
         from features import state_call
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
@@ -191,7 +471,7 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
             await entered.wait()
             return {"type": "http.disconnect"}
 
-        result = await compress_until_disconnect(SimpleNamespace(receive=disconnected), b"{}", blocked)
+        result = await compress_until_disconnect(SimpleNamespace(receive=disconnected, headers={}), b"{}", blocked)
         self.assertIsNone(result)
         self.assertTrue(cleaned.is_set())
 
@@ -220,6 +500,30 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 serve(io.BytesIO(frame), io.BytesIO(), compressor)
 
+    def test_attention_and_precision_apply_before_canary_to_entire_scorer(self):
+        model = MagicMock()
+        events = []
+        model.encoder.set_attn_implementation.side_effect = lambda value: events.append(("attention", value))
+        model.to.side_effect = lambda **kw: events.append(("dtype", kw["dtype"]))
+        compressor = SimpleNamespace(config=SimpleNamespace(model_id="pinned"),
+                                     preload=lambda **kw: events.append(("preload", kw)) or "pytorch")
+        module = SimpleNamespace(KompressCompressor=lambda config: compressor,
+                                 KompressConfig=lambda **kw: kw,
+                                 _load_kompress=MagicMock(return_value=(model, None, "pytorch")))
+        torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True), bfloat16="bf16")
+        with patch.dict(sys.modules, {"torch": torch, "headroom.transforms.kompress_compressor": module}), \
+             patch.dict(os.environ, HEADROOM_ATTENTION="sdpa", HEADROOM_PRECISION="bfloat16"):
+            self.assertIs(load_compressor(), compressor)
+            self.assertEqual(events, [("attention", "sdpa"), ("dtype", "bf16"), ("preload", {"allow_download": False})])
+            module._load_kompress.assert_called_once_with("pinned", "cuda", allow_download=False)
+            events.clear()
+            with patch.dict(os.environ, HEADROOM_PRECISION="default"):
+                load_compressor()
+            self.assertEqual(events, [("attention", "sdpa"), ("preload", {"allow_download": False})])
+            with patch.dict(os.environ, HEADROOM_ATTENTION="typo"):
+                with self.assertRaisesRegex(ValueError, "configuration"):
+                    load_compressor()
+
     def test_loader_requires_cuda_and_explicit_marker_free_pytorch(self):
         selected = []
         class Compressor:
@@ -235,6 +539,11 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
             torch.cuda.is_available = lambda: False
             with self.assertRaises(RuntimeError):
                 load_compressor()
+            with self.assertRaises(RuntimeError):
+                load_compressor("cpu")  # Never silently run PyTorch on CPU.
+            with patch.object(Compressor, "preload", return_value="onnx"):
+                load_compressor("cpu")
+            self.assertEqual(selected[-1], {"device": "cpu", "enable_ccr": False})
 
     async def test_cancel_kills_worker_and_removes_private_scratch(self):
         worker = GPUCompressor()
@@ -258,13 +567,21 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
             env = kwargs["env"]
             self.assertNotIn("MODAL_TOKEN_SECRET", env)
             self.assertNotIn("HEADROOM_PROXY_TOKEN", env)
-            self.assertEqual(env["HEADROOM_KOMPRESS_BACKEND"], "pytorch")
+            self.assertEqual(env["HEADROOM_ATTENTION"], "sdpa")
+            self.assertEqual(env["HEADROOM_PRECISION"], "float16")
+            self.assertEqual(env["HEADROOM_KOMPRESS_BACKEND"], "onnx_cpu" if worker.device == "cpu" else "pytorch")
+            if worker.device == "cpu":
+                self.assertEqual(env["HEADROOM_KOMPRESS_ONNX_FILENAME"], "onnx/kompress-int8-wo.onnx")
             self.assertEqual(env["HF_HUB_OFFLINE"], "1")
-            return SimpleNamespace(stdout=SimpleNamespace(readexactly=AsyncMock(return_value=b"CUDA\n")),
+            return SimpleNamespace(stdout=SimpleNamespace(readexactly=AsyncMock(return_value=f"{worker.device.upper():4}\n".encode())),
                                    returncode=0, wait=AsyncMock())
         worker = GPUCompressor()
-        with patch.dict(os.environ, MODAL_TOKEN_SECRET="synthetic", HEADROOM_PROXY_TOKEN="synthetic"), \
+        with patch.dict(os.environ, MODAL_TOKEN_SECRET="synthetic", HEADROOM_PROXY_TOKEN="synthetic",
+                        HEADROOM_ATTENTION="sdpa", HEADROOM_PRECISION="float16"), \
                 patch("gpu.asyncio.create_subprocess_exec", side_effect=spawn):
+            await worker.warmup()
+            await worker.close()
+            worker = GPUCompressor(device="cpu")
             await worker.warmup()
             await worker.close()
 
@@ -279,17 +596,18 @@ class StateStoreTests(unittest.TestCase):
         cls.database = "headroom_test_" + uuid.uuid4().hex
         cls.admin = "host=127.0.0.1 user=postgres password=fixture sslmode=disable"
         with psycopg.connect(cls.admin, autocommit=True) as connection:
-            cls.created_role = connection.execute("SELECT 1 FROM pg_roles WHERE rolname = 'headroom_runtime'").fetchone() is None
+            cls.created_role = connection.execute("SELECT 1 FROM pg_roles WHERE rolname = 'headroom'").fetchone() is None
             if cls.created_role:
-                connection.execute("CREATE ROLE headroom_runtime")
-            connection.execute(sql.SQL("CREATE DATABASE {} ").format(sql.Identifier(cls.database)))
+                connection.execute("CREATE ROLE headroom")
+            connection.execute(sql.SQL("CREATE DATABASE {} OWNER headroom").format(sql.Identifier(cls.database)))
         cls.dsn = cls.admin + " dbname=" + cls.database
         with psycopg.connect(cls.dsn, autocommit=True) as connection:
+            connection.execute("SET ROLE headroom")
             connection.execute(Path(__file__).resolve().parents[2].joinpath("neon/headroom-state.sql").read_text())
 
         def restricted(dsn, **kwargs):
             connection = psycopg.connect(dsn, **kwargs)
-            connection.execute("SET ROLE headroom_runtime")
+            connection.execute("SET ROLE headroom")
             return connection
 
         cls.store = StateStore(cls.dsn, b"x" * 32, connect=restricted)
@@ -301,10 +619,18 @@ class StateStoreTests(unittest.TestCase):
         with psycopg.connect(cls.admin, autocommit=True) as connection:
             connection.execute(sql.SQL("DROP DATABASE {} ").format(sql.Identifier(cls.database)))
             if cls.created_role:
-                connection.execute("DROP ROLE headroom_runtime")
+                connection.execute("DROP ROLE headroom")
 
     def setUp(self):
         self.scope = uuid.uuid4().hex * 2
+
+    def test_application_role_owns_schema_and_can_migrate(self):
+        with self.store.connect(self.dsn) as connection:
+            self.assertEqual(connection.execute("SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'headroom'").fetchone()[0], "headroom")
+            self.assertEqual(connection.execute("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'headroom.entries'::regclass").fetchone()[0], "headroom")
+            connection.execute("CREATE TABLE headroom.migration_check (id integer)")
+            connection.execute("ALTER TABLE headroom.migration_check ADD COLUMN note text")
+            connection.execute("DROP TABLE headroom.migration_check")
 
     def test_official_memory_replay_scope_update_delete(self):
         from features import StateFeatures

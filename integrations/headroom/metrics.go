@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -21,23 +20,26 @@ import (
 // Event contains metadata only. Token estimates refer to selected tool results,
 // not the full prompt. Missing usage/cost/evaluation is unknown, never zero loss.
 type Event struct {
-	Done           atomic.Bool     `json:"-"`
-	Started        time.Time       `json:"started"`
-	Provider       string          `json:"provider"`
-	Model          string          `json:"model"`
-	Project        string          `json:"project"`
-	Principal      string          `json:"principal_hash"`
-	Thread         string          `json:"thread_hash"`
-	Status         string          `json:"status"`
-	Reason         string          `json:"reason"`
-	Eligible       bool            `json:"eligible"`
-	Quality        string          `json:"quality"`
-	Estimate       *estimate       `json:"tool_result_estimate"`
-	CompressionMS  float64         `json:"compression_ms"`
-	TaskMS         float64         `json:"plugin_attempt_ms"`
-	Usage          json.RawMessage `json:"provider_usage"`
-	ProviderFailed bool            `json:"provider_failed"`
-	NetworkRetries int             `json:"network_retries"`
+	Done               atomic.Bool     `json:"-"`
+	Started            time.Time       `json:"started"`
+	Provider           string          `json:"provider"`
+	Model              string          `json:"model"`
+	Project            string          `json:"project"`
+	Principal          string          `json:"principal_hash"`
+	Thread             string          `json:"thread_hash"`
+	Status             string          `json:"status"`
+	Reason             string          `json:"reason"`
+	Eligible           bool            `json:"eligible"`
+	Quality            string          `json:"quality"`
+	Estimate           *estimate       `json:"tool_result_estimate"`
+	CompressionMS      float64         `json:"compression_ms"`
+	TaskMS             float64         `json:"plugin_attempt_ms"`
+	Usage              json.RawMessage `json:"provider_usage"`
+	ProviderFailed     bool            `json:"provider_failed"`
+	NetworkRetries     int             `json:"network_retries"`
+	ReservedRequestUSD float64         `json:"cost_reservation_usd"`
+	ReservedMonthUSD   float64         `json:"month_cost_reservations_usd"`
+	BudgetAlert        bool            `json:"budget_alert"`
 }
 
 type eventLedger struct {
@@ -120,7 +122,7 @@ func (l *eventLedger) handler(token string) http.Handler {
 // provider headers persisted in config storage, nor caller-controlled requests.
 func proxyEmbedding(w http.ResponseWriter, r *http.Request) {
 	b := current.Load()
-	if b == nil || !b.config.Enabled || b.client == nil {
+	if b == nil || (!b.config.Enabled && !b.config.EmbeddingProxyEnabled) || (b.client == nil && b.modal == nil) {
 		http.Error(w, "embedding unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -129,29 +131,25 @@ func proxyEmbedding(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid embedding request", http.StatusRequestEntityTooLarge)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, b.config.Endpoint+"/v1/embeddings", bytes.NewReader(body))
+	event := &Event{Started: time.Now(), Status: "failed", Reason: "embedding", Quality: "not_evaluated"}
+	defer func() {
+		event.CompressionMS = float64(time.Since(event.Started).Microseconds()) / 1000
+		ledger.add(event)
+	}()
+	release, err := b.admitModal(event)
 	if err != nil {
-		http.Error(w, "embedding unavailable", http.StatusBadGateway)
+		http.Error(w, "embedding budget or concurrency unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Headroom-Proxy-Token", b.token)
-	if b.modalKey != "" {
-		req.Header.Set("Modal-Key", b.modalKey)
-		req.Header.Set("Modal-Secret", b.modalSecret)
-	}
-	response, err := b.client.Do(req)
-	if err != nil {
-		http.Error(w, "embedding unavailable", http.StatusBadGateway)
-		return
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, b.config.MaxBodyBytes+1))
-	if err != nil || int64(len(data)) > b.config.MaxBodyBytes || response.StatusCode != http.StatusOK || !json.Valid(data) {
+	defer release()
+	// Embeddings retain their separate two-second provider deadline.
+	data, err := b.call(r.Context(), "/v1/embeddings", "", body, 2*time.Second)
+	if err != nil || !json.Valid(data) {
 		http.Error(w, "embedding unavailable", http.StatusBadGateway)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	event.Status = "embedded"
 	w.Write(data)
 }
 

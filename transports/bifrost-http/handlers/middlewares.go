@@ -1277,6 +1277,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			}
 			// Checking basic auth for inference calls
 			if scheme == "Basic" {
+				if !passwordAuthAllowed() {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+					return
+				}
 				// Decode the base64 token
 				decodedBytes, err := base64.StdEncoding.DecodeString(token)
 				if err != nil {
@@ -1317,6 +1321,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 
 				// Verify the session
 				if !validateSession(ctx, m.store, token) {
+					if !passwordAuthAllowed() {
+						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+						return
+					}
 					// Here we will check if its the base64 of username:password
 					// This is for backward compatibility with the old auth system
 					decodedBytes, err := base64.StdEncoding.DecodeString(token)

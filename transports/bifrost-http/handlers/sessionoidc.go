@@ -76,11 +76,17 @@ func (h *SessionHandler) ConfigureOIDCFromEnv() error {
 	return nil
 }
 
-// Recheck the current allowlist for every OIDC session, including after restart
-// or removing OIDC configuration. Password recovery sessions are independent.
+// Password credentials are allowed only when OIDC is completely unconfigured.
+// Partial or invalid configuration must not enable a password fallback.
+func passwordAuthAllowed() bool {
+	c, err := loadDashboardOIDC()
+	return err == nil && c == nil
+}
+
+// Recheck the current authentication mode and subject allowlist for every session.
 func oidcSessionAllowed(session *tables.SessionsTable) bool {
 	if session.OIDCIssuer == "" && session.OIDCSubject == "" {
-		return true
+		return passwordAuthAllowed()
 	}
 	c, err := loadDashboardOIDC()
 	return err == nil && c != nil && session.OIDCIssuer == c.issuer && slices.Contains(c.subjects, session.OIDCSubject)

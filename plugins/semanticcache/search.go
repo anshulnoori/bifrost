@@ -46,6 +46,9 @@ func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, state *ca
 		}
 		return nil, fmt.Errorf("failed to fetch direct cache chunk: %w", err)
 	}
+	if !plugin.codexScopeStillAuthorized(ctx, state) {
+		return nil, nil
+	}
 	return plugin.buildResponseFromResult(ctx, state, req, result, CacheTypeDirect, nil, nil)
 }
 
@@ -104,7 +107,21 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, state *
 	if len(results) == 0 {
 		return nil, nil
 	}
+	if !plugin.codexScopeStillAuthorized(ctx, state) {
+		return nil, nil
+	}
 	return plugin.buildResponseFromResult(ctx, state, req, results[0], CacheTypeSemantic, &cacheThreshold, &inputTokens)
+}
+
+func (plugin *Plugin) codexScopeStillAuthorized(ctx *schemas.BifrostContext, state *cacheState) bool {
+	if state.CodexProvider == "" {
+		return true
+	}
+	if plugin.codexCacheScopeResolver == nil {
+		return false
+	}
+	scope, _, err := plugin.codexCacheScopeResolver(ctx, schemas.ModelProvider(state.CodexProvider), state.CodexModel)
+	return err == nil && scope == state.CodexScope
 }
 
 // selectFieldsStream / selectFieldsNonStream are precomputed at package init

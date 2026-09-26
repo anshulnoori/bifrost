@@ -356,3 +356,35 @@ func TestEncryptionRequired(t *testing.T) {
 		t.Fatal("plaintext seal allowed")
 	}
 }
+
+func TestCurrentMetadataDoesNotReadSecretsOrMutateExpiredState(t *testing.T) {
+	s, db := testStore(t, func(http.ResponseWriter, *http.Request) { t.Error("unexpected network request") })
+	now := time.Now()
+	row := Connection{
+		ID:             "metadata-only",
+		Owner:          "provider:codex:account-a",
+		State:          "refreshing",
+		Secret:         "intentionally-invalid-encrypted-secret",
+		ExpiresAt:      now.Add(-time.Hour),
+		OperationUntil: now.Add(-time.Hour),
+		Version:        7,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, err := s.CurrentMetadata(context.Background(), row.Owner)
+	if err != nil {
+		t.Fatalf("metadata query tried to load/decrypt an invalid secret: %v", err)
+	}
+	if metadata.ID != row.ID || metadata.Owner != row.Owner || metadata.State != "refreshing" {
+		t.Fatalf("unexpected metadata: %+v", metadata)
+	}
+	var persisted Connection
+	if err := db.Where("id = ?", row.ID).First(&persisted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != "refreshing" || persisted.Secret != row.Secret || persisted.Version != 7 {
+		t.Fatalf("metadata read mutated expired state: state=%q secret=%q version=%d", persisted.State, persisted.Secret, persisted.Version)
+	}
+}

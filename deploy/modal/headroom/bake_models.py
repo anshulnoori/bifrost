@@ -1,14 +1,14 @@
-"""Build-time public model downloads. Runtime is cache-only and has no HF token."""
+"""Pinned public model downloads into a versioned Volume, before deployment."""
 from pathlib import Path
 from huggingface_hub import snapshot_download
 
 CACHE = Path("/opt/headroom-models")
 MODELS = {
     "chopratejas/kompress-v2-base": (
-        "b1563631b35bfdcee37587ad530147497d820d4c", ["merged.pt"]),
+        "b1563631b35bfdcee37587ad530147497d820d4c", ["merged.pt", "onnx/kompress-int8-wo.onnx"]),
     "answerdotai/ModernBERT-base": (
         "8949b909ec900327062f0ebf497f51aef5e6f0c8",
-        ["config.json", "model.safetensors", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"]),
+        ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"]),
     "sentence-transformers/all-MiniLM-L6-v2": (
         "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
         ["config.json", "model.safetensors", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]),

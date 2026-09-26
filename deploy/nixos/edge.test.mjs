@@ -42,14 +42,29 @@ test('Funnel target is inference-only; private target retains session routes', {
     ports.push(server.address().port);
     await new Promise(resolve => server.close(resolve));
   }
+  // Model the Service hop back into the private Caddy listener.
+  const serviceRequests = [];
+  const service = http.createServer((req, res) => {
+    serviceRequests.push(req.url);
+    const forwarded = http.request({ hostname: '127.0.0.1', port: ports[1], path: req.url, method: req.method, headers: req.headers }, reply => {
+      res.writeHead(reply.statusCode, reply.headers);
+      reply.pipe(res);
+    });
+    forwarded.on('error', () => res.destroy());
+    res.on('close', () => forwarded.destroy());
+    req.pipe(forwarded);
+  }).listen(0, '127.0.0.1');
+  await once(service, 'listening');
   const caddy = spawn(process.env.CADDY ?? 'caddy', ['run', '--config', 'deploy/nixos/Caddyfile', '--adapter', 'caddyfile'], {
-    env: { ...process.env, BIFROST_PORT: String(upstream.address().port), INFERENCE_PORT: String(ports[0]), ADMIN_PORT: String(ports[1]) },
+    env: { ...process.env, BIFROST_PORT: String(upstream.address().port), INFERENCE_PORT: String(ports[0]), ADMIN_PORT: String(ports[1]), INFERENCE_SERVICE_URL: `http://127.0.0.1:${service.address().port}` },
     stdio: process.env.CADDY_TEST_DEBUG ? 'inherit' : 'ignore',
   });
   const exited = once(caddy, 'exit');
   t.after(async () => {
     caddy.kill('SIGTERM');
     await exited;
+    service.closeAllConnections();
+    await new Promise(resolve => service.close(resolve));
     upstream.closeAllConnections();
     await new Promise(resolve => upstream.close(resolve));
   });
@@ -72,6 +87,7 @@ test('Funnel target is inference-only; private target retains session routes', {
     }
     assert.equal((await request('/v1/responses', {}, '', 'GET')).status, 404);
     assert.equal(seen.length, before);
+    assert.equal(serviceRequests.length, 0, 'admin paths must not reach the Service');
   });
   await t.test('accepts only VK-shaped credentials; actual authentication belongs to Bifrost', async () => {
     const before = seen.length;
@@ -86,6 +102,7 @@ test('Funnel target is inference-only; private target retains session routes', {
     }
     // Funnel preserves the public host; listeners must not require Host: localhost.
     assert.equal((await request('/v1/chat/completions', { host: 'bifrost.example.ts.net' })).status, 200);
+    assert.equal(serviceRequests.at(-1), '/v1/chat/completions', 'public inference must traverse the Service');
   });
   await t.test('preserves body bytes, maps Anthropic, strips cookies, identity and routing overrides', async () => {
     const body = '{ "model": "synthetic", "messages": [] }';

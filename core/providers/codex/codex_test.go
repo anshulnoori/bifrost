@@ -125,6 +125,12 @@ func TestResponsesUsesSubscriptionAndPreservesTools(t *testing.T) {
 		if gjson.GetBytes(body, "reasoning.effort").String() != "high" {
 			t.Error("reasoning lost")
 		}
+		if gjson.GetBytes(body, "prompt_cache_key").String() != "caller-session" || gjson.GetBytes(body, "prompt_cache_retention").String() != "24h" {
+			t.Error("prompt cache isolation hints lost")
+		}
+		if gjson.GetBytes(body, "prompt_cache_options.mode").String() != "implicit" || gjson.GetBytes(body, "prompt_cache_options.ttl").String() != "30m" {
+			t.Error("prompt cache options lost")
+		}
 		if gjson.GetBytes(body, "text.format.name").String() != "weather_result" || !gjson.GetBytes(body, "text.format.strict").Bool() || gjson.GetBytes(body, "text.format.schema.required.0").String() != "city" {
 			t.Error("structured output schema lost")
 		}
@@ -140,7 +146,12 @@ func TestResponsesUsesSubscriptionAndPreservesTools(t *testing.T) {
 	}
 	p.url = server.URL
 	ctx := admitted(t)
-	request := &schemas.BifrostResponsesRequest{Provider: schemas.Codex, Model: "gpt-5.3-codex", Params: &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")}}}
+	request := &schemas.BifrostResponsesRequest{Provider: schemas.Codex, Model: "gpt-5.3-codex", Params: &schemas.ResponsesParameters{
+		Reasoning:            &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")},
+		PromptCacheKey:       schemas.Ptr("caller-session"),
+		PromptCacheRetention: schemas.Ptr("24h"),
+		PromptCacheOptions:   &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit"), TTL: schemas.Ptr("30m")},
+	}}
 	request.Params.Text = &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{Type: "json_schema", Name: schemas.Ptr("weather_result"), Strict: schemas.Ptr(true), JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{Type: schemas.Ptr("object"), Required: []string{"city"}}}}
 	request.Input = []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Oslo?")}}}
 	response, bfErr := p.Responses(ctx, schemas.Key{}, request)

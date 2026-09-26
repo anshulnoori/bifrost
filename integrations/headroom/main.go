@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -37,11 +38,12 @@ func Init(raw any) error {
 		return err
 	}
 	if err = configureMonitor(config); err != nil {
+		b.close()
 		return err
 	}
 	old := current.Swap(b)
-	if old != nil && old.client != nil {
-		old.client.CloseIdleConnections()
+	if old != nil {
+		old.close()
 	}
 	return nil
 }
@@ -169,6 +171,12 @@ func (b *bridge) pre(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (
 	start := time.Now()
 	out, counts, err := b.compress(ctx, model, scope, texts)
 	event.CompressionMS = float64(time.Since(start).Microseconds()) / 1000
+	if event.BudgetAlert {
+		ctx.Log(schemas.LogLevelWarn, "headroom monthly cost reservations reached the proposed $10 alert threshold")
+	}
+	if errors.Is(err, errCostGate) {
+		return bypass("budget_or_concurrency")
+	}
 	if err == nil {
 		var patched []byte
 		patched, err = patchSlots(body, paths, out)

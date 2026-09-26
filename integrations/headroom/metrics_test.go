@@ -53,6 +53,28 @@ func TestEmbeddingProxyBoundary(t *testing.T) {
 	}
 }
 
+func TestEmbeddingProxyWithoutCompression(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(30 * time.Millisecond)
+		w.Write([]byte(`{"data":[{"embedding":[1,0]}]}`))
+	}))
+	defer upstream.Close()
+	t.Setenv("TEST_PROXY_TOKEN", strings.Repeat("p", 32))
+	b, err := newBridge(Config{Enabled: false, EmbeddingProxyEnabled: true, Endpoint: upstream.URL, TokenEnv: "TEST_PROXY_TOKEN", MaxBodyBytes: 1024, TimeoutMS: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := current.Swap(b)
+	defer current.Store(previous)
+	r := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"input":"hello"}`))
+	r.Header.Set("Authorization", "Bearer local-token")
+	w := httptest.NewRecorder()
+	ledger.handler("local-token").ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("embedding facade unavailable with compression disabled: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestResponsesStreamUsage(t *testing.T) {
 	response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted}}
 	if providerUsage(response) != nil {

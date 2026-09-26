@@ -143,7 +143,12 @@ export default function CodexUsage({
 							<dt className="text-muted-foreground">Billing</dt>
 							<dd>Uses your ChatGPT subscription allowance</dd>
 							<dt className="text-muted-foreground">Routing reserve</dt>
-							<dd>{reserve == null ? "No reserve" : `Pause at ${reserve}% weekly allowance remaining`}</dd>
+							<dd>
+								{reserve == null ? "No reserve" : `Pause at ${reserve}% weekly allowance remaining`} ·{" "}
+								<a className="text-primary underline" href={`/workspace/model-limits?tab=subscriptions#${encodeURIComponent(account.id)}`}>
+									Edit in Budgets & Limits
+								</a>
+							</dd>
 							<dt className="text-muted-foreground">Usage</dt>
 							<dd className="space-y-3">
 								<div className="flex flex-wrap items-center gap-2">

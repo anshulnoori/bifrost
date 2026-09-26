@@ -8,6 +8,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -19,6 +20,33 @@ func (deniedCodexStore) GetAuthConfig(context.Context) (*configstore.AuthConfig,
 
 func (deniedCodexStore) GetVirtualKeyByValue(context.Context, string) (*tables.TableVirtualKey, error) {
 	return nil, nil
+}
+
+func TestCodexManagementAcceptsDashboardOIDCSession(t *testing.T) {
+	f := newDashboardIdPFixture(t)
+	state, browser := f.start(t)
+	callback := dashboardCallback(state, browser)
+	f.h.oidcCallback(callback)
+	require.Equal(t, "/workspace", string(callback.Response.Header.Peek("Location")))
+	cookie := &fasthttp.Cookie{}
+	cookie.SetKey("token")
+	require.True(t, callback.Response.Header.Cookie(cookie))
+	auth, err := InitAuthMiddleware(f.h.configStore, nil, nil, "")
+	require.NoError(t, err)
+	h := NewCodexHandler(f.h.configStore)
+	for _, method := range []string{"GET", "POST"} {
+		t.Run(method, func(t *testing.T) {
+			ctx := getCtx("/api/codex/connections")
+			ctx.Request.Header.SetMethod(method)
+			ctx.Request.Header.SetCookie("token", string(cookie.Value()))
+			ctx.Request.Header.Set("x-bf-codex-key", "configured-account-id")
+			ctx.Request.Header.Set("Sec-Fetch-Site", "same-origin")
+			auth.APIMiddleware()(h.managementAuth(func(ctx *fasthttp.RequestCtx) {
+				ctx.SetStatusCode(204)
+			}))(ctx)
+			require.Equal(t, 204, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		})
+	}
 }
 
 func TestCodexRoutesDoNotTrustUpstreamBearerOrOwner(t *testing.T) {

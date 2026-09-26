@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -161,6 +162,10 @@ func TestDashboardOIDCSessionLifecycle(t *testing.T) {
 	protected.Request.Header.SetCookie("token", value)
 	r.Handler(protected)
 	require.Equal(t, 204, protected.Response.StatusCode())
+	bearer := getCtx("/api/protected")
+	bearer.Request.Header.Set("Authorization", "Bearer "+value)
+	r.Handler(bearer)
+	require.Equal(t, 204, bearer.Response.StatusCode())
 	spoofed := getCtx("/api/protected")
 	spoofed.Request.Header.Set("X-Forwarded-User", "12345")
 	spoofed.Request.Header.Set("Authorization", "Bearer never-store-upstream-access")
@@ -186,13 +191,50 @@ func TestDashboardOIDCSessionLifecycle(t *testing.T) {
 	f.h.logout(logout)
 	require.Equal(t, 200, logout.Response.StatusCode())
 	require.False(t, validateSession(bgCtx(), f.h.configStore, value))
-	// OIDC does not break the existing password recovery flow.
 	login := formPostCtx(`{"username":"admin","password":"recovery-password"}`)
 	f.h.login(login)
-	require.Equal(t, 200, login.Response.StatusCode())
-	require.True(t, login.Response.Header.Cookie(cookie))
-	t.Setenv("BIFROST_OIDC_ISSUER", "")
-	require.True(t, validateSession(bgCtx(), f.h.configStore, string(cookie.Value())))
+	require.Equal(t, 403, login.Response.StatusCode())
+	require.Empty(t, login.Response.Header.Peek("Set-Cookie"))
+}
+
+func TestDashboardOIDCRejectsPasswordCredentials(t *testing.T) {
+	f := newDashboardIdPFixture(t)
+	passwordSession := &tables.SessionsTable{Token: "old-password-session", ExpiresAt: time.Now().Add(time.Hour)}
+	require.NoError(t, f.h.configStore.CreateSession(context.Background(), passwordSession))
+	am, err := InitAuthMiddleware(f.h.configStore, nil, nil, "")
+	require.NoError(t, err)
+	protected := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(204) })
+	credentials := base64.StdEncoding.EncodeToString([]byte("admin:recovery-password"))
+	for _, configured := range []bool{true, false} {
+		t.Run(fmt.Sprint(configured), func(t *testing.T) {
+			if !configured {
+				for _, key := range []string{"ISSUER", "CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URL", "ALLOWED_SUBJECTS"} {
+					t.Setenv("BIFROST_OIDC_"+key, "")
+				}
+				require.NoError(t, f.h.ConfigureOIDCFromEnv())
+			}
+			want := 204
+			if configured {
+				want = 401
+			}
+			for _, authorization := range []string{"Basic " + credentials, "Bearer " + credentials, "Bearer old-password-session", ""} {
+				ctx := getCtx("/api/protected")
+				ctx.Request.Header.Set("Authorization", authorization)
+				if authorization == "" {
+					ctx.Request.Header.SetCookie("token", "old-password-session")
+				}
+				protected(ctx)
+				require.Equal(t, want, ctx.Response.StatusCode(), authorization)
+			}
+			login := formPostCtx(`{"username":"admin","password":"recovery-password"}`)
+			f.h.login(login)
+			if configured {
+				require.Equal(t, 403, login.Response.StatusCode())
+			} else {
+				require.Equal(t, 200, login.Response.StatusCode())
+			}
+		})
+	}
 }
 
 func TestDashboardOIDCRejectsInvalidIdentity(t *testing.T) {
@@ -288,6 +330,8 @@ func TestDashboardOIDCConfiguration(t *testing.T) {
 				t.Setenv("BIFROST_OIDC_"+key, value)
 				_, err := loadDashboardOIDC()
 				require.Error(t, err)
+				require.False(t, passwordAuthAllowed(), "invalid OIDC must not allow password authentication")
+				require.False(t, oidcSessionAllowed(&tables.SessionsTable{}))
 			})
 		}
 	}

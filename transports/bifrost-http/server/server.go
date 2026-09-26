@@ -2239,6 +2239,7 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	// Wire the embedding executor on the new instance before syncing.
 	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+		semanticCachePlugin.SetCodexCacheScopeResolver(lib.CodexCacheScopeResolver(s.Config.ConfigStore))
 	}
 	// Both at once: applied separately, the classifier spends the gap between
 	// them configured for a store it has not been given, and warms a throwaway
@@ -2923,6 +2924,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+		semanticCachePlugin.SetCodexCacheScopeResolver(lib.CodexCacheScopeResolver(s.Config.ConfigStore))
 	}
 	// Wire the routing plugin's semantic-classification embedding path. The
 	// executor cannot be passed at Init: the plugin is built while the bifrost

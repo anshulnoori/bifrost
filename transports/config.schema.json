@@ -390,6 +390,16 @@
       },
       "additionalProperties": false
     },
+    "provider_defaults": {
+      "type": "object",
+      "description": "Defaults inherited by every configured provider, including providers added at runtime. An explicit provider value takes precedence.",
+      "properties": {
+        "prompt_cache": {
+          "$ref": "#/$defs/prompt_cache"
+        }
+      },
+      "additionalProperties": false
+    },
     "providers": {
       "type": "object",
       "description": "AI provider configurations",

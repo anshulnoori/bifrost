@@ -31,6 +31,15 @@ type Connection struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// ConnectionMetadata is the credential-free authorization state needed by
+// request admission and cache scoping. Its query never selects Secret and
+// never refreshes or otherwise mutates the connection.
+type ConnectionMetadata struct {
+	ID    string
+	Owner string
+	State string
+}
+
 func (Connection) TableName() string { return "codex_connections" }
 
 // envelope binds encrypted content to its row and owner. Copying ciphertext
@@ -145,6 +154,24 @@ func (s *Store) Current(ctx context.Context, owner string) (Connection, error) {
 		return row, errors.New("codex credential store unavailable")
 	}
 	return s.Status(ctx, owner, row.ID)
+}
+
+// CurrentMetadata returns the owner's current connection without loading or
+// decrypting credentials and without applying Status's state transitions.
+func (s *Store) CurrentMetadata(ctx context.Context, owner string) (ConnectionMetadata, error) {
+	var row ConnectionMetadata
+	if owner == "" {
+		return row, ErrNotFound
+	}
+	err := s.db().WithContext(ctx).Table((Connection{}).TableName()).
+		Select("id", "owner", "state").Where("owner = ?", owner).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return row, ErrNotFound
+	}
+	if err != nil {
+		return row, errors.New("codex credential store unavailable")
+	}
+	return row, nil
 }
 
 func (s *Store) load(ctx context.Context, owner, id string) (Connection, error) {

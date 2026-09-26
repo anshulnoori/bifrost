@@ -3447,6 +3447,8 @@ func TestClearCtxForFallback_DropsCallerSuppliedKey(t *testing.T) {
 
 	// A routing rule's key pin is scoped to the provider whose pool it was resolved against.
 	ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "primary-provider-key")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "primary-selected-key")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, "primary-selected-name")
 
 	clearCtxForFallback(ctx)
 
@@ -3455,6 +3457,12 @@ func TestClearCtxForFallback_DropsCallerSuppliedKey(t *testing.T) {
 	}
 	if pin, ok := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID).(string); ok {
 		t.Fatalf("RoutingPinnedAPIKeyID survived clearCtxForFallback: %q", pin)
+	}
+	if selected, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok {
+		t.Fatalf("SelectedKeyID survived clearCtxForFallback: %q", selected)
+	}
+	if selected, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok {
+		t.Fatalf("SelectedKeyName survived clearCtxForFallback: %q", selected)
 	}
 
 	// #6973: provider response headers belong to the provider that produced

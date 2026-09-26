@@ -11,10 +11,10 @@ Codex subscription credentials and inference virtual keys remain separate from d
 3. Register a confidential OIDC client for Bifrost in tsidp.
 4. Set its exact callback to `https://YOUR-BIFROST-ADMIN-HOST/api/session/oidc/callback`.
 5. Store the client ID and secret in the Bifrost service's private environment.
-6. Get your numeric Tailscale user ID from a user-owned node:
+6. Get your tsidp subject from a user-owned node (tsidp v0.0.14 uses the `userid:` prefix):
 
    ```sh
-   tailscale status --json | jq -er '.Self.UserID | tostring'
+   tailscale status --json | jq -er '.Self.UserID | "userid:\(.)"'
    ```
 
 The callback is **not** the Cloudflare Access `/cdn-cgi/access/callback` URL. These clients require separate registrations.
@@ -24,7 +24,8 @@ An ACL-tagged node does not identify an ordinary user's subject reliably. The al
 
 ## Configure Bifrost
 
-Keep dashboard password authentication enabled. Keep its recovery password in your password manager.
+Keep dashboard authentication enabled (`auth_config.is_enabled: true`).
+When OIDC is configured, Bifrost disables password login, Basic authentication, legacy password Bearer tokens, and existing password sessions.
 Use the existing `BIFROST_ENCRYPTION_KEY` for this database. Never replace that key to enable OIDC.
 
 Put these variables in a private environment file or secret manager:
@@ -34,15 +35,17 @@ BIFROST_OIDC_ISSUER=https://idp.silverside-mongoose.ts.net
 BIFROST_OIDC_CLIENT_ID=YOUR-REGISTERED-CLIENT-ID
 BIFROST_OIDC_CLIENT_SECRET=YOUR-REGISTERED-CLIENT-SECRET
 BIFROST_OIDC_REDIRECT_URL=https://YOUR-BIFROST-ADMIN-HOST/api/session/oidc/callback
-BIFROST_OIDC_ALLOWED_SUBJECTS=YOUR-NUMERIC-TAILSCALE-USER-ID
+BIFROST_OIDC_ALLOWED_SUBJECTS=userid:YOUR-NUMERIC-TAILSCALE-USER-ID
 ```
 
-Use comma-separated subjects for multiple administrators. Every allowed subject receives the same local administrator permissions as the recovery account.
+Use comma-separated subjects for multiple administrators. Every allowed subject receives local administrator permissions.
 The allowlist uses exact issuer and subject values, not email addresses or domain suffixes. Stock tsidp does not emit `email_verified`.
 Partial configuration prevents startup. With no OIDC variables, Bifrost retains its existing password login.
 
 After client registration, restart Bifrost with this environment. Select **Sign in with Tailscale** on the login page.
-If tsidp is unavailable, select **Use recovery password**. Bifrost never asks for the Tailscale password itself.
+If tsidp is unavailable, use SSH to repair the IdP or Bifrost's OIDC configuration. There is no web password fallback.
+Keep SSH access tested and independent of dashboard login. Do not disable dashboard authentication for recovery.
+Bifrost never asks for the Tailscale password itself.
 
 ## Session and replica behavior
 
@@ -56,7 +59,7 @@ Subsequent sign-in can reuse the active Tailscale identity. The gateway does not
 All replicas need the same database, encryption key, OIDC configuration, and allowlist. Sticky sessions are not required.
 PostgreSQL is appropriate for distributed replicas. The regression suite tests concurrent callbacks against shared SQLite, not a live multi-node PostgreSQL deployment.
 Removing a subject or removing all OIDC variables rejects affected sessions after restart. Removing access only at tsidp does not revoke existing Bifrost sessions immediately.
-Restart every replica after an allowlist change. Password recovery sessions remain independent.
+Restart every replica after an allowlist change. Removing all OIDC variables explicitly restores password authentication.
 
 ## Upgrade and rollback
 
@@ -87,7 +90,7 @@ The signed TLS IdP fixtures require no external account or subscription usage:
 GOMAXPROCS=3 go test -race ./transports/bifrost-http/handlers -run TestDashboardOIDC -count=1
 ```
 
-UI tests exercise login, recovery, cancellation, and disabled-provider states against mocked auth status:
+UI tests exercise branded login, absence of password recovery, cancellation, and disabled-provider states against mocked auth status:
 
 ```sh
 cd tests/e2e

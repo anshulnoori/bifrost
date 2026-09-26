@@ -72,10 +72,16 @@ async def compress_until_disconnect(request, raw, compressor):
         while (await request.receive())["type"] != "http.disconnect":
             pass
 
+    deadline = request.headers.get("x-headroom-deadline-ms")
+    timeout = min(25, int(deadline) / 1000 - time.time()) if deadline else 25
+    if timeout <= 0:
+        raise asyncio.TimeoutError()
     work = asyncio.create_task(compressor(raw))
     watcher = asyncio.create_task(disconnected())
     try:
-        done, _ = await asyncio.wait({work, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait({work, watcher}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            raise asyncio.TimeoutError()
         if watcher in done:
             return None
         return await work
@@ -100,7 +106,7 @@ async def read_json(request):
         raise HTTPException(400) from None
 
 
-def create_service(compressor=isolated_compress, *, policy="isolated-marker-free-cpu-v1", lifespan=None, features=None, embed=None):
+def create_service(compressor=isolated_compress, *, policy="isolated-marker-free-cpu-v1", lifespan=None, features=None, embed=None, cost_per_second=0):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     slots = asyncio.Semaphore(1)
 
@@ -119,8 +125,23 @@ def create_service(compressor=isolated_compress, *, policy="isolated-marker-free
             return Response(status_code=404)
         if request.url.query or request.headers.get("content-encoding"):
             return Response(status_code=400)
+        deadline = request.headers.get("x-headroom-deadline-ms")
+        if deadline is not None:
+            if not deadline.isdecimal() or len(deadline) > 16:
+                return Response(status_code=400)
+            if int(deadline) <= time.time() * 1000:
+                return Response(status_code=408)
+        started = time.monotonic()
         response = await call_next(request)
         response.headers["cache-control"] = "no-store"
+        elapsed = time.monotonic() - started
+        # Authenticated routes only. No body, identifiers, credentials or query text.
+        # Active request estimate excludes startup, idle time and image builds.
+        if cost_per_second:
+            print(json.dumps({"kind": "headroom_request_cost", "route": request.url.path,
+                              "status": response.status_code, "elapsed_ms": round(elapsed * 1000, 3),
+                              "estimated_active_usd": elapsed * cost_per_second,
+                              "excludes_startup_idle_builds": True}), flush=True)
         return response
 
     @app.get("/health")

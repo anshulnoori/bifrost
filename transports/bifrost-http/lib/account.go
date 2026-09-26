@@ -103,6 +103,10 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}
 	if config.PromptCache != nil {
 		providerConfig.PromptCache = config.PromptCache
+	} else if baseAccount.store.ProviderDefaults.PromptCache != nil {
+		defaults := *baseAccount.store.ProviderDefaults.PromptCache
+		defaults.InjectionPoints = append([]schemas.CacheControlInjectionPoint(nil), defaults.InjectionPoints...)
+		providerConfig.PromptCache = &defaults
 	}
 	if providerKey == schemas.Codex {
 		providerConfig.CodexCredential = codexCredential(baseAccount.store.ConfigStore)

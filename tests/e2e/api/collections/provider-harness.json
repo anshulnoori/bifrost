@@ -410,6 +410,39 @@
       "name": "Dashboard OIDC",
       "item": [
         {
+          "name": "dashboard-oidc rejects password login when configured [EXPECT-403]",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{baseUrl}}/api/session/login"
+          },
+          "event": [{
+            "listen": "prerequest",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.sendRequest(pm.variables.replaceIn('{{baseUrl}}/api/session/is-auth-enabled'), function (err, res) {",
+                "  if (err) { throw err; }",
+                "  if (!res.json().oidc_enabled) { pm.execution.skipRequest(); }",
+                "});"
+              ]
+            }
+          }, {
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('OIDC disables password login before checking credentials', function () {",
+                "  pm.response.to.have.status(403);",
+                "  pm.expect(pm.response.text()).to.include('Password authentication is disabled');",
+                "  pm.expect(pm.response.headers.get('Set-Cookie')).to.be.undefined;",
+                "});"
+              ]
+            }
+          }]
+        },
+        {
           "name": "dashboard-oidc rejects unsolicited callback [EXPECT-303]",
           "protocolProfileBehavior": { "followRedirects": false },
           "request": {
@@ -158254,6 +158287,61 @@
           ]}}]
         }
       ]
+    },
+    {
+      "name": "106. Codex response caching (codex-cache)",
+      "description": "Requires semantic_cache, an active codexVirtualKey, and its connected Codex account. Run in order. The second response must be served from the authorization-scoped cache.",
+      "item": [
+        {
+          "name": "Codex cache write (codex-cache)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{codexVirtualKey}}"},{"key":"x-bf-cache-key","value":"codex-cache-{{pcNonce}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"codex/gpt-5.3-codex\",\"input\":\"Reply only OK.\",\"store\":false}"},
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Cold Codex request misses cache', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(pm.response.json().extra_fields.cache_debug.cache_hit).to.equal(false); });"
+          ]}}]
+        },
+        {
+          "name": "Codex cache read (codex-cache)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{codexVirtualKey}}"},{"key":"x-bf-cache-key","value":"codex-cache-{{pcNonce}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"codex/gpt-5.3-codex\",\"input\":\"Reply only OK.\",\"store\":false}"},
+            "url": "{{baseUrl}}/v1/responses"
+          },
+          "event": [
+            {"listen":"prerequest","script":{"type":"text/javascript","exec":["setTimeout(function () {}, 500);"]}},
+            {"listen":"test","script":{"type":"text/javascript","exec":[
+              "pm.test('Warm Codex request hits cache', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(pm.response.json().extra_fields.cache_debug.cache_hit).to.equal(true); });"
+            ]}}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "107. Headroom budget bypass (headroom-budget)",
+      "description": "Disposable gateway fixture only: Headroom enabled, scope=gateway, failure_policy=closed, unreachable endpoint, cost_ledger_path containing current UTC month and reservations=500, semantic cache disabled. Set headroomBudgetGateReady=1 and headroomVirtualKey to an admitted key. Do not alter a production budget ledger. Before the cost gate, the unreachable compressor returns 503; with the gate, inference succeeds unchanged.",
+      "item": [{
+        "name": "OpenAI inference survives Headroom cutoff (headroom-budget)",
+        "request": {
+          "method": "POST",
+          "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{headroomVirtualKey}}"}],
+          "body": {"mode":"raw","raw":"{{headroomBudgetBody}}"},
+          "url": "{{baseUrl}}/v1/chat/completions"
+        },
+        "event": [
+          {"listen":"prerequest","script":{"type":"text/javascript","exec":[
+            "if (String(pm.variables.get('headroomBudgetGateReady')) !== '1') { throw new Error('Configure the disposable exhausted-budget fixture first'); }",
+            "pm.variables.set('headroomBudgetBody', JSON.stringify({model:'openai/gpt-4o-mini',messages:[{role:'user',content:'Read the tool result and reply only KEEP-7391.'},{role:'assistant',tool_calls:[{id:'call-budget',type:'function',function:{name:'read_result',arguments:'{}'}}]},{role:'tool',tool_call_id:'call-budget',content:'KEEP-7391 '+ 'healthy record '.repeat(1400)}]}));"
+          ]}},
+          {"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Budget cutoff preserves inference and tool fact', function () { pm.expect(pm.response.code).to.equal(200); pm.expect(pm.response.json().choices[0].message.content).to.include('KEEP-7391'); });"
+          ]}}
+        ]
+      }]
     }
   ]
 }

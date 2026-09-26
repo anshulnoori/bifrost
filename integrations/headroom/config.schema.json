@@ -5,10 +5,13 @@
   "additionalProperties": false,
   "properties": {
     "enabled": {"type": "boolean", "default": false},
+    "embedding_proxy_enabled": {"type": "boolean", "default": false},
     "scope": {"enum": ["gateway", "restricted"]},
     "project_id": {"type": "string"},
     "virtual_key_id": {"type": "string"},
     "endpoint": {"type": "string", "format": "uri"},
+    "modal_app": {"type": "string", "description": "Private Modal app; mutually exclusive with endpoint and token_env."},
+    "modal_environment": {"type": "string", "default": "main"},
     "token_env": {"type": "string"},
     "modal_key_env": {"type": "string"},
     "modal_secret_env": {"type": "string"},
@@ -20,6 +23,7 @@
     "ccr": {"const": false},
     "metrics_address": {"type": "string"},
     "metrics_token_env": {"type": "string"},
+    "cost_ledger_path": {"type": "string"},
     "retention_seconds": {"type": "integer", "minimum": 0, "maximum": 86400, "default": 0}
   }
 }
