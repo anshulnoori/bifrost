@@ -53,7 +53,8 @@ The login flow uses authorization code, S256 PKCE, nonce, and a Secure HttpOnly 
 The database stores hashes of random browser/state values and an AES-GCM encrypted envelope. Pending state expires after five minutes.
 Callbacks consume state atomically before token exchange. A replay or competing replica cannot create another session from that state.
 The gateway checks ID-token signature, issuer, audience, expiry, nonce, and allowed subject. It never stores the IdP access, refresh, or ID token.
-The local session expires at the earlier of ID-token expiry and 12 hours. Logout deletes the local session, not the Tailscale session.
+The local session expires 12 hours after login, independently of the verified ID token's lifetime. Existing sessions keep their original expiry.
+Logout deletes the local session, not the Tailscale session.
 Subsequent sign-in can reuse the active Tailscale identity. The gateway does not silently refresh IdP tokens.
 
 All replicas need the same database, encryption key, OIDC configuration, and allowlist. Sticky sessions are not required.

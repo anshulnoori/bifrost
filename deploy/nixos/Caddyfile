@@ -28,13 +28,13 @@
 
 (inference_routes) {
 	route {
-		@invalid expression `{http.request.method} != "POST" || !({http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages"])`
+		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
 		respond @invalid 404
 		@encoded header Content-Encoding *
 		respond @encoded 415
 		@upgrade header Upgrade *
 		respond @upgrade 400
-		@json header Content-Type application/json*
+		@json expression `{http.request.method} == "GET" || {http.request.header.Content-Type}.startsWith("application/json")`
 		handle @json {
 			route {
 				# Reject ambiguous credentials rather than picking an arbitrary identity.
@@ -64,9 +64,9 @@
 http://:{$INFERENCE_PORT:8081} {
 	bind 127.0.0.1
 	# The public edge must traverse the Service, not this node's Bifrost process.
-	# Reject everything except inference before reaching the private listener.
+	# Reject everything except inference and its catalog before the private listener.
 	route {
-		@invalid expression `{http.request.method} != "POST" || !({http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages"])`
+		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
 		respond @invalid 404
 		reverse_proxy {$INFERENCE_SERVICE_URL:https://ai.mongoose-silverside.ts.net} {
 			header_up Host {upstream_hostport}

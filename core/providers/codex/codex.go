@@ -450,7 +450,8 @@ func (p *Provider) listKeyModels(ctx *schemas.BifrostContext, key schemas.Key) (
 		return nil, err
 	}
 	raw, err := p.OpenAIProvider.Passthrough(ctx, schemas.Key{}, &schemas.BifrostPassthroughRequest{
-		Method: http.MethodGet, Path: "/models", RawQuery: "client_version=0.0.0", UpstreamURL: p.url, SafeHeaders: headers,
+		// The catalog is version-gated: 0.0.0 omits supported frontier models.
+		Method: http.MethodGet, Path: "/models", RawQuery: "client_version=0.157.1", UpstreamURL: p.url, SafeHeaders: headers,
 	})
 	if err != nil {
 		return nil, err

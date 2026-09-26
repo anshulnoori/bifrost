@@ -310,6 +310,9 @@ func TestCatalogUsesOwnerCredentialAndFiltersPolicy(t *testing.T) {
 		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer owner-token" || r.Header.Get("ChatGPT-Account-ID") != "owner-account" {
 			t.Error("wrong catalog account or path")
 		}
+		if r.URL.Query().Get("client_version") != "0.157.1" {
+			t.Error("catalog must use the supported Codex client version; 0.0.0 hides frontier models")
+		}
 		fmt.Fprint(w, `{"models":[{"slug":"gpt-5.3-codex","display_name":"Codex","context_window":123456},{"slug":"disallowed","context_window":9876}]}`)
 	}))
 	defer server.Close()

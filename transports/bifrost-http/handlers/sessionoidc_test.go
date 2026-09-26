@@ -137,6 +137,8 @@ func dashboardCallback(state, browser string) *fasthttp.RequestCtx {
 func TestDashboardOIDCSessionLifecycle(t *testing.T) {
 	f := newDashboardIdPFixture(t)
 	state, browser := f.start(t)
+	f.claims["exp"] = time.Now().Add(5 * time.Minute).Unix()
+	expectedExpiry := time.Now().Add(12 * time.Hour)
 	ctx := dashboardCallback(state, browser)
 	f.h.oidcCallback(ctx)
 	require.Equal(t, "/workspace", string(ctx.Response.Header.Peek("Location")))
@@ -180,7 +182,8 @@ func TestDashboardOIDCSessionLifecycle(t *testing.T) {
 	require.NotContains(t, stored.Token, "never-store-upstream")
 	require.Equal(t, f.server.URL, stored.OIDCIssuer)
 	require.Equal(t, "12345", stored.OIDCSubject)
-	require.WithinDuration(t, time.Unix(f.claims["exp"].(int64), 0), stored.ExpiresAt, time.Second)
+	require.WithinDuration(t, expectedExpiry, stored.ExpiresAt, 5*time.Second)
+	require.WithinDuration(t, stored.ExpiresAt, cookie.Expire(), time.Second)
 	f.h.oidcCallback(dashboardCallback(state, browser))
 	require.EqualValues(t, 1, f.exchanges.Load(), "state replay must not call token endpoint")
 	t.Setenv("BIFROST_OIDC_ALLOWED_SUBJECTS", "someone-else")

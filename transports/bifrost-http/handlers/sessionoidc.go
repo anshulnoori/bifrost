@@ -279,11 +279,9 @@ func (h *SessionHandler) oidcCallback(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// The IdP's access/refresh/ID tokens are never persisted or forwarded. Mint
-	// an independent, revocable local session, no longer than the ID-token TTL.
+	// an independent, revocable local session. ID-token expiry bounds acceptance
+	// at login, not the lifetime of the authenticated dashboard session.
 	expires := time.Now().Add(12 * time.Hour)
-	if id.Expiry.Before(expires) {
-		expires = id.Expiry
-	}
 	value := oauth2.GenerateVerifier()
 	session := &tables.SessionsTable{Token: value, ExpiresAt: expires, OIDCIssuer: c.issuer, OIDCSubject: id.Subject}
 	if err := h.configStore.CreateSession(requestCtx, session); err != nil {

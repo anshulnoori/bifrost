@@ -7,7 +7,7 @@ const eventSchema = z.object({
 	project: z.string(),
 	principal_hash: z.string(),
 	thread_hash: z.string(),
-	status: z.enum(["compressed", "bypassed", "failed"]),
+	status: z.enum(["compressed", "bypassed", "failed", "embedded"]),
 	reason: z.string(),
 	eligible: z.boolean(),
 	quality: z.literal("not_evaluated"),

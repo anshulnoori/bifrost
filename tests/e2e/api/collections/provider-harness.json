@@ -158363,6 +158363,42 @@
           ]}}
         ]
       }]
+    },
+    {
+      "name": "109. Codex frontier catalog (codex-frontier-catalog)",
+      "description": "Requires a connected subscription advertising GPT-6 Sol and Luna and a codexVirtualKey allowing both. No inference call. Pins version-gated catalog discovery: client_version=0.0.0 omits these models even when the account supports them.",
+      "item": [{
+        "name": "Codex catalog includes subscribed frontier models (codex-frontier-catalog)",
+        "request": {
+          "method": "GET",
+          "header": [{"key":"Authorization","value":"Bearer {{codexVirtualKey}}"}],
+          "url": "{{baseUrl}}/v1/models"
+        },
+        "event": [
+          {"listen":"prerequest","script":{"type":"text/javascript","exec":[
+            "if (String(pm.variables.get('codexFrontierCatalogReady')) !== '1') { throw new Error('Configure a subscribed frontier-model account and virtual key first'); }"
+          ]}},
+          {"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Subscribed frontier models are discoverable', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var ids = pm.response.json().data.map(function (model) { return model.id; }); pm.expect(ids).to.include('codex/gpt-6-sol'); pm.expect(ids).to.include('codex/gpt-6-luna'); });"
+          ]}}
+        ]
+      }]
+    },
+    {
+      "name": "110. Codex Responses client compatibility (codex-amp-compat)",
+      "description": "Requires codexVirtualKey allowing gpt-6-sol, a connected subscription, and compat.should_drop_params=true. Codex cannot honor the OpenAI output-token cap or sampling parameters; the compat plugin must report their removal while preserving the requested model and response.",
+      "item": [{
+        "name": "Codex accepts and reports unsupported client parameters (codex-amp-compat)",
+        "request": {
+          "method": "POST",
+          "header": [{"key":"Content-Type","value":"application/json"},{"key":"Authorization","value":"Bearer {{codexVirtualKey}}"}],
+          "body": {"mode":"raw","raw":"{\"model\":\"codex/gpt-6-sol\",\"input\":[{\"role\":\"user\",\"content\":\"Reply exactly AMP_OK.\"}],\"store\":false,\"max_output_tokens\":32,\"temperature\":0.3,\"top_p\":0.8}"},
+          "url": "{{baseUrl}}/v1/responses"
+        },
+        "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+          "pm.test('Codex client compatibility preserves output and reports drops', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var body = pm.response.json(); pm.expect(body.status).to.equal('completed'); var text = body.output.flatMap(function (item) { return item.content || []; }).map(function (content) { return content.text || ''; }).join(''); pm.expect(text.trim()).to.equal('AMP_OK'); pm.expect(body.extra_fields.dropped_compat_plugin_params).to.include.members(['max_output_tokens', 'temperature', 'top_p']); });"
+        ]}}]
+      }]
     }
   ]
 }

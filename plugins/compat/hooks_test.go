@@ -26,6 +26,45 @@ func newTestPlugin(t *testing.T, supported map[string][]string) *CompatPlugin {
 	return p
 }
 
+func TestCodexResponsesDropsTransportUnsupportedParams(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, provider := range []schemas.ModelProvider{schemas.Codex, schemas.OpenAI} {
+			p, err := Init(Config{ShouldDropParams: enabled}, bifrost.NewNoOpLogger(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			req := &schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: provider, Model: "gpt-6-sol", Params: &schemas.ResponsesParameters{
+					MaxOutputTokens: schemas.Ptr(37), Temperature: schemas.Ptr(0.3), TopP: schemas.Ptr(0.8),
+					PreviousResponseID: schemas.Ptr("resp_keep"), Store: schemas.Ptr(true),
+				},
+			}}
+			got, _, err := p.PreLLMHook(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			params := got.ResponsesRequest.Params
+			wantDrop := enabled && provider == schemas.Codex
+			if (params.MaxOutputTokens == nil) != wantDrop || (params.Temperature == nil) != wantDrop || (params.TopP == nil) != wantDrop {
+				t.Fatalf("enabled=%v provider=%s: wrong transport parameter normalization", enabled, provider)
+			}
+			if *params.PreviousResponseID != "resp_keep" || !*params.Store || *req.ResponsesRequest.Params.MaxOutputTokens != 37 {
+				t.Fatal("must preserve stateful-request rejection and the original request")
+			}
+			result := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{}}
+			result, _, _ = p.PostLLMHook(ctx, result, nil)
+			dropped := result.GetExtraFields().DroppedCompatPluginParams
+			if wantDrop && !slices.Equal(dropped, []string{"max_output_tokens", "temperature", "top_p"}) {
+				t.Fatalf("dropped fields not reported: %v", dropped)
+			}
+			if !wantDrop && len(dropped) != 0 {
+				t.Fatalf("unexpected dropped fields: %v", dropped)
+			}
+		}
+	}
+}
+
 // newServiceTierChatRequest builds a chat request carrying service_tier plus a
 // param every model in these tests supports, so a mix-up between two concurrent
 // requests shows up as a difference in the reported dropped list.

@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { headroomReportSchema } from "./headroomApi";
+import fixture from "../../../../integrations/headroom/testdata/dashboard.json";
 
 describe("Headroom report contract", () => {
+	it("accepts embedding events alongside compression without inventing token savings", () => {
+		const report = headroomReportSchema.parse({
+			...fixture,
+			events: [...fixture.events, { ...fixture.events[1], status: "embedded", reason: "embedding" }],
+		});
+		expect(report.events).toHaveLength(3);
+		expect(report.events[2].status).toBe("embedded");
+		expect(report.events[2].tool_result_estimate).toBeNull();
+		expect(report.events[2].eligible).toBe(false);
+	});
 	it("preserves unknown measurements instead of reporting zero savings", () => {
 		const report = headroomReportSchema.parse({
 			schema_version: 1,

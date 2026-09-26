@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './features/session',
-  testMatch: 'oidc.spec.ts',
+  testMatch: ['oidc.spec.ts', 'oidcnative.spec.ts', 'sidebar.spec.ts'],
   timeout: 30000,
   use: {
     ...devices['Desktop Chrome'],

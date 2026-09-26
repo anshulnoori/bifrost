@@ -89,6 +89,22 @@ test('Funnel target is inference-only; private target retains session routes', {
     assert.equal(seen.length, before);
     assert.equal(serviceRequests.length, 0, 'admin paths must not reach the Service');
   });
+  await t.test('catalog GET requires a virtual key and strips routing overrides without requiring content-type', async () => {
+    for (const path of ['/v1/models?provider=codex', '/v1/models/', '/v1/%6dodels']) {
+      assert.equal((await request(path, {}, '', 'GET')).status, 404);
+    }
+    assert.equal((await fetch(origin + '/v1/models')).status, 401);
+    assert.equal((await request('/v1/models', { authorization: 'Bearer sk-bf-invalid' }, '', 'GET')).status, 401);
+    const response = await fetch(origin + '/v1/models', {
+      headers: { authorization: 'Bearer sk-bf-synthetic', cookie: 'token=admin', 'x-bf-api-key': 'provider-secret' },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { path: '/v1/models', body: '' });
+    assert.equal(serviceRequests.at(-1), '/v1/models');
+    assert.equal(seen.at(-1).headers['x-bf-vk'], 'sk-bf-synthetic');
+    assert.equal(seen.at(-1).headers.cookie, undefined);
+    assert.equal(seen.at(-1).headers['x-bf-api-key'], undefined);
+  });
   await t.test('accepts only VK-shaped credentials; actual authentication belongs to Bifrost', async () => {
     const before = seen.length;
     for (const authorization of ['', 'Bearer admin-password', 'Bearer sk-provider']) {
@@ -147,7 +163,7 @@ test('Funnel target is inference-only; private target retains session routes', {
     assert.equal(accepted.status, 200);
     assert.equal(seen.at(-1).headers.cookie, undefined);
     assert.equal(seen.at(-1).headers['x-bf-vk'], 'sk-bf-synthetic');
-    assert.equal((await fetch(`http://127.0.0.1:${ports[1]}/v1/models`)).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${ports[1]}/v1/models`)).status, 401);
   });
   await t.test('separate private target forwards OIDC callback and session cookie', async () => {
     const response = await fetch(`http://127.0.0.1:${ports[1]}/api/session/oidc/callback?code=synthetic`, {
