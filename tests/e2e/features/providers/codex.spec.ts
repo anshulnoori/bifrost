@@ -1,5 +1,45 @@
 import { test, expect } from '../../core/fixtures/base.fixture'
 
+for (const width of [320, 390, 1440]) {
+  test(`Codex account stays readable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 })
+    const email = 'personal.subscription.account@example.test'
+    const account = { id: 'mobile', name: 'Personal', models: ['*'], weight: 1, enabled: true }
+    const provider = { name: 'codex', keys: [account], network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
+    await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+    await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
+    await page.route('**/api/providers/codex/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+    await page.route('**/api/codex/connections**', route => route.fulfill({ json:
+      new URL(route.request().url()).pathname.endsWith('/usage')
+        ? { plan_type: 'pro', checked_at: new Date().toISOString(), rate_limit: { allowed: true, limit_reached: false, secondary_window: null, primary_window: { used_percent: 23, limit_window_seconds: 18000, reset_at: 1900000000 } } }
+        : { state: 'connected', email },
+    }))
+    await page.goto('/workspace/providers')
+    const closeSetup = page.getByRole('button', { name: 'Close for now', exact: true })
+    if (await closeSetup.isVisible()) await closeSetup.click()
+    const accountRow = page.getByTestId('codex-usage-mobile')
+    const trigger = accountRow.getByRole('button', { name: `Personal (${email}) subscription details` })
+    await expect(trigger).toBeVisible()
+    await expect(accountRow.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '77')
+    const widgetClose = page.getByTestId('onboarding-widget-close')
+    if (await widgetClose.isVisible()) await widgetClose.click()
+    const label = trigger.locator('span').first()
+    expect((await label.boundingBox())!.height).toBeLessThanOrEqual(80)
+    for (const expanded of [false, true]) {
+      if (expanded) await trigger.click()
+      await expect(trigger).toHaveAttribute('aria-expanded', String(expanded))
+      expect(await accountRow.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+      const bounds = (await accountRow.boundingBox())!
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
+      if (expanded) {
+        await expect(accountRow.getByTestId('codex-account-email')).toHaveText(email)
+        await expect(accountRow.getByRole('button', { name: 'Edit connection' })).toBeInViewport()
+      }
+      if (process.env.CODEX_SCREENSHOT_DIR) await accountRow.screenshot({ animations: 'disabled', path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-${width}-${expanded ? 'expanded' : 'collapsed'}.png` })
+    }
+  })
+}
+
 test('Codex accounts use provider table, isolated usage bars and dashboard onboarding', async ({ page }) => {
   const accounts = [
     { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 as number | null },

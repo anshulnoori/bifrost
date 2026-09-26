@@ -22,10 +22,17 @@ The plugin patches selected text fields without changing admitted model, provide
 | Typed Chat and Responses | Compress eligible text tool results, including streaming requests |
 | Raw Chat, Responses, Anthropic POST, including SSE | Compress known string tool-result fields; preserve response bytes |
 | Unknown endpoints, query parameters | Bypass |
-| Provider-managed state or explicit prefix cache controls | Bypass |
+| OpenAI prompt cache key, retention, and options | Preserve metadata; compress eligible tool text |
+| Provider-managed conversation state or Anthropic `cache_control` | Bypass |
 | Multimedia tool results | Preserve unchanged |
 | Missing governance/configured scope/session/thread | Bypass |
 | CCR or internal retrieval obligations | Reject configuration or sidecar response |
+
+OpenAI cache keys do not identify stored conversation state. Cache reuse still requires a matching prompt prefix.
+Compression can reduce cache hits after the changed text; it does not disable caching or change the caller's cache key.
+See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
+Stateful requests report `provider_state_previous_response_id` or `provider_state_conversation`; explicit cache controls report `explicit_cache_control`.
+These reasons replace the ambiguous `provider_cache_or_state` reason. Events contain no cache keys or conversation IDs.
 
 Responses and SSE chunks remain unchanged. The plugin never executes client tools or makes provider calls.
 Compression failure preserves the original request in `open` mode. In `closed` mode, failure returns 503 without fallbacks.

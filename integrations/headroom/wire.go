@@ -15,16 +15,18 @@ func slots(body []byte, protocol string, minBytes int) ([]string, []string, stri
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return nil, nil, "invalid_json"
 	}
-	// Explicit prefix-cache and stateful provider protocols must not be rewritten.
+	// Provider-held conversation state must not be rewritten. prompt_cache_key
+	// only partitions/routes the prefix cache: reuse still requires matching
+	// content. Preserve that hint while allowing tool-result compression.
 	for _, prefix := range []string{"", "params.", "params.extra_params."} {
-		for _, key := range []string{"previous_response_id", "conversation", "prompt_cache_key"} {
+		for _, key := range []string{"previous_response_id", "conversation"} {
 			if value := gjson.GetBytes(body, prefix+key); value.Exists() && value.Type != gjson.Null {
-				return nil, nil, "provider_cache_or_state"
+				return nil, nil, "provider_state_" + key
 			}
 		}
 	}
 	if strings.Contains(string(body), `"cache_control"`) {
-		return nil, nil, "provider_cache_or_state"
+		return nil, nil, "explicit_cache_control"
 	}
 	if gjson.GetBytes(body, "background").Bool() || gjson.GetBytes(body, "params.background").Bool() {
 		return nil, nil, "background"

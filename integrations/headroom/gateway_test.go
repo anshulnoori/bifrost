@@ -36,6 +36,9 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
+		if gjson.GetBytes(body, "prompt_cache_key").String() != "fixture-session" {
+			t.Error("gateway changed or dropped prompt cache key")
+		}
 		mu.Lock()
 		seen = append(seen, gjson.GetBytes(body, "messages.1.content").String())
 		mu.Unlock()
@@ -135,7 +138,7 @@ func TestGatewayWithLiveHeadroom(t *testing.T) {
 		t.Fatalf("create plugin=%d %s", status, data)
 	}
 	text := strings.Repeat("2026-09-22 INFO request completed successfully\n", 250) + "FATAL transaction=TX-731 amount=1949.37 failed integrity check\n"
-	request := map[string]any{"model": "openai/gpt-4.1", "messages": []any{map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": "c", "type": "function", "function": map[string]any{"name": "read_logs", "arguments": "{}"}}}}, map[string]any{"role": "tool", "tool_call_id": "c", "content": text}}}
+	request := map[string]any{"model": "openai/gpt-4.1", "prompt_cache_key": "fixture-session", "messages": []any{map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"id": "c", "type": "function", "function": map[string]any{"name": "read_logs", "arguments": "{}"}}}}, map[string]any{"role": "tool", "tool_call_id": "c", "content": text}}}
 	if status, data := call("POST", "/v1/chat/completions", request); status != 200 {
 		t.Fatalf("inference=%d %s", status, data)
 	}

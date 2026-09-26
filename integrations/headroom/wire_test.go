@@ -47,6 +47,32 @@ func TestBypassBoundaries(t *testing.T) {
 	}
 }
 
+func TestCacheHintsDoNotBlockCompression(t *testing.T) {
+	for _, wrapper := range []string{`%s`, `"params":{%s}`, `"params":{"extra_params":{%s}}`} {
+		for _, state := range []string{"", "previous_response_id", "conversation"} {
+			hints := `"prompt_cache_key":"session","prompt_cache_retention":"24h","prompt_cache_options":{"mode":"implicit"}`
+			if state != "" {
+				hints += `,"` + state + `":"opaque"`
+			}
+			body := []byte(`{"input":[{"type":"function_call_output","call_id":"c","output":"original output"}],` + strings.Replace(wrapper, "%s", hints, 1) + `}`)
+			paths, _, reason := slots(body, "responses", 8)
+			if state != "" {
+				if len(paths) != 0 || reason != "provider_state_"+state {
+					t.Fatalf("continuation admitted or wrong reason: %s %v %s", state, paths, reason)
+				}
+				continue
+			}
+			if len(paths) != 1 || reason != "" {
+				t.Fatalf("cache hint blocked compression: %v %s", paths, reason)
+			}
+			out, err := patchSlots(body, paths, []string{"short"})
+			if err != nil || string(out) != strings.Replace(string(body), "original output", "short", 1) {
+				t.Fatal("cache metadata or tool identity changed")
+			}
+		}
+	}
+}
+
 func TestUnknownEndpointsBypass(t *testing.T) {
 	for _, path := range []string{"/v1/batches", "/v1/responses/id"} {
 		body := []byte(`{"model":"m","stream":true,"input":[{"type":"function_call_output","output":"original output"}]}`)
@@ -58,10 +84,35 @@ func TestUnknownEndpointsBypass(t *testing.T) {
 	}
 }
 
+func TestTypedCodexCacheHintCompression(t *testing.T) {
+	b := testBridge(t, goodReply)
+	var input []schemas.ResponsesMessage
+	if err := schemas.Unmarshal([]byte(`[{"type":"function_call_output","call_id":"c","output":"original output"}]`), &input); err != nil {
+		t.Fatal(err)
+	}
+	for _, requestType := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ResponsesStreamRequest} {
+		req := &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Codex, Model: "gpt-6-astra", Input: input,
+			Params: &schemas.ResponsesParameters{PromptCacheKey: schemas.Ptr("caller-session")},
+		}}
+		ctx := admitted("project-a", "vk-a")
+		out, sc, err := b.pre(ctx, req)
+		if err != nil || sc != nil || ctx.Value(eventKey).(*Event).Status != "compressed" {
+			t.Fatal("typed Codex request bypassed", err)
+		}
+		if *out.ResponsesRequest.Input[0].Output.ResponsesToolCallOutputStr != "short" || *input[0].Output.ResponsesToolCallOutputStr != "original output" {
+			t.Fatal("compression not committed or fallback input mutated")
+		}
+		if *out.ResponsesRequest.Params.PromptCacheKey != "caller-session" || out.ResponsesRequest.Provider != schemas.Codex || out.RequestType != requestType {
+			t.Fatal("cache key or routing changed")
+		}
+	}
+}
+
 func TestRawStreamingCompressesInputWithoutChangingProtocol(t *testing.T) {
 	b := testBridge(t, goodReply)
 	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Codex} {
-		body := []byte(`{"model":"m","stream":true,"input":[{"type":"reasoning","encrypted_content":"signed"},{"type":"function_call_output","call_id":"c","output":"original output"}],"tools":[{"type":"function","strict":true}]}`)
+		body := []byte(`{"model":"m","stream":true,"prompt_cache_key":"caller-session","prompt_cache_retention":"24h","input":[{"type":"reasoning","encrypted_content":"signed"},{"type":"function_call_output","call_id":"c","output":"original output"}],"tools":[{"type":"function","strict":true}]}`)
 		req := &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: provider, Method: "POST", Path: "/v1/responses", Model: "m", Body: body}}
 		got, sc, err := b.pre(admitted("project-a", "vk-a"), req)
 		if err != nil || sc != nil || string(got.PassthroughRequest.Body) != strings.Replace(string(body), "original output", "short", 1) || got.RequestType != req.RequestType || got.PassthroughRequest.Provider != provider {

@@ -107,10 +107,10 @@ export default function CodexUsage({
 					<CollapsibleTrigger asChild>
 						<button
 							type="button"
-							className="hover:bg-muted/50 flex w-full flex-wrap items-center gap-3 px-5 py-4 text-left"
+							className="hover:bg-muted/50 relative flex w-full flex-wrap items-center gap-3 px-4 py-4 pr-10 text-left sm:px-5"
 							aria-label={`${label} subscription details`}
 						>
-							<span className="min-w-0 flex-1 font-medium break-words">{label}</span>
+							<span className="min-w-0 basis-full font-medium [overflow-wrap:anywhere] sm:flex-1">{label}</span>
 							<span className="text-muted-foreground text-xs capitalize">ChatGPT {usage?.plan_type ?? "subscription"}</span>
 							{headline !== undefined && (
 								<span className="flex items-center gap-2 text-xs tabular-nums">
@@ -121,11 +121,13 @@ export default function CodexUsage({
 							<Badge variant="secondary" className="capitalize">
 								{!enabled ? "Inactive" : (reserveStatus ?? status)}
 							</Badge>
-							<ChevronDown className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+							<ChevronDown
+								className={`absolute top-5 right-4 size-4 shrink-0 transition-transform sm:static ${open ? "rotate-180" : ""}`}
+							/>
 						</button>
 					</CollapsibleTrigger>
-					<CollapsibleContent className="border-t px-5 py-4">
-						<dl className="grid grid-cols-[auto_1fr] items-start gap-x-6 gap-y-4 text-sm">
+					<CollapsibleContent className="border-t px-4 py-4 sm:px-5">
+						<dl className="grid grid-cols-1 items-start gap-x-6 gap-y-2 text-sm [overflow-wrap:anywhere] sm:grid-cols-[auto_minmax(0,1fr)] sm:gap-y-4 [&>dt:not(:first-child)]:mt-2 sm:[&>dt:not(:first-child)]:mt-0">
 							<dt className="text-muted-foreground pt-1">Account</dt>
 							<dd className="flex flex-wrap items-center gap-3">
 								<span data-testid="codex-account-email">{email?.trim() || "Email unavailable"}</span>
@@ -205,7 +207,7 @@ export default function CodexUsage({
 						</dl>
 						<div className="mt-5 flex flex-wrap items-center justify-between gap-3">
 							<span className="text-muted-foreground text-xs">Routing weight: {account.weight}</span>
-							<div className="flex items-center gap-2">
+							<div className="flex flex-wrap items-center gap-2">
 								<Button
 									variant="outline"
 									size="sm"

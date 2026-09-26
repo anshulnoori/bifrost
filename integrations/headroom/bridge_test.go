@@ -327,6 +327,7 @@ func TestLiveHeadroomFixture(t *testing.T) {
 	}
 	text := fixture.String()
 	req := chatRequest()
+	req.ChatRequest.Params = &schemas.ChatParameters{ExtraParams: map[string]interface{}{"prompt_cache_key": "fixture-session"}}
 	req.ChatRequest.Input[0].Content.ContentStr = &text
 	baseline := *b
 	baseline.config.Enabled = false
@@ -338,10 +339,13 @@ func TestLiveHeadroomFixture(t *testing.T) {
 	out, sc, err := b.pre(ctx, req)
 	compressionUS := time.Since(start).Microseconds()
 	e := ctx.Value(eventKey).(*Event)
-	if err != nil || sc != nil || e.Status == "failed" {
+	if err != nil || sc != nil || e.Status != "compressed" {
 		t.Fatalf("real service contract failed: event=%+v err=%v", e, err)
 	}
 	got := *out.ChatRequest.Input[0].Content.ContentStr
+	if len(got) >= len(text) || out.ChatRequest.Params.ExtraParams["prompt_cache_key"] != "fixture-session" {
+		t.Fatal("compression did not reduce tool text or changed cache key")
+	}
 	sentinel := "transaction=TX-731 amount=1949.37 failed integrity check"
 	if !strings.Contains(*plain.ChatRequest.Input[0].Content.ContentStr, sentinel) || !strings.Contains(got, sentinel) {
 		t.Fatal("fixture critical fact lost")
