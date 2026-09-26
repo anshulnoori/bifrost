@@ -53,6 +53,35 @@ func TestEmbeddingProxyBoundary(t *testing.T) {
 	}
 }
 
+func TestEmbeddingProxySkipsLargeInputsBeforeAdmission(t *testing.T) {
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer upstream.Close()
+	previous := current.Swap(&bridge{config: Config{EmbeddingProxyEnabled: true, Endpoint: upstream.URL, MaxBodyBytes: 4 << 20}, client: upstream.Client()})
+	defer current.Store(previous)
+	for _, tc := range []struct {
+		input  string
+		status int
+	}{
+		{`"` + strings.Repeat("a", 1024) + `"`, 200},
+		{`"` + strings.Repeat("a", 1025) + `"`, 413},
+		{`["short","` + strings.Repeat("é", 513) + `"]`, 413},
+	} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"input":`+tc.input+`}`))
+		proxyEmbedding(w, r)
+		if w.Code != tc.status {
+			t.Fatalf("got %d, want %d", w.Code, tc.status)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("oversized input reached upstream: %d calls", calls)
+	}
+}
+
 func TestEmbeddingProxyWithoutCompression(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(30 * time.Millisecond)

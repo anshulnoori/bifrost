@@ -49,7 +49,8 @@ assert (builtins.elemAt semanticOnly.services.bifrost.settings.plugins 1).config
 assert (builtins.head semanticOnly.services.bifrost.settings.plugins).config.dimension == 384;
 assert (builtins.head semanticOnly.services.bifrost.settings.plugins).config.provider == "headroom_embeddings";
 assert semanticOnly.services.bifrost.settings.providers ? headroom_embeddings;
-assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.timeout_ms == 500;
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.timeout_ms == 30000;
+assert public.services.bifrost.settings.providers.headroom_embeddings.network_config.default_request_timeout_in_seconds == 3;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.failure_policy == "open";
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.min_text_bytes == 16384;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.cost_ledger_path == "${public.services.bifrost.stateDir}/headroom-budget.json";

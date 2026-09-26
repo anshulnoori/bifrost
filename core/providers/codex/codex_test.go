@@ -78,6 +78,32 @@ func admitted(t *testing.T) *schemas.BifrostContext {
 
 const terminal = `{"type":"response.completed","sequence_number":4,"response":{"id":"resp_fixture","object":"response","created_at":123,"model":"gpt-5.3-codex","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_7","name":"weather","arguments":"{\"city\":\"Oslo\"}","status":"completed"}],"usage":{"input_tokens":123,"output_tokens":17,"total_tokens":140,"input_tokens_details":{"cached_tokens":31},"output_tokens_details":{"reasoning_tokens":9}}}}`
 
+func TestResponsesPreservesCodexErrorDetail(t *testing.T) {
+	for _, tc := range []struct{ body, message string }{
+		{`{"detail":"This model is not supported for this account."}`, "This model is not supported for this account."},
+		{`{"error":{"message":"Standard error"},"detail":"Other detail"}`, "Standard error"},
+		{`{"detail":{"internal":"not a public message"}}`, "provider API error (status 400)"},
+	} {
+		t.Run(tc.message, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(400)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{AllowPrivateNetwork: true}, CodexCredential: func(*schemas.BifrostContext, schemas.Key) (string, string, error) { return "access", "account", nil }}, testLogger{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.url = server.URL
+			_, failure := p.Responses(admitted(t), schemas.Key{}, &schemas.BifrostResponsesRequest{Provider: schemas.Codex, Model: "gpt-5.3-codex", Input: []schemas.ResponsesMessage{}})
+			if failure == nil || failure.StatusCode == nil || *failure.StatusCode != 400 || failure.Error == nil || failure.Error.Message != tc.message {
+				t.Fatalf("unexpected upstream error: %+v", failure)
+			}
+		})
+	}
+}
+
 func TestUnaryCollectsItemsWhenTerminalOutputIsEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

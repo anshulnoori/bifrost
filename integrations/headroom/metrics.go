@@ -136,6 +136,22 @@ func proxyEmbedding(w http.ResponseWriter, r *http.Request) {
 		event.CompressionMS = float64(time.Since(event.Started).Microseconds()) / 1000
 		ledger.add(event)
 	}()
+	// Conservative admission for MiniLM's 256-token context. This byte cap is
+	// not a token count: the worker still validates tokens without truncating.
+	// Skip long semantic queries before paying for a remote call; direct cache
+	// lookup already ran, and inference/compression can proceed unchanged.
+	input := gjson.GetBytes(body, "input")
+	texts := input.Array()
+	if input.Type == gjson.String {
+		texts = []gjson.Result{input}
+	}
+	for _, text := range texts {
+		if len(text.Str) > 1024 {
+			event.Status, event.Reason = "bypassed", "embedding_input_limit"
+			http.Error(w, "embedding input exceeds local admission limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
 	release, err := b.admitModal(event)
 	if err != nil {
 		http.Error(w, "embedding budget or concurrency unavailable", http.StatusServiceUnavailable)

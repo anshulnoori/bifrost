@@ -7,7 +7,10 @@ import os
 import struct
 import sys
 
+from encoder import EmbeddingInputError
 from service import MAX_BODY, validate
+
+EMBEDDING_INPUT_ERROR = b'{"error":"invalid embedding input"}'
 
 
 def load_compressor(device="cuda"):
@@ -85,7 +88,10 @@ def serve(reader, writer, compressor, encoder=None, device="cuda"):
         if body == {"operation": "snapshot"} and device == "cuda":
             output = json.dumps(prepare_snapshot(compressor)).encode()
         elif isinstance(body, dict) and set(body) == {"operation", "input"} and body["operation"] == "embed" and encoder is not None:
-            output = json.dumps({"vectors": encoder(body["input"])}).encode()
+            try:
+                output = json.dumps({"vectors": encoder(body["input"])}).encode()
+            except EmbeddingInputError:
+                output = EMBEDDING_INPUT_ERROR
         else:
             output = compress(raw, compressor)
         if len(output) > MAX_BODY:

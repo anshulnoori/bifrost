@@ -117,7 +117,8 @@ Set it to `https://anshulnoori--bifrost-headroom-gpu-service.modal.run` for the 
 The selected service uses pinned MiniLM weights. Inputs longer than 256 tokens bypass semantic matching rather than silently losing their suffix.
 This threshold is an initial policy, not proof that similar prompts have equivalent answers. Test representative questions before public activation.
 The embedding provider calls the authenticated loopback Headroom bridge. Only that bridge holds the Modal proxy credentials.
-Embedding requests have a two-second timeout, independent of the 500 ms compression timeout. Embedding errors fall through to the model.
+Embedding calls have a two-second remote deadline and a three-second provider timeout for cancellation cleanup. Compression has a 30-second deadline because scale-to-zero can require a fresh model load. Embedding errors fall through to the model.
+The loopback bridge skips semantic inputs over 1,024 UTF-8 bytes before remote admission. The worker also checks its 256-token limit without truncation. Expected input rejection does not discard the loaded worker.
 The isolated compression endpoint (`service`) cannot provide semantic hits. The full model endpoint (`gpu_service`) provides embeddings on CPU or GPU.
 Changing dimension requires a new namespace; changing embedding models also requires a new namespace even at the same dimension.
 The SDK must register governance before semantic cache when using `scope_by_virtual_key`.
@@ -172,7 +173,7 @@ Neon backups have their own retention policy; logical deletion does not erase ex
 
 The first three values must each contain at least 32 characters. Supply them through the secret manager, never shell arguments.
 The gateway compresses only eligible tool text of at least 16 KiB. This initial size gate reduces cold-start spending, but does not prove profitability.
-Its 500 ms timeout preserves the original input on failure or cold start. Queued requests carry deadlines that prevent expired requests from starting compression.
+Its 30-second timeout preserves the original input on failure or a slower cold start. Queued requests carry deadlines that prevent expired requests from starting compression.
 Metrics and the embedding facade remain on loopback port 9909. To disable compression while retaining semantic caching, set `semanticCacheEndpoint` and leave `headroomEndpoint = null`, then restart the gateway.
 To use the CPU alternative, select its separately deployed origin. This is an operator rollback, not an automatic cross-endpoint retry.
 
@@ -205,7 +206,7 @@ T4 CUDA/PyTorch validation succeeded in a temporary Modal job. Production end-to
 The gateway allows one outbound Headroom request at a time, with no waiting queue. Excess requests retain their original inference input.
 This gate covers compression and embeddings from this gateway process. It does not change Modal's platform queue for other authenticated callers.
 Tool results from one inference request share one compression call. Embedding batches contain at most 32 texts.
-Cross-request batching remains disabled because it adds delay to the 500 ms inference deadline and complicates tenant isolation.
+Cross-request batching remains disabled because it adds latency and complicates tenant isolation.
 Pinned model files are baked into the image. No memory snapshot captures service credentials or database connections.
 Bodies have a 4 MiB limit. Worker execution has a 25-second limit, with shorter caller deadlines and cancellation where available.
 The full-model Modal function has a 90-second timeout. Each idle container can remain allocated for up to 30 seconds before scale-down.

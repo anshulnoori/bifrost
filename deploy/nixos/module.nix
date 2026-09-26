@@ -129,7 +129,9 @@ in {
             network_config = {
               base_url = "http://127.0.0.1:9909";
               allow_private_network = true;
-              default_request_timeout_in_seconds = 2;
+              # Let the two-second remote deadline and bounded cancellation
+              # release the shared slot before compression starts.
+              default_request_timeout_in_seconds = 3;
               max_retries = 0;
             };
           };
@@ -163,7 +165,8 @@ in {
             modal_key_env = "HEADROOM_MODAL_TOKEN_ID";
             modal_secret_env = "HEADROOM_MODAL_TOKEN_SECRET";
             failure_policy = "open";
-            timeout_ms = 500;
+            # Scale-to-zero can require a fresh model load, not only restoration.
+            timeout_ms = 30000;
             # Initial cost policy: bypass small results before waking Modal.
             min_text_bytes = 16384;
             cost_ledger_path = "${config.services.bifrost.stateDir}/headroom-budget.json";

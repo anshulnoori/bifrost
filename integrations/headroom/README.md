@@ -58,7 +58,10 @@ Modal API tokens can have broader permissions than invocation alone. Environment
 The L4 deployment uses PyTorch, not ONNX. It has zero minimum and buffer containers, one maximum container, and a 30-second scale-down window.
 The gateway admits one request at a time, with no local queue. Modal can still queue function calls during startup.
 Every call carries an expiry time. Expired calls do not compress.
-Compression waits at most 500 ms, followed by up to 100 ms for best-effort cancellation. Embeddings have a separate two-second deadline.
+Compression waits at most 30 seconds, followed by up to 100 ms for best-effort cancellation. Scale-to-zero can require a fresh model load even with snapshots enabled. This bound does not guarantee every cold start succeeds.
+Embeddings have a separate two-second remote deadline and a three-second provider timeout so cancellation can release the shared slot first.
+Embedding inputs over 1,024 UTF-8 bytes bypass semantic lookup locally, without a paid call. This conservative byte cap is not a token count; the worker still rejects inputs over 256 tokens without truncation.
+Expected embedding input rejection preserves the loaded worker. Cancellation and unexpected worker failures still terminate it. Direct-cache lookup is unchanged.
 Cold starts, idle time, SDK retries, and unsuccessful cancellation can still incur charges.
 On failure, inference continues with the original request. The deployment does not change the provider billing limit.
 

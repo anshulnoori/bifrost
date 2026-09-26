@@ -82,6 +82,8 @@ class GPUCompressor:
     async def embed(self, texts):
         from encoder import DIMENSIONS
         output = json.loads(await self(json.dumps({"operation": "embed", "input": texts}).encode()))
+        if output == {"error": "invalid embedding input"}:
+            raise ValueError("invalid embedding input")
         vectors = output.get("vectors")
         if not isinstance(vectors, list) or len(vectors) != len(texts):
             raise ValueError("invalid embedding output")

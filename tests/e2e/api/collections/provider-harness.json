@@ -158342,6 +158342,27 @@
           ]}}
         ]
       }]
+    },
+    {
+      "name": "108. Codex upstream error detail (codex-error-detail)",
+      "description": "Requires a connected Codex account and a test virtual key permitting headroom-e2e-unsupported. Set codexErrorDetailReady=1 and codexVirtualKey explicitly. The unsupported model must reach Codex, whose string detail must survive the gateway rather than becoming a generic provider API error. No valid inference model is invoked.",
+      "item": [{
+        "name": "Codex Responses preserves unsupported-model detail (codex-error-detail)",
+        "request": {
+          "method": "POST",
+          "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{codexVirtualKey}}"}],
+          "body": {"mode":"raw","raw":"{\"model\":\"codex/headroom-e2e-unsupported\",\"input\":[{\"role\":\"user\",\"content\":\"Reply OK.\"}],\"store\":false}"},
+          "url": "{{baseUrl}}/v1/responses"
+        },
+        "event": [
+          {"listen":"prerequest","script":{"type":"text/javascript","exec":[
+            "if (String(pm.variables.get('codexErrorDetailReady')) !== '1') { throw new Error('Configure the scoped Codex error-detail fixture first'); }"
+          ]}},
+          {"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Codex detail reaches caller', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); var message = pm.response.json().error.message; pm.expect(message).to.include('not supported'); pm.expect(message).not.to.include('provider API error'); });"
+          ]}}
+        ]
+      }]
     }
   ]
 }

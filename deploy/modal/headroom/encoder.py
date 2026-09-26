@@ -3,6 +3,10 @@ MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DIMENSIONS = 384
 
 
+class EmbeddingInputError(ValueError):
+    """The embedding request is valid JSON but cannot be encoded safely."""
+
+
 class Encoder:
     def __init__(self, device):
         import torch
@@ -15,14 +19,14 @@ class Encoder:
 
     def __call__(self, texts):
         if not isinstance(texts, list) or not 1 <= len(texts) <= 32:
-            raise ValueError("invalid embedding batch")
+            raise EmbeddingInputError("invalid embedding batch")
         if any(not isinstance(text, str) or not 1 <= len(text.encode()) <= 32768 for text in texts):
-            raise ValueError("invalid embedding text")
+            raise EmbeddingInputError("invalid embedding text")
         tokens = self.tokenizer(texts, padding=True, truncation=True, max_length=257, return_tensors="pt").to(self.device)
         # Never treat texts with identical prefixes and different omitted suffixes
         # as equivalent cache queries. Oversized inputs bypass semantic lookup.
         if (tokens["attention_mask"].sum(1) > 256).any():
-            raise ValueError("embedding input exceeds the model context")
+            raise EmbeddingInputError("embedding input exceeds the model context")
         with self.torch.inference_mode():
             hidden = self.model(**tokens).last_hidden_state
             mask = tokens["attention_mask"].unsqueeze(-1).to(hidden.dtype)

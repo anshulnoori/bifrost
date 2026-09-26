@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 import httpx
+from encoder import EmbeddingInputError
 from service import create_service, isolated_compress, compress_until_disconnect, MAX_BODY
 from gpu import GPUCompressor
 from gpu_worker import serve, load_compressor
@@ -499,6 +500,43 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
         for frame in [b"x", struct.pack("!I", MAX_BODY + 1), struct.pack("!I", 3) + b"x"]:
             with self.assertRaises(ValueError):
                 serve(io.BytesIO(frame), io.BytesIO(), compressor)
+
+    def test_invalid_embedding_frame_does_not_kill_healthy_worker(self):
+        class Encoder:
+            def __call__(self, texts):
+                if len(texts[0]) == 22 * 1024:
+                    raise EmbeddingInputError("embedding input exceeds the model context")
+                return [[1.0] + [0.0] * 383]
+
+        requests = [
+            {"operation": "embed", "input": ["x" * (22 * 1024)]},
+            {"operation": "embed", "input": ["valid"]},
+        ]
+        frames = []
+        for request in requests:
+            raw = json.dumps(request).encode()
+            frames.append(struct.pack("!I", len(raw)) + raw)
+        output = io.BytesIO()
+
+        serve(io.BytesIO(b"".join(frames)), output, MagicMock(), Encoder())
+
+        output.seek(5)  # readiness marker
+        replies = []
+        for _ in requests:
+            size = struct.unpack("!I", output.read(4))[0]
+            replies.append(output.read(size))
+        self.assertEqual(replies[0], b'{"error":"invalid embedding input"}')
+        self.assertEqual(json.loads(replies[1])["vectors"], [[1.0] + [0.0] * 383])
+
+    def test_embedding_runtime_failure_escapes_without_partial_frame(self):
+        encoder = MagicMock(side_effect=RuntimeError("model failed"))
+        raw = json.dumps({"operation": "embed", "input": ["valid"]}).encode()
+        output = io.BytesIO()
+
+        with self.assertRaisesRegex(RuntimeError, "model failed"):
+            serve(io.BytesIO(struct.pack("!I", len(raw)) + raw), output, MagicMock(), encoder)
+
+        self.assertEqual(output.getvalue(), b"CUDA\n")
 
     def test_attention_and_precision_apply_before_canary_to_entire_scorer(self):
         model = MagicMock()

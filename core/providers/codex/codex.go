@@ -184,7 +184,18 @@ func (p *Provider) ResponsesStream(ctx *schemas.BifrostContext, hook schemas.Pos
 		}
 	}
 	return openai.HandleOpenAIResponsesStreaming(ctx, p.streamClient, p.url+"/responses", &r, headers, nil, p.idle,
-		false, false, schemas.Codex, hook, nil, nil, nil, nil, nil, p.logger, finalize)
+		false, false, schemas.Codex, hook, nil, parseError, nil, nil, nil, p.logger, finalize)
+}
+
+// Codex also uses FastAPI-style string details rather than OpenAI error objects.
+func parseError(resp *fasthttp.Response) *schemas.BifrostError {
+	err := openai.ParseOpenAIError(resp)
+	if gjson.GetBytes(resp.Body(), "error.message").String() == "" {
+		if detail := gjson.GetBytes(resp.Body(), "detail"); detail.Type == gjson.String && strings.TrimSpace(detail.Str) != "" {
+			err.Error.Message = detail.Str
+		}
+	}
+	return err
 }
 
 func (p *Provider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
