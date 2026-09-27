@@ -46,7 +46,7 @@ func Init(raw any) error {
 			return errors.New("headroom cache key changes require gateway restart")
 		}
 		// In-flight hooks and the replacement must share one decision authority.
-		b.cache, b.cacheSlot = old.cache, old.cacheSlot
+		b.cache = old.cache
 	}
 	if err = configureMonitor(config); err != nil {
 		b.close()

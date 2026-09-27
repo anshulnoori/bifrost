@@ -145,10 +145,12 @@ test('Funnel target is inference-only; private target retains session routes', {
   await t.test('rejects content encoding and oversized bodies', async () => {
     assert.equal((await request('/v1/responses', { 'content-encoding': 'gzip' })).status, 415);
     assert.equal((await request('/v1/responses', { 'content-type': 'text/plain' })).status, 415);
-    const boundary = await request('/v1/responses', {}, 'x'.repeat(4 * 1024 * 1024));
-    assert.equal(boundary.status, 200);
-    assert.equal((await boundary.json()).body.length, 4 * 1024 * 1024);
-    assert.equal((await request('/v1/responses', {}, 'x'.repeat(4 * 1024 * 1024 + 1))).status, 413);
+    for (const bytes of [5 * 1024 * 1024, 100 * 1024 * 1024]) {
+      const response = await request('/v1/responses', {}, 'x'.repeat(bytes));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).body.length, bytes);
+    }
+    assert.equal((await request('/v1/responses', {}, 'x'.repeat(100 * 1024 * 1024 + 1))).status, 413);
   });
   await t.test('SSE arrives before completion and disconnect cancels upstream', async () => {
     const res = await request('/v1/responses', {}, '{"stream":true}');

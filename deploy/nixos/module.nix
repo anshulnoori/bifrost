@@ -134,9 +134,8 @@ in {
             network_config = {
               base_url = "http://127.0.0.1:9909";
               allow_private_network = true;
-              # Let the two-second remote deadline and bounded cancellation
-              # release the shared slot before compression starts.
-              default_request_timeout_in_seconds = 3;
+              # Allow the 30-second remote deadline and bounded cancellation.
+              default_request_timeout_in_seconds = 31;
               max_retries = 0;
             };
           };
@@ -175,13 +174,12 @@ in {
             failure_policy = "open";
             # Scale-to-zero can require a fresh model load, not only restoration.
             timeout_ms = 30000;
-            # Initial cost policy: bypass small results before waking Modal.
-            min_text_bytes = 16384;
+            min_text_bytes = 1024;
             # No synthetic monthly call allowance; do not ration usage by request count.
             cost_ledger_path = "";
             metrics_address = if cfg.semanticCacheModalApp == null && cfg.headroomModalApp == null then "" else "127.0.0.1:9909";
             metrics_token_env = "HEADROOM_METRICS_TOKEN";
-            retention_seconds = 900;
+            retention_seconds = 86400;
           };
         } ];
       };

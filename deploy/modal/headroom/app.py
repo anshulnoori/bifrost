@@ -56,7 +56,7 @@ def prepare_weights():
 
 
 @app.cls(image=image, gpu=ACCELERATOR, region="us", cpu=2, memory=4096, timeout=90, retries=0,
-         max_containers=1, min_containers=0, buffer_containers=0, scaledown_window=30,
+         min_containers=0, buffer_containers=1, scaledown_window=5,
          enable_memory_snapshot=True, experimental_options={"enable_gpu_snapshot": True},
          volumes={"/opt/headroom-models": weights.read_only()},
          secrets=[modal.Secret.from_name("bifrost-headroom")])

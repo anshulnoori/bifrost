@@ -18,6 +18,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -60,9 +61,9 @@ type bridge struct {
 	modalKey    string
 	modalSecret string
 	modal       *modal.Client
-	modalMethod *modal.Function // accessed only while holding modalSlot
+	modalMu     sync.Mutex
+	modalMethod *modal.Function // protected by modalMu during initialization
 	cache       *decisionCache
-	cacheSlot   chan struct{}
 }
 
 func (b *bridge) close() {
@@ -99,7 +100,7 @@ func newBridge(config Config) (*bridge, error) {
 	if config.TimeoutMS < 1 || config.TimeoutMS > 30000 || config.MaxBodyBytes < 1024 || config.MaxBodyBytes > 16<<20 || config.MinTextBytes < 1 {
 		return nil, errors.New("invalid timeout or size limits")
 	}
-	b := &bridge{config: config, cacheSlot: make(chan struct{}, 1)}
+	b := &bridge{config: config}
 	if !config.Enabled && !config.EmbeddingProxyEnabled {
 		return b, nil
 	}
@@ -247,12 +248,11 @@ func (b *bridge) compressStable(ctx context.Context, model, scope, partition, ow
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(b.config.TimeoutMS)*time.Millisecond)
 	defer cancel()
-	select {
-	case b.cacheSlot <- struct{}{}:
-		defer func() { <-b.cacheSlot }()
-	case <-ctx.Done():
-		return nil, estimate{}, 0, 0, ctx.Err()
+	release, err := b.cache.acquire(ctx, partition)
+	if err != nil {
+		return nil, estimate{}, 0, 0, err
 	}
+	defer release()
 	out := make([]string, len(texts))
 	type miss struct {
 		index            int
@@ -299,14 +299,18 @@ func (b *bridge) compressStable(ctx context.Context, model, scope, partition, ow
 	if compressErr != nil && b.config.FailurePolicy == "closed" {
 		return nil, estimate{}, hits, len(misses), compressErr
 	}
+	if compressErr != nil {
+		// Preserve existing hits but retry transient failures on a later request.
+		for _, m := range misses {
+			out[m.index] = m.original
+		}
+		return out, estimate{}, hits, len(misses), nil
+	}
 	for i, m := range misses {
-		forwarded := m.original
-		if compressErr == nil {
-			forwarded = compressed[i]
-			if m.prefix != "" {
-				forwarded = m.prefixRecord.Forwarded + forwarded
-				counts = estimate{} // Remote counts cover only the appended suffix.
-			}
+		forwarded := compressed[i]
+		if m.prefix != "" {
+			forwarded = m.prefixRecord.Forwarded + forwarded
+			counts = estimate{} // Remote counts cover only the appended suffix.
 		}
 		record, putErr := b.cache.put(partition, owner, m.original, forwarded, b.config.CCR && owner != "")
 		if putErr != nil {
@@ -317,19 +321,13 @@ func (b *bridge) compressStable(ctx context.Context, model, scope, partition, ow
 			out[m.index] += retrieval.marker(record.Handle)
 		}
 	}
-	// A healthy store pins originals on compressor failure. This fail-open
-	// decision is replayed exactly and prevents repeated paid attempts.
-	if compressErr != nil {
-		return out, estimate{}, hits, len(misses), nil
-	}
 	if retrieval.enabled() {
 		counts = estimate{} // Modal token counts exclude gateway retrieval markers.
 	}
 	return out, counts, hits, len(misses), nil
 }
 
-// call is shared by compression and embeddings. Admission has already reserved
-// cost and acquired the single outbound slot; no additional requests are queued.
+// call is shared by compression and embeddings. Independent calls can run concurrently.
 func (b *bridge) call(ctx context.Context, path, scope string, body []byte, timeout time.Duration) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

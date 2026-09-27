@@ -55,7 +55,7 @@ This storage contains original tool output even when request logging is off. Ope
 Partitions include the authenticated principal, project, provider, model, and explicit session ID or `prompt_cache_key`.
 Request IDs and anonymous gateway scope never enable persistent replay.
 An exact match reuses saved text without calling Headroom. Unchanged prefixes can also reuse saved text when a tool appends output.
-Compressor failures in `open` mode save unchanged text. In `closed` mode, compressor failures remain errors.
+Compressor failures in `open` mode forward unchanged text without saving a decision, so later requests can retry. A successful retry can change the forwarded prefix once. Existing unchanged records remain until expiry. In `closed` mode, compressor failures remain errors.
 Replay estimates remain unknown when cached and new text mix. Cache reuse does not guarantee a provider cache hit.
 Expiry, storage failure, changed tool availability, or a different partition can change forwarded text. This is bounded reuse, not permanent prefix stability.
 
@@ -104,12 +104,14 @@ Import these values through 1Password Desktop. Keep them outside Git, the Nix st
 The gateway does not receive the Headroom database credentials.
 Modal API tokens can have broader permissions than invocation alone. Environment restrictions depend on the workspace RBAC configuration.
 
-The L4 deployment uses PyTorch, not ONNX. It has zero minimum and buffer containers, one maximum container, and a 30-second scale-down window.
-The gateway admits one request at a time, with no local queue. Modal can still queue function calls during startup.
+The L4 deployment uses PyTorch, not ONNX. It has zero minimum containers, one buffer container, and a five-second scale-down window. No application maximum is set; Modal workspace limits still apply.
+The buffer is a spare-container target during activity, not an instantaneous limit on idle containers. All containers can scale to zero when activity stops.
+Independent gateway requests run concurrently. Requests in the same compression partition serialize to preserve stable decisions. Modal can still queue calls during startup.
 Every call carries an expiry time. Expired calls do not compress.
 Compression waits at most 30 seconds, followed by up to 100 ms for best-effort cancellation. Scale-to-zero can require a fresh model load even with snapshots enabled. This bound does not guarantee every cold start succeeds.
-Embeddings have a separate two-second remote deadline and a three-second provider timeout so cancellation can release the shared slot first.
-Embedding inputs over 1,024 UTF-8 bytes bypass semantic lookup locally, without a paid call. This conservative byte cap is not a token count; the worker still rejects inputs over 256 tokens without truncation.
+Embeddings have a 30-second remote deadline and a 31-second provider timeout for bounded cancellation.
+Embedding inputs over 32,768 UTF-8 bytes bypass semantic lookup locally. This matches the worker's byte safety limit; the worker still rejects inputs over 256 tokens without truncation. Longer inputs can therefore incur a remote call that rejects them.
+Compression eligibility starts at 1 KiB. Metrics retain up to 10,000 events for 24 hours in memory; restarting the gateway clears them. Semantic similarity remains 0.98 and cached responses expire after five minutes.
 Expected embedding input rejection preserves the loaded worker. Cancellation and unexpected worker failures still terminate it. Direct-cache lookup is unchanged.
 Cold starts, idle time, SDK retries, and unsuccessful cancellation can still incur charges.
 On failure, inference continues with the original request. The deployment does not change the provider billing limit.

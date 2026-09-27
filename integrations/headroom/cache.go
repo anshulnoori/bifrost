@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -29,11 +30,48 @@ type cacheRecord struct {
 
 type decisionCache struct {
 	mu      sync.Mutex
+	flights map[string]*cacheFlight
 	dir     string
 	aead    cipher.AEAD
 	macKey  []byte
 	records map[string]cacheRecord
 	sizes   map[string]int64
+}
+
+type cacheFlight struct {
+	slot chan struct{}
+	refs int
+}
+
+// Equal partitions serialize decisions; unrelated conversations can scale out.
+// References include waiters so a cancelled waiter cannot remove a live lock.
+func (c *decisionCache) acquire(ctx context.Context, partition string) (func(), error) {
+	c.mu.Lock()
+	if c.flights == nil {
+		c.flights = make(map[string]*cacheFlight)
+	}
+	f := c.flights[partition]
+	if f == nil {
+		f = &cacheFlight{slot: make(chan struct{}, 1)}
+		c.flights[partition] = f
+	}
+	f.refs++
+	c.mu.Unlock()
+	drop := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		f.refs--
+		if f.refs == 0 {
+			delete(c.flights, partition)
+		}
+	}
+	select {
+	case f.slot <- struct{}{}:
+		return func() { <-f.slot; drop() }, nil
+	case <-ctx.Done():
+		drop()
+		return nil, ctx.Err()
+	}
 }
 
 func deriveKey(secret []byte, label string) []byte {

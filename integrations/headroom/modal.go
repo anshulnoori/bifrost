@@ -34,7 +34,9 @@ func awaitModal(ctx context.Context, call modalInvocation) (any, error) {
 	return result, nil
 }
 
-func (b *bridge) callModal(ctx context.Context, path, scope string, body []byte, deadline int64) ([]byte, error) {
+func (b *bridge) getModalMethod(ctx context.Context) (*modal.Function, error) {
+	b.modalMu.Lock()
+	defer b.modalMu.Unlock()
 	if b.modalMethod == nil {
 		cls, err := b.modal.Cls.FromName(ctx, b.config.ModalApp, "Headroom", &modal.ClsFromNameParams{Environment: b.config.ModalEnvironment})
 		if err != nil {
@@ -50,9 +52,17 @@ func (b *bridge) callModal(ctx context.Context, path, scope string, body []byte,
 		}
 		b.modalMethod = method
 	}
+	return b.modalMethod, nil
+}
+
+func (b *bridge) callModal(ctx context.Context, path, scope string, body []byte, deadline int64) ([]byte, error) {
+	method, err := b.getModalMethod(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Spawn provides a call ID for explicit cancellation. The SDK serializes these
 	// primitive arguments with CBOR; no Go/Python object or credential is sent.
-	call, err := b.modalMethod.Spawn(ctx, []any{path, encodeModalBody(body), scope, deadline}, nil)
+	call, err := method.Spawn(ctx, []any{path, encodeModalBody(body), scope, deadline}, nil)
 	if err != nil {
 		return nil, errors.New("private headroom submission unavailable")
 	}

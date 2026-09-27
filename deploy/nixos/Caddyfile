@@ -9,7 +9,8 @@
 
 (inference) {
 	request_body {
-		max_size 4MiB
+		# Match Bifrost's default body limit, including image-heavy requests.
+		max_size 100MiB
 	}
 	@messages path /v1/messages
 	rewrite @messages /anthropic/v1/messages

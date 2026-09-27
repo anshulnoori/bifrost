@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,11 @@ func TestEmbeddingProxyBoundary(t *testing.T) {
 		calls++
 		if r.URL.Path != "/v1/embeddings" || r.Header.Get("X-Headroom-Proxy-Token") != "service-token" || r.Header.Get("Authorization") != "" || r.Header.Get("X-Headroom-Project") != "" {
 			t.Error("wrong route or forwarded caller credentials")
+		}
+		deadline, err := strconv.ParseInt(r.Header.Get("X-Headroom-Deadline-Ms"), 10, 64)
+		remaining := time.Until(time.UnixMilli(deadline))
+		if err != nil || remaining < 25*time.Second || remaining > 30*time.Second {
+			t.Errorf("embedding cold-start deadline: %v, %v", remaining, err)
 		}
 		body, _ := io.ReadAll(r.Body)
 		if string(body) != `{"model":"headroom-minilm-v1","input":"hello"}` {
@@ -68,8 +74,10 @@ func TestEmbeddingProxySkipsLargeInputsBeforeAdmission(t *testing.T) {
 		status int
 	}{
 		{`"` + strings.Repeat("a", 1024) + `"`, 200},
-		{`"` + strings.Repeat("a", 1025) + `"`, 413},
-		{`["short","` + strings.Repeat("é", 513) + `"]`, 413},
+		{`"` + strings.Repeat("a", 1025) + `"`, 200},
+		{`["short","` + strings.Repeat("é", 513) + `"]`, 200},
+		{`"` + strings.Repeat("a", 32768) + `"`, 200},
+		{`"` + strings.Repeat("a", 32769) + `"`, 413},
 	} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(`{"input":`+tc.input+`}`))
@@ -78,7 +86,7 @@ func TestEmbeddingProxySkipsLargeInputsBeforeAdmission(t *testing.T) {
 			t.Fatalf("got %d, want %d", w.Code, tc.status)
 		}
 	}
-	if calls != 1 {
+	if calls != 4 {
 		t.Fatalf("oversized input reached upstream: %d calls", calls)
 	}
 }
@@ -178,10 +186,10 @@ func TestMonitorReload(t *testing.T) {
 
 func TestMetricsPrivacyRetentionAndRestart(t *testing.T) {
 	l := &eventLedger{retention: time.Minute, totals: map[string]uint64{}}
-	for i := 0; i < 1005; i++ {
+	for i := 0; i < 10005; i++ {
 		l.add(&Event{Started: time.Now(), Status: "bypassed", Model: "sensitive-model", Thread: "sensitive-thread", Quality: "not_evaluated"})
 	}
-	if len(l.events) != 1000 {
+	if len(l.events) != 10000 {
 		t.Fatal("unbounded storage", len(l.events))
 	}
 	req := httptest.NewRequest("GET", "/v1/events", nil)
@@ -194,7 +202,7 @@ func TestMetricsPrivacyRetentionAndRestart(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer token")
 	resp = httptest.NewRecorder()
 	l.handler("token").ServeHTTP(resp, req)
-	if strings.Contains(resp.Body.String(), "sensitive") || !strings.Contains(resp.Body.String(), `status="bypassed"} 1005`) {
+	if strings.Contains(resp.Body.String(), "sensitive") || !strings.Contains(resp.Body.String(), `status="bypassed"} 10005`) {
 		t.Fatal("unsafe labels or wrong counts")
 	}
 	l.prune(time.Now().Add(2 * time.Minute))

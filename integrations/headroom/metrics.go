@@ -54,14 +54,14 @@ type eventLedger struct {
 	totals    map[string]uint64
 }
 
-var ledger = eventLedger{retention: 15 * time.Minute, totals: map[string]uint64{}}
+var ledger = eventLedger{retention: 24 * time.Hour, totals: map[string]uint64{}}
 var monitorMu sync.Mutex
 var monitor *http.Server
 var monitorToken string
 
 func (l *eventLedger) prune(now time.Time) {
 	n := 0
-	for n < len(l.times) && (now.Sub(l.times[n]) > l.retention || len(l.times)-n > 1000) {
+	for n < len(l.times) && (now.Sub(l.times[n]) > l.retention || len(l.times)-n > 10000) {
 		n++
 	}
 	if n > 0 {
@@ -113,7 +113,7 @@ func (l *eventLedger) handler(token string) http.Handler {
 			if events == nil {
 				events = []json.RawMessage{}
 			}
-			json.NewEncoder(w).Encode(map[string]any{"schema_version": 1, "events": events, "retention_seconds": int(l.retention.Seconds()), "limit": 1000, "quality": "not_evaluated", "ccr": "gateway_owned", "cost_savings": nil, "attempt_coverage": "primary_and_fallback_hooks; internal_retry_usage_unknown"})
+			json.NewEncoder(w).Encode(map[string]any{"schema_version": 1, "events": events, "retention_seconds": int(l.retention.Seconds()), "limit": 10000, "quality": "not_evaluated", "ccr": "gateway_owned", "cost_savings": nil, "attempt_coverage": "primary_and_fallback_hooks; internal_retry_usage_unknown"})
 		case "/metrics":
 			w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 			fmt.Fprintln(w, "# HELP bifrost_headroom_attempts_total Completed plugin attempts, not network requests\n# TYPE bifrost_headroom_attempts_total counter")
@@ -173,17 +173,15 @@ func proxyEmbedding(w http.ResponseWriter, r *http.Request) {
 		event.CompressionMS = float64(time.Since(event.Started).Microseconds()) / 1000
 		ledger.add(event)
 	}()
-	// Conservative admission for MiniLM's 256-token context. This byte cap is
-	// not a token count: the worker still validates tokens without truncating.
-	// Skip long semantic queries before paying for a remote call; direct cache
-	// lookup already ran, and inference/compression can proceed unchanged.
+	// Match the worker's byte safety ceiling. The worker separately enforces
+	// MiniLM's 256-token context without silently truncating queries.
 	input := gjson.GetBytes(body, "input")
 	texts := input.Array()
 	if input.Type == gjson.String {
 		texts = []gjson.Result{input}
 	}
 	for _, text := range texts {
-		if len(text.Str) > 1024 {
+		if len(text.Str) > 32768 {
 			event.Status, event.Reason = "bypassed", "embedding_input_limit"
 			http.Error(w, "embedding input exceeds local admission limit", http.StatusRequestEntityTooLarge)
 			return
@@ -195,8 +193,8 @@ func proxyEmbedding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	// Embeddings retain their separate two-second provider deadline.
-	data, err := b.call(r.Context(), "/v1/embeddings", "", body, 2*time.Second)
+	// Allow cold starts the same deadline as deployment compression calls.
+	data, err := b.call(r.Context(), "/v1/embeddings", "", body, 30*time.Second)
 	if err != nil || !json.Valid(data) {
 		http.Error(w, "embedding unavailable", http.StatusBadGateway)
 		return

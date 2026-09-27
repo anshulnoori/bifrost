@@ -22,7 +22,6 @@ type costBudget struct {
 	Reservations int    `json:"reservations"`
 }
 
-var modalSlot = make(chan struct{}, 1) // one outbound request; zero waiting slots
 var errCostGate = errors.New("headroom cost or concurrency gate closed")
 
 // reserve persists before dispatch and fails closed for compression on corrupt
@@ -82,12 +81,9 @@ func reserveCost(path string, now time.Time) (costBudget, error) {
 }
 
 func (b *bridge) admitModal(event *Event) (func(), error) {
-	select {
-	case modalSlot <- struct{}{}:
-	default:
-		return nil, errCostGate
-	}
-	release := func() { <-modalSlot }
+	// Independent requests reach Modal's autoscaler instead of competing for a
+	// process-wide slot. The optional legacy ledger remains explicitly opt-in.
+	release := func() {}
 	if b.config.CostLedgerPath != "" {
 		budget, err := reserveCost(b.config.CostLedgerPath, time.Now())
 		if event != nil {

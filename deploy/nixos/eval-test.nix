@@ -56,9 +56,10 @@ assert (builtins.head semanticOnly.services.bifrost.settings.plugins).config.dim
 assert (builtins.head semanticOnly.services.bifrost.settings.plugins).config.provider == "headroom_embeddings";
 assert semanticOnly.services.bifrost.settings.providers ? headroom_embeddings;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.timeout_ms == 30000;
-assert public.services.bifrost.settings.providers.headroom_embeddings.network_config.default_request_timeout_in_seconds == 3;
+assert public.services.bifrost.settings.providers.headroom_embeddings.network_config.default_request_timeout_in_seconds == 31;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.failure_policy == "open";
-assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.min_text_bytes == 16384;
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.min_text_bytes == 1024;
+assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.retention_seconds == 86400;
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.cost_ledger_path == "";
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.modal_app == "bifrost-headroom";
 assert (builtins.elemAt public.services.bifrost.settings.plugins 1).config.modal_environment == "main";

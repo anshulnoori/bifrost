@@ -75,10 +75,11 @@ func TestCostReservationCorruptionRolloverAndQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	if queued, err := b.admitModal(nil); err == nil {
-		queued()
-		t.Fatal("excess work must be rejected without a queue")
+	releaseSecond, err := b.admitModal(nil)
+	if err != nil {
+		t.Fatal("independent work must reach the autoscaler", err)
 	}
+	releaseSecond()
 }
 
 func TestFailedCallsRemainReserved(t *testing.T) {

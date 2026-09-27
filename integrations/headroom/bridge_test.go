@@ -180,7 +180,14 @@ func TestDurableStableCompressionDecisions(t *testing.T) {
 }
 
 func TestCacheFailurePinExpiryAndCapacity(t *testing.T) {
-	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) })
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "no", 500)
+			return
+		}
+		goodReply(w, r)
+	})
 	cache, err := openDecisionCache(t.TempDir(), b.key)
 	if err != nil {
 		t.Fatal(err)
@@ -190,9 +197,17 @@ func TestCacheFailurePinExpiryAndCapacity(t *testing.T) {
 	if err != nil || out[0] != "original failure" {
 		t.Fatalf("failure not pinned: %v %q", err, out)
 	}
+	_, ok, err := cache.lookup("p", "original failure")
+	if err != nil || ok {
+		t.Fatal("transient failure was pinned", err)
+	}
+	out, _, _, _, err = b.compressStable(context.Background(), "m", "s", "p", "owner", retrievalDescriptor{}, []string{"original failure"})
+	if err != nil || out[0] != "short" || calls.Load() != 2 {
+		t.Fatal("recovery did not retry compression", err)
+	}
 	record, ok, err := cache.lookup("p", "original failure")
-	if err != nil || !ok || record.Forwarded != record.Original {
-		t.Fatal("missing pinned original", err)
+	if err != nil || !ok {
+		t.Fatal("successful retry was not cached", err)
 	}
 	cache.mu.Lock()
 	record.Expires = time.Now().Add(-time.Second)
@@ -212,6 +227,61 @@ func TestCacheFailurePinExpiryAndCapacity(t *testing.T) {
 	}
 }
 
+func TestStableCompressionPartitionConcurrency(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	unblock := make(chan struct{})
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		entered <- struct{}{}
+		select {
+		case <-unblock:
+			goodReply(w, r)
+		case <-r.Context().Done():
+		}
+	})
+	defer close(unblock)
+	var err error
+	b.cache, err = openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 3)
+	run := func(partition string) {
+		out, _, _, _, err := b.compressStable(context.Background(), "m", "s", partition, "o", retrievalDescriptor{}, []string{"original result"})
+		if err == nil && !reflect.DeepEqual(out, []string{"short"}) {
+			err = fmt.Errorf("unexpected output: %q", out)
+		}
+		done <- err
+	}
+	go run("a")
+	go run("b")
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("independent partitions were serialized")
+		}
+	}
+	go run("a")
+	// Release both upstream calls; the duplicate must reuse the winning bytes.
+	unblock <- struct{}{}
+	unblock <- struct{}{}
+	for i := 0; i < 3; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("duplicate compression: %d calls", calls.Load())
+	}
+	b.cache.mu.Lock()
+	defer b.cache.mu.Unlock()
+	if len(b.cache.flights) != 0 {
+		t.Fatal("partition locks leaked")
+	}
+}
+
 func TestStableCompressionCancellationAndClosedPolicy(t *testing.T) {
 	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) })
 	var err error
@@ -219,13 +289,16 @@ func TestStableCompressionCancellationAndClosedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.cacheSlot <- struct{}{}
+	release, err := b.cache.acquire(context.Background(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, _, _, _, err := b.compressStable(ctx, "m", "s", "p", "o", retrievalDescriptor{}, []string{"original failure"}); err != context.Canceled {
 		t.Fatalf("cache wait ignored cancellation: %v", err)
 	}
-	<-b.cacheSlot
+	release()
 	b.config.FailurePolicy = "closed"
 	if _, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "o", retrievalDescriptor{}, []string{"original failure"}); err == nil {
 		t.Fatal("closed policy silently forwarded original")
@@ -562,7 +635,7 @@ func TestLiveHeadroomFixture(t *testing.T) {
 	req := chatRequest()
 	req.ChatRequest.Params = &schemas.ChatParameters{ExtraParams: map[string]interface{}{"prompt_cache_key": "fixture-session"}}
 	req.ChatRequest.Input[0].Content.ContentStr = &text
-	baseline := *b
+	baseline := bridge{config: b.config}
 	baseline.config.Enabled = false
 	start := time.Now()
 	plain, _, _ := baseline.pre(admitted("project-a", "vk-a"), req)
