@@ -177,7 +177,8 @@ in {
             timeout_ms = 30000;
             # Initial cost policy: bypass small results before waking Modal.
             min_text_bytes = 16384;
-            cost_ledger_path = "${config.services.bifrost.stateDir}/headroom-budget.json";
+            # No synthetic monthly call allowance; do not ration usage by request count.
+            cost_ledger_path = "";
             metrics_address = if cfg.semanticCacheModalApp == null && cfg.headroomModalApp == null then "" else "127.0.0.1:9909";
             metrics_token_env = "HEADROOM_METRICS_TOKEN";
             retention_seconds = 900;
