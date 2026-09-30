@@ -1,7 +1,7 @@
 // BIFROST_PACKAGE=$(nix build .#bifrost-stack --no-link --print-out-paths) node --test deploy/nixos/package.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -115,6 +115,9 @@ test('Nix gateway loads its native plugin, serves UI, enforces auth and stops', 
     await delay(100);
   }
   assert.equal(ready, true, 'gateway/plugin not ready');
+  const version = await fetch(origin + '/api/version', { headers });
+  assert.equal(version.status, 200);
+  assert.equal(await version.json(), `v${(await readFile('transports/version', 'utf8')).trim()}`);
   assert.equal((await fetch(origin + '/api/config')).status, 401);
   const rejected = await fetch(origin + '/v1/responses', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"model":"openai/synthetic","input":"test"}',
