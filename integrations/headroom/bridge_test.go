@@ -1,0 +1,661 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+)
+
+func testBridge(t *testing.T, handler http.HandlerFunc) *bridge {
+	t.Helper()
+	s := httptest.NewServer(handler)
+	t.Cleanup(s.Close)
+	t.Setenv("HEADROOM_TEST_TOKEN", strings.Repeat("t", 32))
+	t.Setenv("HEADROOM_TEST_KEY", strings.Repeat("k", 32))
+	b, err := newBridge(Config{Enabled: true, ProjectID: "project-a", Endpoint: s.URL, TokenEnv: "HEADROOM_TEST_TOKEN", ScopeKeyEnv: "HEADROOM_TEST_KEY", MinTextBytes: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(b.client.CloseIdleConnections)
+	return b
+}
+
+func goodReply(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Messages []map[string]string `json:"messages"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	for _, msg := range req.Messages {
+		msg["content"] = "short"
+	}
+	json.NewEncoder(w).Encode(map[string]any{"messages": req.Messages, "tokens_before": 53, "tokens_after": 12, "ccr_hashes": []string{}, "obligations": []string{}})
+}
+
+func TestPrivateModalConfiguration(t *testing.T) {
+	t.Setenv("PRIVATE_MODAL_ID", "test-id")
+	t.Setenv("PRIVATE_MODAL_SECRET", "test-secret")
+	t.Setenv("PRIVATE_SCOPE_KEY", strings.Repeat("k", 32))
+	c := Config{Enabled: true, ModalApp: "bifrost-headroom", ModalEnvironment: "main",
+		ModalKeyEnv: "PRIVATE_MODAL_ID", ModalSecretEnv: "PRIVATE_MODAL_SECRET", ScopeKeyEnv: "PRIVATE_SCOPE_KEY"}
+	b, err := newBridge(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.close()
+	if b.client != nil || b.config.Endpoint != "" || b.token != "" {
+		t.Fatal("private SDK mode configured an HTTP endpoint or proxy credential")
+	}
+	c.Endpoint = "https://public.modal.run"
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted ambiguous private and HTTP transports")
+	}
+	c.Endpoint = ""
+	t.Setenv("PRIVATE_MODAL_SECRET", "")
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted missing SDK credential")
+	}
+}
+
+func TestModalProxyAuth(t *testing.T) {
+	t.Setenv("MODAL_TEST_ID", "fixture-id")
+	t.Setenv("MODAL_TEST_SECRET", "fixture-secret")
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Modal-Key") != "fixture-id" || r.Header.Get("Modal-Secret") != "fixture-secret" {
+			t.Error("missing Modal proxy credentials")
+		}
+		goodReply(w, r)
+	})
+	c := b.config
+	c.ModalKeyEnv, c.ModalSecretEnv = "MODAL_TEST_ID", "MODAL_TEST_SECRET"
+	// Credentials must never travel over cleartext outside local fixtures.
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted Modal credentials over HTTP")
+	}
+	c.Endpoint = "https://service.example"
+	m, err := newBridge(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.config.Endpoint = b.config.Endpoint
+	defer m.client.CloseIdleConnections()
+	if _, _, err := m.compress(context.Background(), "m", "s", []string{"original text"}); err != nil {
+		t.Fatal(err)
+	}
+	c.ModalSecretEnv = "MISSING_MODAL_SECRET"
+	if _, err := newBridge(c); err == nil {
+		t.Fatal("accepted incomplete Modal credentials")
+	}
+}
+
+func TestCompressContract(t *testing.T) {
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/compress" || r.Header.Get("X-Headroom-Proxy-Token") != strings.Repeat("t", 32) || r.Header.Get("Authorization") != "" {
+			t.Error("wrong service auth or path")
+		}
+		body, _ := io.ReadAll(r.Body)
+		if gjson.GetBytes(body, "gateway.can_redrive").Bool() || gjson.GetBytes(body, "gateway.session_affinity").Bool() || gjson.GetBytes(body, "config.session_id").Exists() {
+			t.Error("unsafe capabilities")
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		goodReply(w, r)
+	})
+	out, est, err := b.compress(context.Background(), "gpt-4.1", b.scopeID("a", "bc"), []string{"0123456789abcdef"})
+	if err != nil || !reflect.DeepEqual(out, []string{"short"}) || est.Before != 53 || est.After != 12 {
+		t.Fatalf("%v %+v %v", out, est, err)
+	}
+	if b.scopeID("a", "bc") == b.scopeID("ab", "c") || b.scopeID("tenant-a", "project", "vk", "thread") == b.scopeID("tenant-b", "project", "vk", "thread") {
+		t.Fatal("scope collision")
+	}
+	for i := 0; i < 6; i++ {
+		parts := []string{"project", "principal", "session", "thread", "provider", "model"}
+		other := append([]string(nil), parts...)
+		other[i] += "-other"
+		if b.scopeID(parts...) == b.scopeID(other...) {
+			t.Fatal("scope omitted dimension", i)
+		}
+	}
+}
+
+func TestDurableStableCompressionDecisions(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	dir := t.TempDir()
+	cache, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache, b.config.CacheDir = cache, dir
+	partition, owner := "partition", "owner"
+	first, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, retrievalDescriptor{}, []string{"original one", "original two"})
+	if err != nil || hits != 0 || misses != 2 || calls.Load() != 1 {
+		t.Fatalf("first decision: %v %d %d calls=%d", err, hits, misses, calls.Load())
+	}
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", partition, owner, retrievalDescriptor{}, []string{"original one", "original two", "original three"})
+	if err != nil || hits != 2 || misses != 1 || calls.Load() != 2 || second[0] != first[0] {
+		t.Fatalf("partial replay: %v %d %d calls=%d", err, hits, misses, calls.Load())
+	}
+
+	// Reload from disk and race equal callers. No caller may invoke Modal again.
+	restarted, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = restarted
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, _, _, _, e := b.compressStable(context.Background(), "m", "s", partition, owner, retrievalDescriptor{}, []string{"original one"})
+			if e != nil || got[0] != first[0] {
+				t.Errorf("non-convergent replay: %v %q", e, got)
+			}
+		}()
+	}
+	wg.Wait()
+	if calls.Load() != 2 {
+		t.Fatalf("restart/concurrency called compressor: %d", calls.Load())
+	}
+	data, err := os.ReadFile(dir + "/" + cache.id(partition, "original one") + ".cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "original one") || strings.Contains(string(data), "short") {
+		t.Fatal("cache plaintext exposed on disk")
+	}
+}
+
+func TestCacheFailurePinExpiryAndCapacity(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "no", 500)
+			return
+		}
+		goodReply(w, r)
+	})
+	cache, err := openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = cache
+	out, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "owner", retrievalDescriptor{}, []string{"original failure"})
+	if err != nil || out[0] != "original failure" {
+		t.Fatalf("failure not pinned: %v %q", err, out)
+	}
+	_, ok, err := cache.lookup("p", "original failure")
+	if err != nil || ok {
+		t.Fatal("transient failure was pinned", err)
+	}
+	out, _, _, _, err = b.compressStable(context.Background(), "m", "s", "p", "owner", retrievalDescriptor{}, []string{"original failure"})
+	if err != nil || out[0] != "short" || calls.Load() != 2 {
+		t.Fatal("recovery did not retry compression", err)
+	}
+	record, ok, err := cache.lookup("p", "original failure")
+	if err != nil || !ok {
+		t.Fatal("successful retry was not cached", err)
+	}
+	cache.mu.Lock()
+	record.Expires = time.Now().Add(-time.Second)
+	cache.records[record.Key] = record
+	cache.mu.Unlock()
+	if _, ok, err = cache.lookup("p", "original failure"); err != nil || ok {
+		t.Fatal("expired record retained", err)
+	}
+	cache.mu.Lock()
+	for i := 0; i < cacheMaxEntries; i++ {
+		key := fmt.Sprint(i)
+		cache.records[key] = cacheRecord{Key: key, Expires: time.Now().Add(time.Hour)}
+	}
+	cache.mu.Unlock()
+	if _, err = cache.put("p", "owner", "new original", "new", false); err == nil {
+		t.Fatal("capacity silently evicted a live record")
+	}
+}
+
+func TestStableCompressionPartitionConcurrency(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	unblock := make(chan struct{})
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		entered <- struct{}{}
+		select {
+		case <-unblock:
+			goodReply(w, r)
+		case <-r.Context().Done():
+		}
+	})
+	defer close(unblock)
+	var err error
+	b.cache, err = openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 3)
+	run := func(partition string) {
+		out, _, _, _, err := b.compressStable(context.Background(), "m", "s", partition, "o", retrievalDescriptor{}, []string{"original result"})
+		if err == nil && !reflect.DeepEqual(out, []string{"short"}) {
+			err = fmt.Errorf("unexpected output: %q", out)
+		}
+		done <- err
+	}
+	go run("a")
+	go run("b")
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("independent partitions were serialized")
+		}
+	}
+	go run("a")
+	// Release both upstream calls; the duplicate must reuse the winning bytes.
+	unblock <- struct{}{}
+	unblock <- struct{}{}
+	for i := 0; i < 3; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("duplicate compression: %d calls", calls.Load())
+	}
+	b.cache.mu.Lock()
+	defer b.cache.mu.Unlock()
+	if len(b.cache.flights) != 0 {
+		t.Fatal("partition locks leaked")
+	}
+}
+
+func TestStableCompressionCancellationAndClosedPolicy(t *testing.T) {
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) })
+	var err error
+	b.cache, err = openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := b.cache.acquire(context.Background(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, _, err := b.compressStable(ctx, "m", "s", "p", "o", retrievalDescriptor{}, []string{"original failure"}); err != context.Canceled {
+		t.Fatalf("cache wait ignored cancellation: %v", err)
+	}
+	release()
+	b.config.FailurePolicy = "closed"
+	if _, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", "o", retrievalDescriptor{}, []string{"original failure"}); err == nil {
+		t.Fatal("closed policy silently forwarded original")
+	}
+	if _, ok, err := b.cache.lookup("p", "original failure"); err != nil || ok {
+		t.Fatal("closed failure cached a successful decision", err)
+	}
+}
+
+func TestCCRCompressionProducesRetrievableStableBytes(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	var err error
+	b.cache, err = openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.config.CCR = true
+	owner := b.scopeID("owner", "project-a", "vk:alice")
+	original := "important original tool output"
+	direct := retrievalDescriptor{mode: ccrDirect, tool: "mcp__headroom_retrieve"}
+	first, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, direct, []string{original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := b.cache.lookup("p", original)
+	if err != nil || !ok || len(record.Handle) != 64 || first[0] != "short"+ccrMarker("mcp__headroom_retrieve", record.Handle) {
+		t.Fatal("missing durable CCR marker", err)
+	}
+	if got, ok := b.cache.retrieve(record.Handle, owner); !ok || got != original {
+		t.Fatal("marker does not retrieve exact original")
+	}
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", "p", owner, direct, []string{original})
+	if err != nil || first[0] != second[0] || hits != 1 || misses != 0 || calls.Load() != 1 {
+		t.Fatal("CCR replay changed forwarded bytes or invoked compressor", err)
+	}
+	withoutTool, _, _, _, err := b.compressStable(context.Background(), "m", "s", "p", owner, retrievalDescriptor{}, []string{original})
+	if err != nil || withoutTool[0] != "short" {
+		t.Fatal("reference exposed without retrieval tool", err)
+	}
+}
+
+func TestDeferredCCRRestartAndLegacyRecordStability(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	dir := t.TempDir()
+	cache, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache, b.config.CacheDir = cache, dir
+	owner := "owner"
+	legacy := "legacy original output"
+	if _, _, _, _, err = b.compressStable(context.Background(), "m", "s", "legacy", owner, retrievalDescriptor{}, []string{legacy}); err != nil {
+		t.Fatal(err)
+	}
+	b.config.CCR = true
+	deferred := retrievalDescriptor{mode: ccrAmpDeferred}
+	legacyReplay, _, _, _, err := b.compressStable(context.Background(), "m", "s", "legacy", owner, deferred, []string{legacy})
+	if err != nil || legacyReplay[0] != "short" {
+		t.Fatalf("legacy record gained a retroactive marker: %q %v", legacyReplay, err)
+	}
+
+	fresh := "fresh original output"
+	first, _, _, _, err := b.compressStable(context.Background(), "m", "s", "fresh", owner, deferred, []string{fresh})
+	if err != nil || !strings.Contains(first[0], "advertised tool_search") {
+		t.Fatalf("missing deferred marker: %q %v", first, err)
+	}
+	reopened, err := openDecisionCache(dir, b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = reopened
+	second, _, hits, misses, err := b.compressStable(context.Background(), "m", "s", "fresh", owner, deferred, []string{fresh})
+	if err != nil || second[0] != first[0] || hits != 1 || misses != 0 || calls.Load() != 2 {
+		t.Fatalf("deferred replay changed after restart: %q %d %d calls=%d %v", second, hits, misses, calls.Load(), err)
+	}
+}
+
+func TestOptedAmpOutputNeverReplaysCachedCompression(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	b.config.AmpDeferredRetrievalVirtualKeyID = "vk-a"
+	cache, err := openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = cache
+	ordinary := []byte(`{"model":"m","prompt_cache_key":"stable","input":[{"type":"function_call","call_id":"ordinary","name":"shell"},{"type":"function_call_output","call_id":"ordinary","output":"original output"}]}`)
+	req := func(body []byte) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Codex, Method: "POST", Path: "/v1/responses", Model: "m", Body: body}}
+	}
+	first, _, err := b.pre(admitted("project-a", "vk-a"), req(ordinary))
+	if err != nil || gjson.GetBytes(first.PassthroughRequest.Body, "input.1.output").Str != "short" || calls.Load() != 1 {
+		t.Fatal("failed to seed shortened record", err)
+	}
+	amp := []byte(`{"model":"m","prompt_cache_key":"stable","input":[{"type":"custom_tool_call","name":"code_exec","call_id":"exec"},{"type":"custom_tool_call_output","call_id":"exec","output":"original output"}]}`)
+	secondCtx := admitted("project-a", "vk-a")
+	second, _, err := b.pre(secondCtx, req(amp))
+	if err != nil || !bytes.Equal(second.PassthroughRequest.Body, amp) || calls.Load() != 1 || secondCtx.Value(eventKey).(*Event).CCRMode != ccrNone {
+		t.Fatalf("opted Amp output was compressed or replayed with CCR off: %s calls=%d %v", second.PassthroughRequest.Body, calls.Load(), err)
+	}
+}
+
+func TestDeferredCCRRequiresConfiguredAuthenticatedCapability(t *testing.T) {
+	b := testBridge(t, goodReply)
+	b.config.CCR = true
+	b.config.AmpDeferredRetrievalVirtualKeyID = "vk-a"
+	cache, err := openDecisionCache(t.TempDir(), b.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.cache = cache
+	body := []byte(`{"model":"m","prompt_cache_key":"stable","tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"code_exec"},{"type":"function","name":"tool_search"}]}],"input":[{"type":"function_call","call_id":"ordinary","name":"shell"},{"type":"function_call_output","call_id":"ordinary","output":"original output"}]}`)
+	req := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Codex, Method: "POST", Path: "/v1/responses", Model: "m", Body: body}}
+	}
+	ctx := admitted("project-a", "vk-a")
+	out, _, err := b.pre(ctx, req())
+	if err != nil || ctx.Value(eventKey).(*Event).CCRMode != ccrAmpDeferred || !bytes.Contains(out.PassthroughRequest.Body, []byte("advertised tool_search")) {
+		t.Fatalf("authenticated capability did not select deferred CCR: %s %v", out.PassthroughRequest.Body, err)
+	}
+	wrong := admitted("project-a", "vk-b")
+	out, _, err = b.pre(wrong, req())
+	if err != nil || wrong.Value(eventKey).(*Event).CCRMode != ccrNone || bytes.Contains(out.PassthroughRequest.Body, []byte("advertised tool_search")) {
+		t.Fatal("wrong virtual key selected deferred CCR")
+	}
+	missing := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	missingReq := req()
+	out, _, err = b.pre(missing, missingReq)
+	if err != nil || out != missingReq || missing.Value(eventKey).(*Event).CCRMode != ccrNone {
+		t.Fatal("missing principal selected deferred CCR")
+	}
+}
+
+func TestMalformedRepliesNeverCommit(t *testing.T) {
+	cases := []string{
+		`not json`, `{}`, `{"messages":[],"tokens_before":10,"tokens_after":2}`,
+		`{"messages":[{"role":"tool","tool_call_id":"slot-0","content":"short"}],"tokens_before":10,"tokens_after":20}`,
+		`{"messages":[{"role":"tool","tool_call_id":"slot-0","content":"short"}],"tokens_before":10,"tokens_after":2,"obligations":["redrive"]}`,
+		`{"messages":[{"role":"tool","tool_call_id":"slot-0","content":"short"}],"tokens_before":10,"tokens_after":2,"ccr_hashes":["abc"]}`,
+		`{"messages":[{"role":"assistant","tool_call_id":"slot-0","content":"short"}],"tokens_before":10,"tokens_after":2}`,
+		`{"messages":[{"role":"tool","tool_call_id":"slot-1","content":"short"}],"tokens_before":10,"tokens_after":2}`,
+		`{"messages":[{"role":"tool","tool_call_id":"slot-0","content":"<<ccr:123>>"}],"tokens_before":10,"tokens_after":2}`,
+		`{"messages":[{"role":"tool","tool_call_id":"slot-0","content":""}],"tokens_before":10,"tokens_after":2}`,
+	}
+	for i, body := range cases {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) })
+			if _, _, err := b.compress(context.Background(), "m", "s", []string{strings.Repeat("original", 20)}); err == nil {
+				t.Fatal("accepted malformed output")
+			}
+		})
+	}
+}
+
+func TestCancellationRedirectAndLimits(t *testing.T) {
+	t.Run("cancel", func(t *testing.T) {
+		b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, _, err := b.compress(ctx, "m", "s", []string{"abcdefghijk"}); err == nil {
+			t.Fatal("ignored cancellation")
+		}
+	})
+	t.Run("redirect", func(t *testing.T) {
+		b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "http://127.0.0.1:1", 307) })
+		if _, _, err := b.compress(context.Background(), "m", "s", []string{"abcdefghijk"}); err == nil {
+			t.Fatal("followed redirect")
+		}
+	})
+	t.Run("limit", func(t *testing.T) {
+		b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, strings.Repeat("x", 1100)) })
+		b.config.MaxBodyBytes = 1024
+		if _, _, err := b.compress(context.Background(), "m", "s", []string{"abcdefghijk"}); err == nil {
+			t.Fatal("accepted oversized response")
+		}
+	})
+	if _, err := newBridge(Config{CCR: true}); err == nil {
+		t.Fatal("enabled unsupported CCR")
+	}
+}
+
+// Embedded interfaces keep test doubles limited to the grant methods consumed by
+// the integration, without inventing a second authorization implementation.
+type testIdentity struct {
+	schemas.Identity
+	project, principal string
+}
+
+func (i testIdentity) Project() *schemas.EntityRef    { return &schemas.EntityRef{ID: i.project} }
+func (i testIdentity) VirtualKey() *schemas.EntityRef { return &schemas.EntityRef{ID: i.principal} }
+
+type testGrant struct {
+	schemas.Grant
+	id schemas.Identity
+}
+
+func (g testGrant) Identity() schemas.Identity { return g.id }
+func (g testGrant) Access() schemas.Access     { return testAccess{} }
+func (g testGrant) Limits() schemas.Limits     { return testLimits{} }
+
+type testAccess struct{ schemas.Access }
+type testLimits struct{ schemas.Limits }
+
+func admitted(project, principal string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetGrant(testGrant{id: testIdentity{project: project, principal: principal}})
+	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-1")
+	ctx.SetValue(threadKey, "thread-1")
+	return ctx
+}
+func chatRequest() *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4.1", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("original long tool output")}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call-42")}}}}}
+}
+
+func TestAdmissionIsolationAndCopyOnWrite(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	for _, ctx := range []*schemas.BifrostContext{schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), admitted("project-b", "vk-a")} {
+		req := chatRequest()
+		out, sc, err := b.pre(ctx, req)
+		if out != req || sc != nil || err != nil {
+			t.Fatal("bypass modified request")
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatal("disclosed data before project admission")
+	}
+	req := chatRequest()
+	out, sc, err := b.pre(admitted("project-a", "vk-a"), req)
+	if sc != nil || err != nil || *out.ChatRequest.Input[0].Content.ContentStr != "short" {
+		t.Fatal("did not compress", err)
+	}
+	if *req.ChatRequest.Input[0].Content.ContentStr != "original long tool output" || out.ChatRequest == req.ChatRequest {
+		t.Fatal("mutated fallback source")
+	}
+	if out.ChatRequest.Provider != req.ChatRequest.Provider || out.ChatRequest.Model != req.ChatRequest.Model || *out.ChatRequest.Input[0].ToolCallID != "call-42" {
+		t.Fatal("changed routing or tools")
+	}
+}
+
+func TestVirtualKeyScopeWithoutProject(t *testing.T) {
+	var calls atomic.Int32
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); goodReply(w, r) })
+	b.config.ProjectID = ""
+	b.config.VirtualKeyID = "vk-a"
+	for _, principal := range []string{"vk-b", "vk-a"} {
+		ctx := admitted("", principal)
+		b.pre(ctx, chatRequest())
+		if got := ctx.Value(eventKey).(*Event).Status; (principal == "vk-a") != (got == "compressed") {
+			t.Fatal("virtual key isolation failed", principal, got)
+		}
+	}
+	b.config.ProjectID = "required-project"
+	b.pre(admitted("other-project", "vk-a"), chatRequest())
+	if calls.Load() != 1 {
+		t.Fatal("sidecar saw unauthorized scope")
+	}
+}
+
+func TestFailPolicyAndStreamIdentity(t *testing.T) {
+	b := testBridge(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "private server detail", 500) })
+	req := chatRequest()
+	ctx := admitted("project-a", "vk-a")
+	if out, sc, _ := b.pre(ctx, req); out != req || sc != nil {
+		t.Fatal("fail-open modified original")
+	}
+	b.config.FailurePolicy = "closed"
+	if _, sc, _ := b.pre(admitted("project-a", "vk-a"), req); sc == nil || sc.Error.AllowFallbacks == nil || *sc.Error.AllowFallbacks {
+		t.Fatal("failure bypasses closed policy")
+	}
+	chunk := &schemas.BifrostStreamChunk{}
+	if got, err := HTTPTransportStreamChunkHook(ctx, nil, chunk); got != chunk || err != nil {
+		t.Fatal("changed SSE chunk")
+	}
+}
+
+func TestUsageNotReplacedByEstimate(t *testing.T) {
+	ctx := admitted("project-a", "vk-a")
+	e := &Event{Started: time.Now(), Status: "compressed", Quality: "not_evaluated", Estimate: &estimate{Before: 1000, After: 100}}
+	ctx.SetValue(eventKey, e)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 317, CompletionTokens: 29, TotalTokens: 346, PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 211, CachedWriteTokens: 7}}
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: usage}}
+	got, err, _ := PostLLMHook(ctx, resp, nil)
+	if got != resp || err != nil || got.ChatResponse.Usage != usage || gjson.GetBytes(e.Usage, "prompt_tokens").Int() != 317 {
+		t.Fatal("provider accounting was overwritten")
+	}
+	if !e.Done.Load() {
+		t.Fatal("missing terminal event")
+	}
+}
+
+func TestPartialStreamFailureFinalizesEvent(t *testing.T) {
+	ctx := admitted("project-a", "vk-a")
+	event := &Event{Started: time.Now(), Status: "compressed"}
+	ctx.SetValue(eventKey, event)
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionStreamRequest}}}
+	PostLLMHook(ctx, resp, nil)
+	if event.Done.Load() {
+		t.Fatal("partial chunk finalized accounting")
+	}
+	failure := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionStreamRequest}}
+	_, got, _ := PostLLMHook(ctx, nil, failure)
+	if got != failure || !event.Done.Load() || !event.ProviderFailed {
+		t.Fatal("partial-stream error was not accounted")
+	}
+}
+
+// Opt-in local service benchmark. No provider call, no billed-token or answer-
+// quality claim. Paired baseline/bridge paths consume identical deterministic data.
+func TestLiveHeadroomFixture(t *testing.T) {
+	endpoint := os.Getenv("HEADROOM_BENCH_URL")
+	if endpoint == "" {
+		t.Skip("set HEADROOM_BENCH_URL and HEADROOM_BENCH_TOKEN to run the pinned local service fixture")
+	}
+	t.Setenv("HEADROOM_BENCH_SCOPE", strings.Repeat("b", 32))
+	b, err := newBridge(Config{Enabled: true, ProjectID: "project-a", Endpoint: endpoint, TokenEnv: "HEADROOM_BENCH_TOKEN", ScopeKeyEnv: "HEADROOM_BENCH_SCOPE", TimeoutMS: 30000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.client.CloseIdleConnections()
+	var fixture strings.Builder
+	for i := 0; i < 250; i++ {
+		level := "INFO"
+		message := "request completed successfully"
+		if i == 167 {
+			level = "FATAL"
+			message = "transaction=TX-731 amount=1949.37 failed integrity check"
+		}
+		fmt.Fprintf(&fixture, "2026-09-22T10:%02d:%02dZ %s worker=%d %s\n", i/60, i%60, level, i%7, message)
+	}
+	text := fixture.String()
+	req := chatRequest()
+	req.ChatRequest.Params = &schemas.ChatParameters{ExtraParams: map[string]interface{}{"prompt_cache_key": "fixture-session"}}
+	req.ChatRequest.Input[0].Content.ContentStr = &text
+	baseline := bridge{config: b.config}
+	baseline.config.Enabled = false
+	start := time.Now()
+	plain, _, _ := baseline.pre(admitted("project-a", "vk-a"), req)
+	baselineUS := time.Since(start).Microseconds()
+	ctx := admitted("project-a", "vk-a")
+	start = time.Now()
+	out, sc, err := b.pre(ctx, req)
+	compressionUS := time.Since(start).Microseconds()
+	e := ctx.Value(eventKey).(*Event)
+	if err != nil || sc != nil || e.Status != "compressed" {
+		t.Fatalf("real service contract failed: event=%+v err=%v", e, err)
+	}
+	got := *out.ChatRequest.Input[0].Content.ContentStr
+	if len(got) >= len(text) || out.ChatRequest.Params.ExtraParams["prompt_cache_key"] != "fixture-session" {
+		t.Fatal("compression did not reduce tool text or changed cache key")
+	}
+	sentinel := "transaction=TX-731 amount=1949.37 failed integrity check"
+	if !strings.Contains(*plain.ChatRequest.Input[0].Content.ContentStr, sentinel) || !strings.Contains(got, sentinel) {
+		t.Fatal("fixture critical fact lost")
+	}
+	counts, _ := json.Marshal(e.Estimate)
+	t.Logf("fixture=logs250 baseline_us=%d headroom_us=%d bytes_before=%d bytes_after=%d status=%s estimates=%s critical_fact_preserved=true provider_usage=null answer_quality=not_evaluated ccr=unsupported", baselineUS, compressionUS, len(text), len(got), e.Status, counts)
+}

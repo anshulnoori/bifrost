@@ -1,0 +1,242 @@
+---
+title: Codex subscription
+description: Connect multiple ChatGPT accounts and monitor subscription usage.
+---
+
+This fork adds the `codex` provider independently of Bifrost PR #2715.
+It pins upstream Bifrost at `a134a8ce71f8b6c6f5f97b84f192420d6799427b` and preserves upstream history.
+The local patches remain separate from upstream releases.
+
+## Sign-in
+
+The implementation uses the device flow from the official Codex CLI.
+OpenAI documents this flow for Codex, not as a public hosted-gateway OAuth contract.
+An eligible subscription and enabled device authorization are required.
+Organization administrators can restrict device authorization.
+See [Codex authentication](https://developers.openai.com/codex/auth) and [OpenAI terms](https://openai.com/policies/terms-of-use/) for deployment requirements.
+
+## Build and start a local deployment
+
+Requirements: Linux, Go 1.27.1, Node.js with npm, a C compiler, `jq`, `openssl`, and `flock`.
+
+From the repository root, run:
+
+```sh
+bash scripts/codex-local.sh
+```
+
+The launcher builds the UI and gateway and enables dashboard and inference authentication.
+It creates private credentials once in `$HOME/.local/share/bifrost-codex/credentials.env` and preserves them across restarts.
+The dashboard username is `codex`; read `CODEX_ADMIN_PASSWORD` from that private file locally.
+The database and credentials stay in the same directory, with owner-only permissions.
+Set `CODEX_DATA_DIR` or `CODEX_PORT` to change the directory or port.
+Set `BIFROST_BINARY` to reuse a built gateway. Use `--prepare-only` to generate configuration without starting it.
+The launcher refuses to regenerate a missing encryption secret for an existing database.
+For network access, configure TLS before exposing the loopback-only service.
+For multiple replicas, use a shared PostgreSQL config store and the same encryption secret.
+Separate SQLite files do not coordinate replicas.
+
+1. Sign in to the dashboard and select **Model Providers → Codex**.
+2. Select **Add new account**, enter a name, then select **Continue**.
+3. Select **Connect with ChatGPT**, then **Continue to OpenAI**.
+4. Enter the displayed code on OpenAI and authorize the account.
+5. Wait for **connected**. Repeat for each subscription.
+
+Never paste OpenAI access tokens, refresh tokens, or device codes into a support conversation.
+No gateway virtual key or OpenAI API key is required during onboarding.
+Each account has its own connection, enabled state, weight, and model restrictions.
+The account table shows reported remaining allowance for primary, secondary, and additional usage windows.
+Bars display `100 − used_percent`, clamped to 0–100, with provider reset timestamps.
+Usage refreshes every minute while the table is open; each row also has a refresh button.
+Missing usage is not treated as unlimited usage. These bars do not measure gateway budgets or API costs.
+
+From another shell with the gateway key, run:
+
+```sh
+curl http://127.0.0.1:8080/v1/models?provider=codex \
+  -H "x-bf-vk: $CODEX_GATEWAY_KEY"
+curl http://127.0.0.1:8080/v1/responses \
+  -H "x-bf-vk: $CODEX_GATEWAY_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"codex/gpt-5.3-codex","input":"Reply with OK","stream":true}'
+```
+
+Use a model returned by your account catalog if the example model is unavailable.
+OpenAI-compatible clients use the gateway `/v1` base URL, a gateway virtual key, and a `codex/` model prefix.
+For clients that omit provider prefixes, configure a Bifrost routing rule rather than forwarding an OpenAI bearer token.
+
+## Protocol contract
+
+Typed `/v1/responses` and `/v1/chat/completions` support unary and SSE output, function tools, reasoning, usage, and structured-output parameters.
+Chat requests convert to Responses requests.
+The upstream always streams with `store=false`; the provider collects terminal output for unary callers.
+Opaque Responses passthrough preserves unknown JSON fields and SSE bytes through the existing Bifrost passthrough route.
+Use `/openai_passthrough/v1/responses` with `x-model-provider: codex`, `x-bf-vk`, and an unprefixed body model for that route.
+Raw Chat bodies are rejected because safe conversion requires typed input.
+
+Unsupported parameters fail explicitly: `temperature`, `top_p`, `max_output_tokens`, `previous_response_id`, persistent storage, background execution, and unsupported Chat-only parameters.
+Unsupported operations include files, batches, embeddings, audio, and image generation.
+Large-payload bypass mode is rejected.
+Unary opaque responses have a 32 MiB limit.
+Requests cannot override the upstream URL, provider type, account header, or bearer token.
+
+The provider uses existing Bifrost cancellation, streaming hooks, retry policy, and accounting.
+It does not replay emitted stream bytes or retry uncertain OAuth token exchanges.
+Model discovery queries the authenticated account and filters results through its gateway grant.
+It does not put one account's catalog into a global cache.
+The built-in semantic cache bypasses Codex reads and writes because its shared keys do not establish subscription ownership.
+Custom plugins are trusted gateway code and must preserve this boundary.
+
+Usage counts come from provider responses.
+Budget costs use matching OpenAI API reference prices when available, not measured subscription charges.
+Unknown model pricing can produce unknown costs, so token limits remain necessary.
+No savings claim follows from compression estimates or subscription usage.
+
+## Ownership and credential lifecycle
+
+Each configured Codex provider-key ID owns one OAuth connection.
+Dashboard management requires a genuine admin session or admin Basic authentication, including when routes are whitelisted.
+Every management request carries the nonsecret provider-key ID in `x-bf-codex-key`.
+Cross-site browser requests are rejected. Disabling dashboard authentication does not expose OAuth management.
+Inference uses normal provider-key selection, weights, model restrictions, gateway authentication, and budgets.
+Restrict gateway users to specific provider-key IDs when their subscriptions must remain isolated.
+Keys that allow all provider accounts can use all configured subscriptions, as with other providers.
+An OpenAI JWT never grants gateway access.
+Inference requires an admitted gateway grant and rechecks the virtual key in the database.
+Provider routing, budgets, and access rules remain in the normal pipeline.
+
+The config-store migration adds `codex_connections`.
+Credentials use the established Argon2id-derived AES-256-GCM encryption implementation.
+The encrypted envelope includes its owner and connection ID to reject ciphertext copied between rows.
+No credentials appear in management responses, and upstream auth errors are sanitized.
+Operators must also restrict database access, backups, logs, proxy access, and host memory access.
+
+Database compare-and-swap coordinates polling and refresh across replicas.
+Only one operation can exchange a rotating refresh token.
+A crashed or uncertain exchange requires reconnect after its operation deadline, rather than reusing a possibly consumed token.
+Inference followers wait up to 30 seconds for the refresh winner, with cancellation support.
+Dashboard polling recovers from contention by reading the current account state.
+Reconnect creates a new connection ID, so stale operations cannot overwrite the replacement.
+
+Disconnect deletes the local connection and prevents later credential resolution.
+It does not revoke OpenAI sessions or cancel a request that already obtained its credential.
+Use OpenAI account controls for remote session revocation.
+Deleting a provider account removes its encrypted connection in the same database transaction.
+Disabling an account prevents later credential resolution without erasing its connection.
+Deleting or disabling a gateway virtual key blocks its later inference requests without disconnecting provider accounts.
+
+## Verification without credentials
+
+From the repository root, run:
+
+```sh
+bash tests/codex/run.sh
+```
+
+The harness builds the gateway and Headroom plugin with the same dependency graph and toolchain.
+It launches a disposable gateway against a local TLS fixture for OpenAI auth and inference.
+Only that child process trusts the generated test CA.
+No production endpoint override or personal credential is necessary.
+The tests cover owner isolation, refresh rotation, token non-disclosure, cancellation, tools, streaming, and failure behavior.
+The full-path test loads the native Headroom plugin with compression disabled.
+It does not prove compression quality or real-provider behavior.
+
+With the gateway running, run the isolated browser test:
+
+```sh
+npm --prefix tests/e2e ci
+npm --prefix tests/e2e exec -- playwright install chromium
+# Run in tests/e2e:
+npx playwright test --config playwright.codex.config.ts
+```
+
+The browser test mocks onboarding responses and checks pending, connected, disconnected, and error states.
+Provider-harness folder `104 - codex-oauth` adds opt-in live protocol cases.
+Do not run live cases without account authorization and a usage limit.
+
+## Live Codex and Headroom check
+
+Connect an account and enable the Headroom plugin and local sidecar first.
+Load the deployment's private environment files into your shell, then run:
+
+```sh
+export CODEX_TEST_MODEL=codex/gpt-5.6-luna
+bash tests/codex/live_test.sh
+```
+
+Select a model from your account catalog if this model is unavailable.
+The script requires `CODEX_GATEWAY_KEY`, `CODEX_ADMIN_PASSWORD`, and `HEADROOM_METRICS_TOKEN`.
+Set `CODEX_GATEWAY_URL` for a gateway outside the default local port.
+It makes four small subscription requests: Chat and Responses, each with unary and streaming output.
+Each request includes synthetic tool logs with a planted transaction ID and amount.
+The checks require the correct answer, provider usage, and Headroom compression events for all four requests.
+Temporary responses are private and deleted on exit; the script never prints credentials.
+Compression token estimates are not billed savings or a general answer-quality evaluation.
+
+The September 22, 2026 verification passed the offline harness, provider/lifecycle race tests, full config-store/governance/HTTP-handler/lib suites, and targeted Go vet.
+The frontend build/typecheck, API tests, and browser contract test cover multiple account rows and independent usage bars.
+The full core test run was not green: MCP fixture servers were missing, and an SSRF TEST-NET reachability assumption failed in this orb.
+Three OpenAPI invariant failures also reproduce on the unmodified imported baseline.
+They concern logging fragments, a duplicate virtual-key rotation operation, and routing security declarations.
+
+The dependency update to `golang.org/x/crypto v0.56.0` fixes `GO-2026-6354` and `GO-2026-6355`.
+The completed binary scan reported zero reachable vulnerabilities.
+The source scan stalled under memory pressure; the completed scan used `govulncheck -mode=binary`.
+
+## Account labels and usage reserves
+
+The table shows `Name (email)` when you set an optional name, or just the email when the name is blank or matches the email.
+Generated internal names are hidden when email is available. You can edit or clear the name under **Edit connection**.
+The expanded **Account** field shows only the email, or **Email unavailable** when absent. Names apply to the table label, not account identity.
+Email comes from OpenAI during OAuth and remains encrypted with the tokens, not in a plaintext account column.
+Existing connections read email from their stored access token when available. If OpenAI supplies no email, the table uses the editable account alias.
+Routing and authorization always use the stable account ID, never the email.
+
+Under **Edit connection**, set **Remaining allowance reserve (%)** independently for each subscription.
+For example, 25 pauses the account at 25% weekly allowance remaining. The five-hour window does not affect this reserve.
+OpenAI still enforces its own rate limits. If the weekly window is unavailable, accounts with a reserve fail closed.
+To stop after using 25%, set 75. Leave the field blank to disable the reserve.
+The equivalent key configuration field is `codex_reserve_percent`, a number from 0 through 100 or `null`.
+
+Normal routing uses weighted random selection among eligible accounts, not round-robin.
+The gateway checks OpenAI usage before selection and again before credential use.
+Accounts with a reserve fail closed when usage cannot be checked. They automatically return when reported allowance exceeds the reserve.
+Pinned and sticky sessions remain pinned and return an error at their reserve instead of silently switching accounts.
+The same credential check also applies to account catalog refreshes.
+An empty eligible pool fails the request. Accounts without a reserve retain their existing behavior.
+
+These checks add usage-service latency and require no shared usage cache between replicas.
+Provider reporting delays and requests already in flight can cross the threshold; this is not an exact consumption cap.
+Feature-specific additional windows remain visible but do not govern the general account pool.
+Reserve policy adds a nullable config-store column. Older binaries do not enforce this policy, so do not mix old and new replicas.
+
+## Upgrade and rollback
+
+1. Back up the config database and encryption secret before upgrade.
+2. Stop traffic before the first migration.
+3. Start one replica to apply the migration under the existing config-store migration lock.
+4. Start the remaining replicas with the same encryption secret.
+5. Rebuild native plugins with the final gateway toolchain and dependency graph.
+6. Run the offline harness before restoring traffic.
+
+Earlier development builds bound connections to gateway virtual keys.
+Those records are not reassigned to provider accounts automatically: disconnect them before upgrading, then reconnect from the account table.
+
+For rollback, disconnect Codex accounts and remove the Codex provider before starting an older binary.
+The additive table can remain unused, or a database administrator can remove it after backup.
+Restore the pre-upgrade database if older migration code rejects the newer schema version.
+Do not rotate the encryption secret without a separate data re-encryption procedure.
+This patch does not add that procedure.
+
+## Research and remaining limits
+
+Sources reviewed include [Codex CLI](https://github.com/openai/codex), [LiteLLM](https://github.com/BerriAI/litellm), and [OpenCode](https://github.com/anomalyco/opencode).
+The official CLI establishes the issuer, client ID, device endpoints, and refresh exchange.
+Its backend client also defines `GET /backend-api/wham/usage`, used here for per-account allowance bars.
+This implementation replaces process-local credential files with owner-bound database records.
+Bifrost [PR #7325](https://github.com/maximhq/bifrost/pull/7325) provides caller-token passthrough, not a credential lifecycle.
+[PR #7393](https://github.com/maximhq/bifrost/pull/7393) supplies opaque passthrough safeguards.
+[PR #2715](https://github.com/maximhq/bifrost/pull/2715) is not an implementation dependency.
+
+Live device authorization, model availability, full Amp sessions, and provider terms acceptance still require an authorized operator.
+Headroom limitations remain in `integrations/headroom/README.md`: CCR is disabled, strict learned-state isolation is unresolved, and internal retry costs are unknown.
+Headroom metadata is per replica, and no real-provider answer-quality evaluation is included.

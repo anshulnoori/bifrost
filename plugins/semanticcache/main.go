@@ -5,6 +5,7 @@ package semanticcache
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
@@ -40,6 +41,7 @@ type Config struct {
 
 	// Advanced caching behavior
 	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
+	ScopeByVirtualKey            bool   `json:"scope_by_virtual_key,omitempty"`           // Require governance identity and partition cached responses by its stable ID.
 	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
 	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
 	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
@@ -149,6 +151,10 @@ type StreamAccumulator struct {
 // signature of bifrost.Client.EmbeddingRequest.
 type EmbeddingRequestExecutor func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError)
 
+// CodexCacheScopeResolver performs a fresh, metadata-only authorization check.
+// Scope must change whenever the request's authorized Codex account pool changes.
+type CodexCacheScopeResolver func(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) (scope string, eligibleKeyIDs []string, err error)
+
 // Plugin implements schemas.LLMPlugin for semantic caching. It serves cached
 // responses via two complementary lookup paths: a direct O(1) hash match on
 // (provider, model, cache_key, request_hash, params_hash) for exact replays,
@@ -160,6 +166,7 @@ type Plugin struct {
 	config                   *Config
 	logger                   schemas.Logger
 	embeddingRequestExecutor EmbeddingRequestExecutor
+	codexCacheScopeResolver  CodexCacheScopeResolver
 	// streamAccumulators maps request ID → its in-progress *StreamAccumulator.
 	streamAccumulators sync.Map
 	// cacheStates maps request ID → its *cacheState (see state.go) for the
@@ -370,6 +377,10 @@ func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifro
 // state on the plugin keyed by request ID for PostLLMHook to consume when
 // the upstream response arrives.
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if requestID != "" {
+		plugin.clearCacheState(requestID)
+	}
 	cacheKey, ok := plugin.resolveCacheKey(ctx)
 	if !ok {
 		return req, nil, nil
@@ -378,7 +389,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	// Without a request ID we have nowhere to anchor per-request state. The
 	// framework always stamps this before plugin hooks run; direct callers
 	// (tests, custom integrations) must set it too.
-	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	requestID, ok = ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
 		return req, nil, nil
 	}
@@ -389,6 +400,24 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 	// Create state up front so a reused/retried request ID never inherits stale fields.
 	state := plugin.createCacheState(requestID)
+	provider, model, _ := req.GetRequestFields()
+	if provider == schemas.Codex {
+		if plugin.codexCacheScopeResolver == nil {
+			plugin.clearCacheState(requestID)
+			return req, nil, nil
+		}
+		scope, keyIDs, err := plugin.codexCacheScopeResolver(ctx, provider, model)
+		if err != nil || scope == "" || len(keyIDs) == 0 {
+			plugin.clearCacheState(requestID)
+			return req, nil, nil
+		}
+		state.CodexProvider, state.CodexModel, state.CodexScope = string(provider), model, scope
+		state.CodexEligibleKeyIDs = make(map[string]struct{}, len(keyIDs))
+		for _, id := range keyIDs {
+			state.CodexEligibleKeyIDs[id] = struct{}{}
+		}
+		cacheKey = fmt.Sprintf("codex-%x", sha256.Sum256([]byte(string(provider)+"\x00"+model+"\x00"+scope+"\x00"+cacheKey)))
+	}
 
 	if plugin.isConversationHistoryThresholdExceeded(state, req) {
 		plugin.clearCacheState(requestID)
@@ -484,13 +513,23 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 // resolveCacheKey returns the per-request cache key (or the configured default)
 // and a bool indicating whether the caller should proceed with caching.
 func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool) {
-	if cacheKey, ok := ctx.Value(CacheKey).(string); ok && cacheKey != "" {
-		return cacheKey, true
+	cacheKey, _ := ctx.Value(CacheKey).(string)
+	if cacheKey == "" {
+		cacheKey = plugin.config.DefaultCacheKey
 	}
-	if plugin.config.DefaultCacheKey != "" {
-		return plugin.config.DefaultCacheKey, true
+	if cacheKey == "" {
+		return "", false
 	}
-	return "", false
+	if plugin.config.ScopeByVirtualKey {
+		id, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
+		if !ok || id == "" {
+			return "", false
+		}
+		// Length-prefixing makes the tuple unambiguous even for caller-supplied keys.
+		// Never use the raw credential: rotating a key preserves its stable ID.
+		cacheKey = fmt.Sprintf("vk-%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s%s", len(id), id, cacheKey))))
+	}
+	return cacheKey, true
 }
 
 // resolveCacheTypes returns whether direct and semantic search paths should
@@ -588,6 +627,21 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		// no-search-path narrow, etc.). Without state we have no telemetry
 		// to stamp and no entry to write.
 		return res, nil, nil
+	}
+	if extraFields.Provider == schemas.Codex && state.CodexProvider == "" {
+		plugin.clearCacheState(requestID)
+		return res, nil, nil
+	}
+	if state.CodexProvider != "" && !state.ShortCircuited {
+		selectedID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+		_, selectedOK := state.CodexEligibleKeyIDs[selectedID]
+		scope, _, authErr := plugin.codexCacheScopeResolver(ctx, schemas.ModelProvider(state.CodexProvider), state.CodexModel)
+		if extraFields.Provider != schemas.Codex || string(extraFields.Provider) != state.CodexProvider ||
+			extraFields.OriginalModelRequested != state.CodexModel || !selectedOK || authErr != nil || scope != state.CodexScope {
+			plugin.clearCacheState(requestID)
+			return res, nil, nil
+		}
+		cacheKey = fmt.Sprintf("codex-%x", sha256.Sum256([]byte(state.CodexProvider+"\x00"+state.CodexModel+"\x00"+state.CodexScope+"\x00"+cacheKey)))
 	}
 
 	// Free state once the request is fully observed. For non-streams that's
@@ -851,6 +905,10 @@ func (plugin *Plugin) Cleanup() error {
 // serving traffic; semantic search is silently skipped while it's nil.
 func (plugin *Plugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExecutor) {
 	plugin.embeddingRequestExecutor = executor
+}
+
+func (plugin *Plugin) SetCodexCacheScopeResolver(resolver CodexCacheScopeResolver) {
+	plugin.codexCacheScopeResolver = resolver
 }
 
 // ClearCacheForKey deletes every entry written under the given cache_key.

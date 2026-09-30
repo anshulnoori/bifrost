@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tailnet-lifecycle-proof",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-23",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "observability": { "enabled": false },
+  "containers": [{
+    "class_name": "PrivateProbe",
+    "image": "./Dockerfile",
+    "instance_type": "basic",
+    "max_instances": 1
+  }],
+  "durable_objects": {
+    "bindings": [{ "name": "PROBE", "class_name": "PrivateProbe" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PrivateProbe"] }]
+}

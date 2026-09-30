@@ -268,6 +268,7 @@ export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
 export interface ModelProviderKey {
 	id: string;
 	name: string;
+	codex_reserve_percent?: number | null;
 	value?: SecretVar;
 	models?: string[];
 	blacklisted_models?: string[];
@@ -771,6 +772,7 @@ interface BaseCacheConfig {
 	cache_by_provider: boolean;
 	vector_store_namespace?: string;
 	default_cache_key?: string;
+	scope_by_virtual_key?: boolean;
 	created_at?: string;
 	updated_at?: string;
 }

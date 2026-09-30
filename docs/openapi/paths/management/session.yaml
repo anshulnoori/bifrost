@@ -1,6 +1,85 @@
+oidc-login:
+  post:
+    operationId: startDashboardOIDC
+    summary: Sign in to the dashboard with Tailscale
+    description: |
+      Starts the configured OIDC authorization-code flow with S256 PKCE.
+      Requires enabled dashboard authentication, encrypted persistence, and an
+      Origin header equal to the configured callback origin. Sets an HttpOnly,
+      Secure, SameSite=Lax browser-binding cookie. State expires after five minutes.
+      No caller-supplied issuer, return URL, or identity header is accepted.
+    tags: [Session]
+    security: []
+    parameters:
+      - in: header
+        name: Origin
+        required: true
+        schema:
+          type: string
+    responses:
+      '303':
+        description: Redirect to the IdP, or to the login page with a fixed error code.
+        headers:
+          Location:
+            schema:
+              type: string
+          Set-Cookie:
+            schema:
+              type: string
+
+oidc-callback:
+  get:
+    operationId: completeDashboardOIDC
+    summary: Complete dashboard OIDC sign-in
+    description: |
+      Consumes browser-bound state once across replicas, then verifies the ID
+      token signature, issuer, audience, expiry, nonce, and allowed subject.
+      Issues an independent Bifrost admin session, not an upstream bearer token.
+      All responses use no-store and no-referrer. Raw provider errors are not returned.
+    tags: [Session]
+    security: []
+    parameters:
+      - in: query
+        name: state
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: code
+        schema:
+          type: string
+      - in: query
+        name: error
+        schema:
+          type: string
+      - in: cookie
+        name: __Host-bifrost_oidc
+        required: true
+        schema:
+          type: string
+    responses:
+      '303':
+        description: Redirect to /workspace with a session cookie, or /login with a fixed error code.
+        headers:
+          Location:
+            schema:
+              type: string
+          Set-Cookie:
+            schema:
+              type: string
+
 login:
   post:
     operationId: login
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Login
     description: |
       Authenticates a user and returns a session token.
@@ -43,8 +122,18 @@ login:
 logout:
   post:
     operationId: logout
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Logout
-    description: Logs out the current user and invalidates the session token.
+    description: |
+      Logs out the current user and invalidates the session token.
     tags:
       - Session
     # Authenticated like every management endpoint (management API key), and the
@@ -70,8 +159,18 @@ logout:
 is-auth-enabled:
   get:
     operationId: isAuthEnabled
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Public endpoint - no authentication required |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Check if authentication is enabled
-    description: Returns whether authentication is enabled and if the current token is valid.
+    description: |
+      Returns whether authentication is enabled and if the current token is valid.
     tags:
       - Session
     # Public: callable before login so the UI can decide whether to prompt for
@@ -90,6 +189,15 @@ is-auth-enabled:
 ws-ticket:
   post:
     operationId: issueWSTicket
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Issue WebSocket ticket
     description: |
       Issues a short-lived ticket for authenticating WebSocket connections.

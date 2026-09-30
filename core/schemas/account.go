@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -13,6 +14,8 @@ import (
 )
 
 type KeyStatusType string
+
+var ErrCodexReserve = errors.New("Codex account is at its remaining-usage reserve or usage could not be checked")
 
 const (
 	KeyStatusSuccess          KeyStatusType = "success"
@@ -139,6 +142,7 @@ type Key struct {
 	Models                 WhiteList               `json:"models"`                              // List of models this key can access
 	BlacklistedModels      BlackList               `json:"blacklisted_models"`                  // List of models this key cannot access
 	Weight                 float64                 `json:"weight"`                              // Weight for load balancing between multiple keys
+	CodexReservePercent    *float64                `json:"codex_reserve_percent,omitempty"`     // Stop routing at or below this remaining subscription percentage; nil disables.
 	Aliases                KeyAliases              `json:"aliases,omitempty"`                   // Mapping of model identifiers to inference profiles
 	AzureKeyConfig         *AzureKeyConfig         `json:"azure_key_config,omitempty"`          // Azure-specific key configuration
 	VertexKeyConfig        *VertexKeyConfig        `json:"vertex_key_config,omitempty"`         // Vertex-specific key configuration

@@ -11,6 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCodexUsesOpenAIReferenceCostForGovernance(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{Model: "gpt-5.3-codex", Provider: "openai", Mode: "responses", InputCostPerToken: bifrost.Ptr(0.000002), OutputCostPerToken: bifrost.Ptr(0.000009)}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing})
+	response := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage:       &schemas.ResponsesResponseUsage{InputTokens: 123, OutputTokens: 17, TotalTokens: 140},
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ResponsesRequest, RoutingInfo: routingInfoFor(schemas.Codex, "gpt-5.3-codex")},
+	}}
+	// Reference API cost for budgets, not the subscriber's actual invoice.
+	assert.InDelta(t, 0.000399, s.CalculateCost(response, nil), 1e-12)
+}
+
 func TestCalculateCost_RealtimeTranscriptionPricingOverride(t *testing.T) {
 	pricing := configstoreTables.TableModelPricing{
 		Model:                  "gpt-4o-transcribe",

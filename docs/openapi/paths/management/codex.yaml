@@ -1,0 +1,140 @@
+connections:
+  parameters: &accountParameters
+    - &accountParameter
+      name: x-bf-codex-key
+      in: header
+      required: true
+      description: Configured Codex provider-key ID. This is not a credential.
+      schema: { type: string }
+  post:
+    operationId: startCodexConnection
+    summary: Start Codex device authorization
+    description: Replaces this provider account's previous connection. Never returns upstream credentials.
+    tags: [Providers]
+    security: &security
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Device authorization started. Response is not cacheable.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - &connectionSchema
+                  type: object
+                  required: [state]
+                  properties:
+                    id: { type: string, format: uuid }
+                    email: { type: string, description: 'OAuth display metadata only; not an authorization identity.' }
+                    state:
+                      type: string
+                      enum: [disconnected, pending, polling, connected, refreshing, expired, reconnect_required]
+                    expires_at: { type: string, format: date-time }
+                    created_at: { type: string, format: date-time }
+                    updated_at: { type: string, format: date-time }
+                - type: object
+                  properties:
+                    verification_url: { type: string, const: 'https://auth.openai.com/codex/device' }
+                    user_code: { type: string }
+                    interval_seconds: { type: integer, minimum: 1, maximum: 60 }
+      '401': &unauthorized
+        description: Genuine dashboard authentication is required, even when management auth is disabled or the route is whitelisted.
+      '503': &unavailable
+        description: Encrypted database storage is not configured.
+      '502': &upstream
+        description: Authorization could not complete. Upstream details are intentionally hidden.
+current:
+  parameters: *accountParameters
+  get:
+    operationId: getCurrentCodexConnection
+    summary: Get this provider account's connection status
+    tags: [Providers]
+    security: *security
+    responses:
+      '200': &status
+        description: Owner-scoped state. No credentials. Response is not cacheable.
+        content:
+          application/json:
+            schema: *connectionSchema
+      '401': *unauthorized
+      '409': &busy
+        description: Another replica owns the operation, or reconnect is required.
+      '503': *unavailable
+      '502': *upstream
+poll:
+  parameters: &id
+    - *accountParameter
+    - name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  post:
+    operationId: pollCodexConnection
+    summary: Poll this provider account's device authorization
+    description: Poll no faster than interval_seconds. Pending authorization returns 200 with state pending.
+    tags: [Providers]
+    security: *security
+    responses:
+      '200': *status
+      '401': *unauthorized
+      '404': &missing
+        description: Connection does not exist for this owner.
+      '409': *busy
+      '503': *unavailable
+      '502': *upstream
+usage:
+  parameters: *accountParameters
+  get:
+    operationId: getCodexSubscriptionUsage
+    summary: Get this account's subscription allowance windows
+    tags: [Providers]
+    security: *security
+    responses:
+      '200':
+        description: OpenAI usage snapshot. Missing windows are not unlimited allowance. Not cacheable.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plan_type: { type: string }
+                checked_at: { type: string, format: date-time }
+                rate_limit: &limits
+                  type: [object, 'null']
+                  properties:
+                    allowed: { type: boolean }
+                    limit_reached: { type: boolean }
+                    primary_window: &window
+                      type: [object, 'null']
+                      properties:
+                        used_percent: { type: [number, 'null'] }
+                        limit_window_seconds: { type: integer }
+                        reset_at: { type: integer, description: Unix timestamp in seconds }
+                    secondary_window: *window
+                additional_rate_limits:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      limit_name: { type: string }
+                      metered_feature: { type: string }
+                      rate_limit: *limits
+      '401': *unauthorized
+      '502':
+        description: Subscription usage is unavailable. No upstream error body is returned.
+      '503': *unavailable
+connection:
+  parameters: *id
+  delete:
+    operationId: disconnectCodexConnection
+    summary: Disconnect or cancel a Codex connection
+    description: Deletes local credentials. Does not revoke upstream sessions or stop previously admitted requests.
+    tags: [Providers]
+    security: *security
+    responses:
+      '200': *status
+      '401': *unauthorized
+      '404': *missing
+      '503': *unavailable
+      '502': *upstream

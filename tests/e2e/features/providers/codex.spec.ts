@@ -1,0 +1,203 @@
+import { test, expect } from '../../core/fixtures/base.fixture'
+
+for (const width of [320, 390, 1440]) {
+  test(`Codex account stays readable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 })
+    const email = 'personal.subscription.account@example.test'
+    const account = { id: 'mobile', name: 'Personal', models: ['*'], weight: 1, enabled: true }
+    const provider = { name: 'codex', keys: [account], network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
+    await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+    await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
+    await page.route('**/api/providers/codex/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+    await page.route('**/api/codex/connections**', route => route.fulfill({ json:
+      new URL(route.request().url()).pathname.endsWith('/usage')
+        ? { plan_type: 'pro', checked_at: new Date().toISOString(), rate_limit: { allowed: true, limit_reached: false, secondary_window: null, primary_window: { used_percent: 23, limit_window_seconds: 18000, reset_at: 1900000000 } } }
+        : { state: 'connected', email },
+    }))
+    await page.goto('/workspace/providers')
+    const closeSetup = page.getByRole('button', { name: 'Close for now', exact: true })
+    if (await closeSetup.isVisible()) await closeSetup.click()
+    const accountRow = page.getByTestId('codex-usage-mobile')
+    const trigger = accountRow.getByRole('button', { name: `Personal (${email}) subscription details` })
+    await expect(trigger).toBeVisible()
+    await expect(accountRow.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '77')
+    const widgetClose = page.getByTestId('onboarding-widget-close')
+    if (await widgetClose.isVisible()) await widgetClose.click()
+    const label = trigger.locator('span').first()
+    expect((await label.boundingBox())!.height).toBeLessThanOrEqual(80)
+    for (const expanded of [false, true]) {
+      if (expanded) await trigger.click()
+      await expect(trigger).toHaveAttribute('aria-expanded', String(expanded))
+      expect(await accountRow.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true)
+      const bounds = (await accountRow.boundingBox())!
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
+      if (expanded) {
+        await expect(accountRow.getByTestId('codex-account-email')).toHaveText(email)
+        await expect(accountRow.getByRole('button', { name: 'Edit connection' })).toBeInViewport()
+      }
+      if (process.env.CODEX_SCREENSHOT_DIR) await accountRow.screenshot({ animations: 'disabled', path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-${width}-${expanded ? 'expanded' : 'collapsed'}.png` })
+    }
+  })
+}
+
+test('Codex accounts use provider table, isolated usage bars and dashboard onboarding', async ({ page }) => {
+  const accounts = [
+    { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 as number | null },
+    { id: 'work', name: 'Work', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 },
+  ]
+  const provider = { name: 'codex', keys: accounts, network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  const states: Record<string, string> = { personal: 'connected', work: 'connected' }
+  let created = ''
+  let polls = 0
+  let fail = false
+  let checked = false
+  await page.route('**/api/providers/codex/keys/personal/refresh-models', route => {
+    checked = true
+    return route.fulfill({ json: { ...accounts[0], status: 'success' } })
+  })
+  await page.route('**/api/providers/codex/keys/personal', route => {
+    expect(route.request().method()).toBe('PUT')
+    expect(route.request().postDataJSON().id).toBe('personal')
+    Object.assign(accounts[0], route.request().postDataJSON())
+    return route.fulfill({ json: accounts[0] })
+  })
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/codex/keys', route => {
+    if (route.request().method() === 'POST') {
+      const account = route.request().postDataJSON()
+      expect(account.value).toBeUndefined()
+      accounts.push(account); states[account.id] = 'disconnected'; created = account.id
+      return route.fulfill({ json: account })
+    }
+    return route.fulfill({ json: { keys: accounts, total: accounts.length } })
+  })
+  await page.route('**/api/codex/connections**', async route => {
+    const key = route.request().headers()['x-bf-codex-key']
+    expect(route.request().headers()['x-bf-vk']).toBeUndefined()
+    expect(accounts.some(account => account.id === key)).toBeTruthy()
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/usage')) {
+      if (fail && key === 'work') return route.fulfill({ status: 502, json: { error: 'unavailable' } })
+      return route.fulfill({ json: { plan_type: key === 'work' ? 'pro' : 'plus', checked_at: new Date().toISOString(), rate_limit: {
+        allowed: false, limit_reached: true,
+        primary_window: { used_percent: 100, limit_window_seconds: 18000, reset_at: 1900000000 },
+        secondary_window: { used_percent: key === 'work' ? 95 : 68, limit_window_seconds: 604800, reset_at: 1900100000 },
+      } } })
+    }
+    if (route.request().method() === 'DELETE') states[key] = 'disconnected'
+    else if (path.endsWith('/poll')) {
+      polls++; states[key] = polls === 1 ? 'polling' : 'connected'
+      if (polls === 1) return route.fulfill({ status: 409, json: { error: 'another replica owns polling' } })
+    } else if (route.request().method() === 'POST') states[key] = 'pending'
+    const state = states[key]
+    return route.fulfill({ json: { state, ...(state === 'connected' && !(fail && key === 'work') ? { email: `${key}@example.test` } : {}), ...(state === 'disconnected' ? {} : { id: `connection-${key}` }),
+      ...(state === 'pending' ? { user_code: 'TEST-ONLY', verification_url: 'https://auth.openai.com/codex/device', interval_seconds: 1 } : {}),
+    } })
+  })
+  await page.goto('/workspace/providers')
+  await expect(page.getByTestId('keys-table')).toBeVisible({ timeout: 15000 })
+  const closeSetup = page.getByRole('button', { name: 'Close for now', exact: true })
+  if (await closeSetup.isVisible()) await closeSetup.click()
+  const personal = page.getByTestId('codex-usage-personal')
+  const work = page.getByTestId('codex-usage-work')
+  await expect(personal.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '0')
+  await expect(work.getByRole('progressbar', { name: 'Remaining allowance', exact: true })).toHaveAttribute('aria-valuenow', '0')
+  await expect(personal.getByRole('button', { name: 'Personal (personal@example.test) subscription details' })).toHaveAttribute('aria-expanded', 'false')
+  await personal.getByRole('button', { name: 'Personal (personal@example.test) subscription details' }).click()
+  await work.getByRole('button', { name: 'Work (work@example.test) subscription details' }).click()
+  await expect(personal.getByTestId('codex-account-email')).toHaveText('personal@example.test')
+  await expect(work.getByTestId('codex-account-email')).toHaveText('work@example.test')
+  await expect(work).toContainText('Reserve reached')
+  await expect(work).toContainText('Pause at 25% weekly allowance remaining')
+  await expect(personal).not.toContainText('Reserve reached')
+  await expect(personal).toContainText('Pause at 25% weekly allowance remaining')
+  await personal.getByRole('button', { name: 'Edit connection' }).click()
+  await page.getByLabel('Name (optional)', { exact: true }).fill('Home')
+  await expect(page.getByLabel('Remaining allowance reserve (%)')).toHaveCount(0)
+  await page.getByTestId('key-save-btn').click()
+  await personal.getByRole('link', { name: 'Edit in Budgets & Limits' }).click()
+  const limit = page.getByTestId('subscription-limit-personal')
+  await expect(page.getByRole('tab', { name: 'Subscription Limits' })).toHaveAttribute('data-state', 'active')
+  await expect(page.getByTestId('subscription-limit-work').getByRole('spinbutton')).toHaveValue('25')
+  await limit.getByRole('spinbutton').fill('101')
+  await limit.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(limit.getByRole('alert')).toBeVisible()
+  expect(accounts[0].codex_reserve_percent).toBe(25)
+  await limit.getByRole('spinbutton').fill('40')
+  await limit.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect.poll(() => accounts[0].codex_reserve_percent).toBe(40)
+  await expect(limit.getByRole('status')).toHaveText('Saved')
+  expect(accounts[1].codex_reserve_percent).toBe(25)
+  await page.screenshot({ path: '../../.amp/in/artifacts/subscription-limits.png' })
+  await page.reload()
+  await expect(limit.getByRole('spinbutton')).toHaveValue('40')
+  await page.goto('/workspace/providers')
+  await expect(personal.getByRole('button', { name: 'Home (personal@example.test) subscription details' })).toBeVisible()
+  await personal.getByRole('button', { name: 'Home (personal@example.test) subscription details' }).click()
+  await expect(personal.getByTestId('codex-account-email')).toHaveText('personal@example.test')
+  await expect(personal).toContainText('Reserve reached')
+  await personal.getByRole('link', { name: 'Edit in Budgets & Limits' }).click()
+  await limit.getByRole('spinbutton').fill('')
+  await limit.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect.poll(() => accounts[0].codex_reserve_percent).toBeNull()
+  await page.goto('/workspace/providers')
+  await personal.getByRole('button', { name: 'Home (personal@example.test) subscription details' }).click()
+  await personal.getByRole('button', { name: 'Edit connection' }).click()
+  await page.getByLabel('Name (optional)', { exact: true }).fill('')
+  await page.getByTestId('key-save-btn').click()
+  await expect.poll(() => accounts[0].codex_reserve_percent).toBeNull()
+  await expect(personal.getByRole('button', { name: 'personal@example.test subscription details', exact: true })).toBeVisible()
+  expect(accounts[0].name).toMatch(/^Codex [\da-f-]{36}$/)
+  await personal.getByRole('button', { name: 'Edit connection' }).click()
+  await expect(page.getByLabel('Name (optional)', { exact: true })).toHaveValue('')
+  await page.getByLabel('Name (optional)', { exact: true }).fill('personal@example.test')
+  await page.getByTestId('key-save-btn').click()
+  await expect.poll(() => accounts[0].name).toBe('personal@example.test')
+  await expect(personal.getByRole('button', { name: 'personal@example.test subscription details', exact: true })).toBeVisible()
+  await expect(personal.getByRole('button', { name: 'Check access' })).toBeVisible()
+  await personal.getByRole('button', { name: 'Check access' }).click()
+  await expect.poll(() => checked).toBe(true)
+  await personal.getByRole('button', { name: 'Deactivate', exact: true }).click()
+  await expect(personal.getByRole('button', { name: 'Activate', exact: true })).toBeVisible()
+  await expect(personal.getByRole('button', { name: 'Check access' })).toBeDisabled()
+  await work.getByRole('button', { name: 'Work (work@example.test) subscription details' }).click()
+  await expect(work.getByRole('button', { name: 'Deactivate', exact: true })).toBeVisible()
+  await personal.getByRole('button', { name: 'Activate', exact: true }).click()
+  await expect(personal.getByRole('button', { name: 'Check access' })).toBeEnabled()
+  await expect(personal.getByRole('link', { name: 'ChatGPT usage' })).toHaveAttribute('href', 'https://chatgpt.com/codex/settings/usage')
+  await expect(personal.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '0')
+  await expect(personal.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '32')
+  await expect(work.getByRole('progressbar', { name: '5h remaining' })).toHaveAttribute('aria-valuenow', '0')
+  await expect(work.getByRole('progressbar', { name: '7d remaining' })).toHaveAttribute('aria-valuenow', '5')
+  await expect(page.getByText(/not endorsed|permitted coding|Bifrost virtual key/i)).toHaveCount(0)
+  await expect(page.getByText('Model list refreshed', { exact: true })).toHaveCount(0, { timeout: 10000 })
+  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-accounts.png` })
+  await page.getByTestId('add-key-btn').click()
+  const form = page.getByTestId('key-form')
+  await expect(form.getByLabel('Name (optional)', { exact: true })).toHaveValue('')
+  await expect(form.getByLabel('API Key', { exact: true })).toHaveCount(0)
+  await page.getByTestId('key-save-btn').click()
+  await expect(page.getByTestId('codex-onboarding')).toBeVisible()
+  expect(accounts.find(account => account.id === created)?.name).toMatch(/^Codex [\da-f-]{36}$/)
+  await expect(form.getByLabel('Name (optional)', { exact: true })).toHaveValue('')
+  await page.getByTestId('codex-connect').click()
+  await expect(page.getByTestId('codex-device-code')).toContainText('TEST-ONLY')
+  await expect(page.getByRole('link', { name: 'Continue to OpenAI' })).toHaveAttribute('href', 'https://auth.openai.com/codex/device')
+  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-pending.png` })
+  await expect(page.getByTestId('codex-connected')).toBeVisible({ timeout: 15000 })
+  expect(polls).toBe(2)
+  await page.getByTestId('codex-disconnect').click()
+  await expect(page.getByTestId('codex-status')).toHaveText('disconnected')
+  expect(states.personal).toBe('connected'); expect(states.work).toBe('connected')
+  await page.getByTestId('key-cancel-btn').click()
+  await expect(page.getByTestId(`codex-usage-${created}`)).toContainText('disconnected')
+  fail = true
+  await work.getByRole('button', { name: 'Refresh usage' }).click()
+  await expect(work).toContainText('Usage unavailable')
+  await expect(work.getByTestId('codex-account-email')).toHaveText('Email unavailable')
+  await expect(work.getByRole('button', { name: 'Work subscription details', exact: true })).toBeVisible()
+  if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-email-unavailable.png` })
+  await expect(work.getByRole('progressbar')).toHaveCount(0)
+  await expect(personal.getByRole('progressbar', { name: '5h remaining', exact: true })).toHaveAttribute('aria-valuenow', '0')
+})

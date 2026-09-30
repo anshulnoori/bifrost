@@ -29,6 +29,7 @@ import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, RefreshC
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
+import CodexUsage from "./codexUsage";
 
 interface Props {
 	className?: string;
@@ -92,8 +93,8 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
 	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
-	const entityLabel = isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
-	const entityLabelPlural = isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
+	const entityLabel = providerName === "codex" ? "account" : isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
+	const entityLabelPlural = providerName === "codex" ? "accounts" : isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
@@ -105,6 +106,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const isMutatingProviderKey = isUpdatingProviderKey || isDeletingProviderKey;
 	const [togglingKeyIds, setTogglingKeyIds] = useState<Set<string>>(new Set());
 	const [refreshingKeyIds, setRefreshingKeyIds] = useState<Set<string>>(new Set());
+	const [usageRevision, setUsageRevision] = useState(0);
 	const [showAddNewKeyDialog, setShowAddNewKeyDialog] = useState<{ show: boolean; keyId: string | null } | undefined>(undefined);
 	const [showDeleteKeyDialog, setShowDeleteKeyDialog] = useState<{ show: boolean; keyId: string } | undefined>(undefined);
 
@@ -187,7 +189,10 @@ export default function ModelProviderKeysTableView({ provider, className, header
 			{showAddNewKeyDialog && (
 				<AddNewKeySheet
 					show={showAddNewKeyDialog.show}
-					onCancel={() => setShowAddNewKeyDialog(undefined)}
+					onCancel={() => {
+						setShowAddNewKeyDialog(undefined);
+						setUsageRevision((value) => value + 1);
+					}}
 					provider={provider}
 					keyId={showAddNewKeyDialog.keyId}
 					providerName={providerName}
@@ -254,9 +259,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							<col className="w-[12%]" />
 							<col className="w-[12%]" />
 						</colgroup>
-						<TableHeader className="w-full">
+						<TableHeader className={providerName === "codex" ? "sr-only" : "w-full"}>
 							<TableRow>
-								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
+								<TableHead>{providerName === "codex" ? "Account" : isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>
@@ -272,6 +277,27 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							)}
 							{keys.map((key) => {
 								const isKeyEnabled = key.enabled ?? true;
+								if (providerName === "codex")
+									return (
+										<CodexUsage
+											key={key.id}
+											account={key}
+											revision={usageRevision}
+											canUpdate={hasUpdateProviderAccess}
+											checking={isRefreshing}
+											onCheck={(label) => handleRefreshKeyModels(key.id, label)}
+											onEdit={() => setShowAddNewKeyDialog({ show: true, keyId: key.id })}
+											menu={
+												<ProviderKeyActionsMenu
+													keyId={key.id}
+													hasUpdateAccess={hasUpdateProviderAccess}
+													hasDeleteAccess={hasDeleteProviderAccess}
+													onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
+													onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
+												/>
+											}
+										/>
+									);
 								return (
 									<TableRow
 										key={key.id}

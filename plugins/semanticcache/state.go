@@ -22,6 +22,10 @@ type cacheState struct {
 	ParamsHash            string
 	Embeddings            []float32
 	EmbeddingsInputTokens int
+	CodexProvider         string
+	CodexModel            string
+	CodexScope            string
+	CodexEligibleKeyIDs   map[string]struct{}
 
 	// FilteredInput caches getInputForCaching(req) so attachment extraction,
 	// embedding text extraction, and history-threshold checks reuse the same

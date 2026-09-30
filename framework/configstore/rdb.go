@@ -22,6 +22,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/codex"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -151,6 +152,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		Models:                 dbKey.Models,
 		BlacklistedModels:      dbKey.BlacklistedModels,
 		Weight:                 getWeight(dbKey.Weight),
+		CodexReservePercent:    dbKey.CodexReservePercent,
 		Enabled:                dbKey.Enabled,
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
 		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
@@ -183,6 +185,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		Models:                 key.Models,
 		BlacklistedModels:      key.BlacklistedModels,
 		Weight:                 &key.Weight,
+		CodexReservePercent:    key.CodexReservePercent,
 		Enabled:                key.Enabled,
 		UseForBatchAPI:         key.UseForBatchAPI,
 		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
@@ -780,6 +783,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				SGLKeyConfig:           key.SGLKeyConfig,
 				DatabricksKeyConfig:    key.DatabricksKeyConfig,
 				GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+				CodexReservePercent:    key.CodexReservePercent,
 				ConfigHash:             keyHash,
 				Status:                 string(key.Status),
 				Description:            key.Description,
@@ -1025,6 +1029,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			SGLKeyConfig:           key.SGLKeyConfig,
 			DatabricksKeyConfig:    key.DatabricksKeyConfig,
 			GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+			CodexReservePercent:    key.CodexReservePercent,
 			ConfigHash:             keyHash,
 			Status:                 string(key.Status),
 			Description:            key.Description,
@@ -1182,6 +1187,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			SGLKeyConfig:           key.SGLKeyConfig,
 			DatabricksKeyConfig:    key.DatabricksKeyConfig,
 			GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+			CodexReservePercent:    key.CodexReservePercent,
 			ConfigHash:             key.ConfigHash,
 			Status:                 string(key.Status),
 			Description:            key.Description,
@@ -1261,6 +1267,11 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 
 	if err := s.cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx, txDB, dbProvider.Name); err != nil {
 		return err
+	}
+	if provider == schemas.Codex {
+		if err := txDB.WithContext(ctx).Where("owner LIKE ?", "provider:codex:%").Delete(&codex.Connection{}).Error; err != nil {
+			return err
+		}
 	}
 
 	// Store the budget and rate limit IDs before deleting
@@ -1517,6 +1528,11 @@ func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas
 			return ErrNotFound
 		}
 		return err
+	}
+	if provider == schemas.Codex {
+		if err := txDB.WithContext(ctx).Where("owner = ?", "provider:codex:"+keyID).Delete(&codex.Connection{}).Error; err != nil {
+			return err
+		}
 	}
 	if err := txDB.WithContext(ctx).
 		Table("governance_virtual_key_provider_config_keys").
@@ -5806,6 +5822,11 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 		// created_at is immutable: Save writes every column, so a caller passing a rule it
 		// didn't read from the DB would otherwise zero it out. Always keep the persisted value.
 		rule.CreatedAt = existing.CreatedAt
+		// enabled is NOT NULL with a DB default, and Save writes a nil Enabled as NULL.
+		// An omitted value keeps the persisted state.
+		if rule.Enabled == nil {
+			rule.Enabled = existing.Enabled
+		}
 		if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 			return err
 		}
@@ -5903,6 +5924,11 @@ func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.Ta
 			// selects every column, so an unset CreatedAt would overwrite the original insert
 			// timestamp with the zero time. Carry the persisted value forward.
 			rule.CreatedAt = existing.CreatedAt
+			// config.json rules usually omit "enabled"; keep the persisted value instead of
+			// letting Save write NULL into the NOT NULL column.
+			if rule.Enabled == nil {
+				rule.Enabled = existing.Enabled
+			}
 			if err := tx.Omit("Targets").Save(rule).Error; err != nil {
 				return err
 			}

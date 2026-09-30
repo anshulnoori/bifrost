@@ -19,6 +19,7 @@ type capturePluginsStore struct {
 	existingPlugin  *configstoreTables.TablePlugin
 	capturedConfig  map[string]any
 	capturedEnabled bool
+	capturedPath    *string
 }
 
 func (s *capturePluginsStore) GetPlugin(_ context.Context, name string) (*configstoreTables.TablePlugin, error) {
@@ -33,6 +34,7 @@ func (s *capturePluginsStore) UpdatePlugin(_ context.Context, plugin *configstor
 		s.capturedConfig = cfg
 	}
 	s.capturedEnabled = plugin.Enabled
+	s.capturedPath = plugin.Path
 	return nil
 }
 
@@ -345,6 +347,20 @@ func TestRestoreRedacted_FullyRedactedSentinel(t *testing.T) {
 	ba := got["push_gateway"].(map[string]any)["basic_auth"].(map[string]any)
 	if ba["password"] != realPassword {
 		t.Errorf("sentinel password not restored: got %v, want %q", ba["password"], realPassword)
+	}
+}
+
+func TestUpdatePlugin_ConfigOnlyPreservesNativePath(t *testing.T) {
+	SetLogger(&mockLogger{})
+	path := "/installed/headroom.so"
+	store := &capturePluginsStore{existingPlugin: &configstoreTables.TablePlugin{Name: "headroom", Path: &path, IsCustom: true, Config: map[string]any{}}}
+	h := &PluginsHandler{pluginsLoader: noopPluginsLoader{}, configStore: store}
+	ctx := buildUpdateRequest(t, map[string]any{"enabled": true, "config": map[string]any{"enabled": false}})
+	ctx.SetUserValue("name", "headroom")
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updatePlugin(ctx)
+	if ctx.Response.StatusCode() != 200 || store.capturedPath == nil || *store.capturedPath != path {
+		t.Fatalf("configuration-only update lost installed path: status=%d path=%v", ctx.Response.StatusCode(), store.capturedPath)
 	}
 }
 

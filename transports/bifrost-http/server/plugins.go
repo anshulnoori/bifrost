@@ -101,9 +101,14 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		return governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
+		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
 			bifrostConfig.MCPCatalog, inMemoryStore)
+		if err != nil {
+			return nil, err
+		}
+		governancePlugin.StartResetWorkers(ctx)
+		return governancePlugin, nil
 
 	case routing.PluginName:
 		routingConfig, err := MarshalPluginConfig[routing.Config](pluginConfig)
@@ -137,7 +142,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal semantic cache plugin config: %w", err)
 		}
-		return semanticcache.Init(ctx, semanticConfig, logger, bifrostConfig.VectorStore)
+		plugin, err := semanticcache.Init(ctx, semanticConfig, logger, bifrostConfig.VectorStore)
+		if err != nil {
+			return nil, err
+		}
+		plugin.(*semanticcache.Plugin).SetCodexCacheScopeResolver(lib.CodexCacheScopeResolver(bifrostConfig.ConfigStore))
+		return plugin, nil
 
 	case otel.PluginName:
 		otelConfig, err := MarshalPluginConfig[otel.Config](pluginConfig)

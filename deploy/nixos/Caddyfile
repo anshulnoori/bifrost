@@ -1,0 +1,94 @@
+{
+	admin off
+	auto_https off
+	# Do not write prompts, credentials, or OAuth callback URLs to access/error logs.
+	log {
+		output discard
+	}
+}
+
+(inference) {
+	request_body {
+		# Match Bifrost's default body limit, including image-heavy requests.
+		max_size 100MiB
+	}
+	@messages path /v1/messages
+	rewrite @messages /anthropic/v1/messages
+	reverse_proxy 127.0.0.1:{$BIFROST_PORT:8080} {
+		# A positive header allowlist prevents provider-key and routing overrides.
+		header_up -*
+		header_up X-Bf-Vk {http.request.header.X-Bf-Vk}
+		header_up Content-Type application/json
+		header_up Accept {http.request.header.Accept}
+		header_up Anthropic-Version {http.request.header.Anthropic-Version}
+		header_up X-Forwarded-Proto https
+		# Default flushing supports SSE and retains cancellation propagation.
+		# Do not use flush_interval -1: that disables early disconnect cancellation.
+	}
+}
+
+(inference_routes) {
+	route {
+		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/headroom/mcp"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
+		respond @invalid 404
+		@encoded header Content-Encoding *
+		respond @encoded 415
+		@upgrade header Upgrade *
+		respond @upgrade 400
+		@json expression `{http.request.method} == "GET" || {http.request.header.Content-Type}.startsWith("application/json")`
+		handle @json {
+			route {
+				# Reject ambiguous credentials rather than picking an arbitrary identity.
+				@ambiguous expression `({http.request.header.Authorization} != "" && {http.request.header.X-Bf-Vk} != "") || ({http.request.header.X-Api-Key} != "" && ({http.request.header.Authorization} != "" || {http.request.header.X-Bf-Vk} != ""))`
+				respond @ambiguous 401
+				@bearer header_regexp bearer Authorization "^Bearer (sk-bf-[A-Za-z0-9_-]+)$"
+				handle @bearer {
+					request_header X-Bf-Vk {re.bearer.1}
+					import inference
+				}
+				@anthropic header_regexp anthropic X-Api-Key ^(sk-bf-[A-Za-z0-9_-]+)$
+				handle @anthropic {
+					request_header X-Bf-Vk {re.anthropic.1}
+					import inference
+				}
+				@vk header_regexp vk X-Bf-Vk ^sk-bf-[A-Za-z0-9_-]+$
+				handle @vk {
+					import inference
+				}
+				respond 401
+			}
+		}
+		respond 415
+	}
+}
+
+http://:{$INFERENCE_PORT:8081} {
+	bind 127.0.0.1
+	# The public edge must traverse the Service, not this node's Bifrost process.
+	# Reject everything except inference and its catalog before the private listener.
+	route {
+		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/headroom/mcp"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
+		respond @invalid 404
+		reverse_proxy {$INFERENCE_SERVICE_URL:https://ai.mongoose-silverside.ts.net} {
+			header_up Host {upstream_hostport}
+		}
+	}
+}
+
+http://:{$ADMIN_PORT:8082} {
+	bind 127.0.0.1
+	request_header -X-Forwarded-*
+	@inference path /v1/* /anthropic/*
+	handle @inference {
+		import inference_routes
+	}
+	handle {
+		reverse_proxy 127.0.0.1:{$BIFROST_PORT:8080} {
+			header_up -Tailscale-*
+			header_up -Cf-Access-*
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up X-Forwarded-Proto https
+		}
+	}
+}

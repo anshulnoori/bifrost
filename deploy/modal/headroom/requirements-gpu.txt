@@ -1,0 +1,5 @@
+# Resolve with uv pip compile --python-version 3.11 --generate-hashes.
+# Linux PyPI torch includes the CUDA runtime; the Modal host supplies the driver.
+-c ../../../integrations/headroom/requirements.lock
+headroom-ai[proxy,ml]==0.38.0
+torch==2.12.1

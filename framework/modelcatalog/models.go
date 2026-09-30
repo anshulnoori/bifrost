@@ -310,6 +310,12 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	}
 
 	if allowedModels.IsUnrestricted() {
+		// Codex catalogs require the admitted subscriber's OAuth identity. A
+		// background/global catalog cannot enumerate them safely. The VK policy
+		// permits the attempt; the subscriber's upstream account decides support.
+		if provider == schemas.Codex {
+			return true
+		}
 		if isCustomProvider && hasListModelsEndpointDisabled {
 			return true
 		}

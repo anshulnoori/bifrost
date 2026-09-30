@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
@@ -1971,6 +1972,16 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		c := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 		c.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 		c.SetValue(schemas.BifrostContextKeyValidateKeys, true)
+		if provider == schemas.Codex && keyID != "" {
+			// This internal, per-key catalog operation is not an inference request.
+			// Give it only the configured account being refreshed; never borrow
+			// a caller's virtual key or authorize a provider-wide credential pool.
+			g := grant.New()
+			permit := grant.NewPermit("catalog", keyID, "Codex model discovery", true, false,
+				[]schemas.ProviderPermit{{Provider: string(provider), AllowedModels: schemas.WhiteList{"*"}, KeyIDs: schemas.WhiteList{keyID}}}, nil)
+			g.SetAccess(grant.NewAccess([]schemas.Permit{permit}, nil, grant.Intersect, nil))
+			c.SetGrant(g)
+		}
 		return c
 	}
 
@@ -2261,6 +2272,7 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	// Wire the embedding executor on the new instance before syncing.
 	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+		semanticCachePlugin.SetCodexCacheScopeResolver(lib.CodexCacheScopeResolver(s.Config.ConfigStore))
 	}
 	// Both at once: applied separately, the classifier spends the gap between
 	// them configured for a store it has not been given, and warms a throwaway
@@ -2397,12 +2409,19 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
 	s.MCPServerHandler = mcpServerHandler
+	headroomMCPHandler, err := handlers.NewHeadroomMCPHandler(ctx, s.Config, s, s.OAuth2IdentityResolver, vkCache)
+	if err != nil {
+		return fmt.Errorf("failed to initialize Headroom MCP server handler: %v", err)
+	}
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	s.MCPServerHandler.RegisterRoutes(s.Router, middlewares...)
+	if headroomMCPHandler != nil {
+		headroomMCPHandler.RegisterRoutes(s.Router, middlewares...)
+	}
 	return nil
 }
 
@@ -2509,6 +2528,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
+	if err := sessionHandler.ConfigureOIDCFromEnv(); err != nil {
+		return fmt.Errorf("dashboard OIDC configuration: %w", err)
+	}
 	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, callbacks)
 	featureFlagsHandler := handlers.NewFeatureFlagsHandler(s.Config.FeatureFlags, s.Config.ConfigStore)
 	// Going ahead with API handlers
@@ -2524,6 +2546,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
+	handlers.NewCodexHandler(s.Config.ConfigStore).RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	if virtualMCPHandler != nil {
 		virtualMCPHandler.RegisterRoutes(s.Router, middlewares...)
@@ -2535,6 +2558,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	handlers.NewHeadroomHandler().RegisterRoutes(s.Router, middlewares...)
 	if sessionHandler != nil {
 		sessionHandler.RegisterRoutes(s.Router, middlewares...)
 	}
@@ -2891,6 +2915,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	account := lib.NewBaseAccount(s.Config)
 	s.Client, err = bifrost.Init(ctx, schemas.BifrostConfig{
 		Account:            account,
+		KeyPoolFilter:      lib.CodexKeyPoolFilter(s.Config.ConfigStore),
 		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
 		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
@@ -2991,6 +3016,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+		semanticCachePlugin.SetCodexCacheScopeResolver(lib.CodexCacheScopeResolver(s.Config.ConfigStore))
 	}
 	// Wire the routing plugin's semantic-classification embedding path. The
 	// executor cannot be passed at Init: the plugin is built while the bifrost

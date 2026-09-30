@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useBranding } from "@/lib/hooks/useBranding";
-import { getErrorMessage, useLoginMutation } from "@/lib/store/apis";
+import { getErrorMessage, useLoginMutation, useIsAuthEnabledQuery } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff } from "lucide-react";
@@ -35,12 +35,24 @@ export default function LoginView() {
 	const [password, setPassword] = useState("");
 	const [showPassword, setShowPassword] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
+	const { data: auth } = useIsAuthEnabledQuery();
 	const navigate = useNavigate();
 	const [isLoading, setIsLoading] = useState(false);
 	const [login, { isLoading: isLoggingIn }] = useLoginMutation();
 
 	useEffect(() => {
 		setMounted(true);
+		const error = new URLSearchParams(window.location.search).get("oidc_error");
+		if (error)
+			setErrorMessage(
+				error === "denied"
+					? "This Tailscale identity is not allowed to administer Bifrost."
+					: error === "cancelled"
+						? "Sign-in was cancelled. You can try again."
+						: error === "unavailable"
+							? "Tailscale sign-in is unavailable. Please try again later."
+							: "Sign-in expired or could not be verified. Please try again.",
+			);
 	}, []);
 
 	const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -74,55 +86,75 @@ export default function LoginView() {
 						<p className="text-muted-foreground text-sm">Sign in to your account to continue</p>
 					</div>
 
-					<form onSubmit={handleSubmit} className="space-y-5">
-						{errorMessage && <div className="bg-destructive/10 text-destructive rounded-sm p-3 text-sm">{errorMessage}</div>}
-
-						<div className="space-y-2">
-							<Label htmlFor="username" className="text-sm font-medium">
-								Username
-							</Label>
-							<Input
-								id="username"
-								type="text"
-								placeholder="Enter your username"
-								value={username}
-								onChange={(e) => setUsername(e.target.value)}
-								required
-								className="text-sm"
-								autoComplete="username"
-							/>
+					{errorMessage && (
+						<div role="alert" className="bg-destructive/10 text-destructive rounded-sm p-3 text-sm">
+							{errorMessage}
 						</div>
-
-						<div className="space-y-2">
-							<Label htmlFor="password" className="text-sm font-medium">
-								Password
-							</Label>
-							<div className="relative">
-								<Input
-									id="password"
-									type={showPassword ? "text" : "password"}
-									placeholder="Enter your password"
-									value={password}
-									onChange={(e) => setPassword(e.target.value)}
-									required
-									className="pr-10 text-sm"
-									autoComplete="current-password"
+					)}
+					{auth?.oidc_enabled && (
+						<form action="/api/session/oidc/login" method="post">
+							<Button type="submit" size="lg" className="w-full gap-2" data-testid="login-tailscale">
+								{/* Unmodified icons from https://tailscale.com/press, October 2025 brand toolkit. */}
+								<img
+									src={mounted && resolvedTheme === "dark" ? "/tailscale-icon-dark.svg" : "/tailscale-icon-light.svg"}
+									alt=""
+									width={20}
+									height={20}
+									className="size-5 shrink-0"
 								/>
-								<button
-									type="button"
-									onClick={() => setShowPassword(!showPassword)}
-									className="text-muted-foreground hover:text-foreground absolute top-1/2 right-3 -translate-y-1/2 transition-colors"
-									aria-label={showPassword ? "Hide password" : "Show password"}
-								>
-									{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-								</button>
+								Sign in with Tailscale
+							</Button>
+						</form>
+					)}
+					{auth && !auth.oidc_enabled && (
+						<form onSubmit={handleSubmit} className="space-y-5">
+							<div className="space-y-2">
+								<Label htmlFor="username" className="text-sm font-medium">
+									Username
+								</Label>
+								<Input
+									id="username"
+									type="text"
+									placeholder="Enter your username"
+									value={username}
+									onChange={(e) => setUsername(e.target.value)}
+									required
+									className="text-sm"
+									autoComplete="username"
+								/>
 							</div>
-						</div>
 
-						<Button type="submit" className="h-9 w-full text-sm" isLoading={isLoading} disabled={isLoading}>
-							{isLoading || isLoggingIn ? "Signing in..." : "Sign in"}
-						</Button>
-					</form>
+							<div className="space-y-2">
+								<Label htmlFor="password" className="text-sm font-medium">
+									Password
+								</Label>
+								<div className="relative">
+									<Input
+										id="password"
+										type={showPassword ? "text" : "password"}
+										placeholder="Enter your password"
+										value={password}
+										onChange={(e) => setPassword(e.target.value)}
+										required
+										className="pr-10 text-sm"
+										autoComplete="current-password"
+									/>
+									<button
+										type="button"
+										onClick={() => setShowPassword(!showPassword)}
+										className="text-muted-foreground hover:text-foreground absolute top-1/2 right-3 -translate-y-1/2 transition-colors"
+										aria-label={showPassword ? "Hide password" : "Show password"}
+									>
+										{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+									</button>
+								</div>
+							</div>
+
+							<Button type="submit" className="h-9 w-full text-sm" isLoading={isLoading} disabled={isLoading}>
+								{isLoading || isLoggingIn ? "Signing in..." : "Sign in"}
+							</Button>
+						</form>
+					)}
 
 					{/* Social Links */}
 					<div className="flex items-center justify-center gap-4 pt-4">

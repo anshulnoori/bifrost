@@ -89,9 +89,10 @@ import { PromoCardStack } from "./ui/promoCardStack";
 
 // Cookie name for dismissing production setup card
 const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
+const RELEASE_DISMISSED_COOKIE = "bifrost_release_dismissed";
 // Closing the "setup checklist incomplete" promo card only snoozes that card
 // for a day — separate from the widget's own hidden/snoozed cookies, so it
-// doesn't affect whether the floating widget itself reappears on next nav.
+// doesn't change the floating widget's dismissal.
 const ONBOARDING_CARD_DISMISSED_COOKIE = "bifrost_onboarding_card_dismissed";
 
 // Custom MCP Icon Component
@@ -551,6 +552,7 @@ export default function AppSidebar() {
 		HIDDEN_UNTIL_NAV_COOKIE,
 		REMIND_LATER_COOKIE,
 		ONBOARDING_CARD_DISMISSED_COOKIE,
+		RELEASE_DISMISSED_COOKIE,
 	]);
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
 	const isOnboardingCardDismissed = !!cookies[ONBOARDING_CARD_DISMISSED_COOKIE];
@@ -561,28 +563,28 @@ export default function AppSidebar() {
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
 	// Alerting is currently surfaced under the existing governance permission
 	// until enterprise alerting gets its own RBAC resource.
-	const hasAlertingAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasAlertingAccess = useRbac(RbacResource.Governance, RbacOperation.View) && IS_ENTERPRISE;
 	const hasDashboardAccess = useRbac(RbacResource.Dashboard, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
 	const hasVirtualMCPsAccess = useRbac(RbacResource.VirtualMCPs, RbacOperation.View);
 	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
-	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
-	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
-	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
+	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View) && IS_ENTERPRISE;
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View) && IS_ENTERPRISE;
+	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View) && IS_ENTERPRISE;
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
-	const hasBusinessUnitsAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
-	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
+	const hasBusinessUnitsAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View) && IS_ENTERPRISE;
+	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View) && IS_ENTERPRISE;
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceLegacyAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
-	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
-	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
-	const hasCircuitBreakerAccess = useRbac(RbacResource.CircuitBreaker, RbacOperation.View);
-	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
-	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
+	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View) && IS_ENTERPRISE;
+	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View) && IS_ENTERPRISE;
+	const hasCircuitBreakerAccess = useRbac(RbacResource.CircuitBreaker, RbacOperation.View) && IS_ENTERPRISE;
+	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View) && IS_ENTERPRISE;
+	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View) && IS_ENTERPRISE;
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasFeatureFlagsAccess = useRbac(RbacResource.FeatureFlags, RbacOperation.View);
 	const isWarpEnabled = useFeatureFlag(FEATURE_FLAGS.warp);
@@ -590,12 +592,12 @@ export default function AppSidebar() {
 	const hasAPIKeyAccess = useRbac(RbacResource.APIKeys, RbacOperation.View);
 	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
 	const hasSkillsRepositoryAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.View);
-	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
-	const hasInventoryAccess = useRbac(RbacResource.Inventory, RbacOperation.View);
-	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View);
+	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View) && IS_ENTERPRISE;
+	const hasInventoryAccess = useRbac(RbacResource.Inventory, RbacOperation.View) && IS_ENTERPRISE;
+	const hasEdgeConfigAccess = useRbac(RbacResource.EdgeConfig, RbacOperation.View) && IS_ENTERPRISE;
 	const hasAnyEdgeControlAccess = hasDevicesAccess || hasInventoryAccess || hasEdgeConfigAccess;
-	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
-	const hasProjectsAccess = useRbac(RbacResource.Projects, RbacOperation.View);
+	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View) && IS_ENTERPRISE;
+	const hasProjectsAccess = useRbac(RbacResource.Projects, RbacOperation.View) && IS_ENTERPRISE;
 	const hasAnyGovernanceAccess =
 		hasVirtualKeysAccess ||
 		hasTeamsAccess ||
@@ -802,6 +804,13 @@ export default function AppSidebar() {
 				url: "/workspace/plugins",
 				icon: Puzzle,
 				description: "Manage custom plugins",
+				hasAccess: hasPluginsAccess,
+			},
+			{
+				title: "Headroom",
+				url: "/workspace/headroom",
+				icon: ChevronsLeftRightEllipsis,
+				description: "Configure context compression and view usage",
 				hasAccess: hasPluginsAccess,
 			},
 			{
@@ -1199,10 +1208,10 @@ export default function AppSidebar() {
 	const showNewReleaseBanner = useMemo(() => {
 		if (IS_ENTERPRISE) return false;
 		if (latestRelease && version) {
-			return compareVersions(latestRelease.name, version) > 0;
+			return cookies[RELEASE_DISMISSED_COOKIE] !== latestRelease.name && compareVersions(latestRelease.name, version) > 0;
 		}
 		return false;
-	}, [latestRelease, version]);
+	}, [latestRelease, version, cookies]);
 
 	useEffect(() => {
 		setMounted(true);
@@ -1457,6 +1466,9 @@ export default function AppSidebar() {
 
 	const handlePromoDismiss = useCallback(
 		(cardId: string) => {
+			if (cardId === "new-release" && latestRelease) {
+				setCookie(RELEASE_DISMISSED_COOKIE, latestRelease.name, { path: "/", maxAge: 365 * 24 * 60 * 60 });
+			}
 			if (cardId === "production-setup") {
 				const expiryDate = new Date();
 				expiryDate.setDate(expiryDate.getDate() + 7);
@@ -1483,7 +1495,7 @@ export default function AppSidebar() {
 				});
 			}
 		},
-		[setCookie, cookies],
+		[setCookie, cookies, latestRelease],
 	);
 
 	return (

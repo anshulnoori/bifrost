@@ -414,6 +414,10 @@ func makeKey(model, provider, mode string) string {
 // provider name used by the pricing catalog.
 func normalizeProvider(p string) string {
 	switch {
+	case p == string(schemas.Codex):
+		// Budgets use the equivalent API reference cost, not a claim about
+		// subscription billing. Never treat subscription inference as free.
+		return string(schemas.OpenAI)
 	case strings.Contains(p, "together"):
 		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":

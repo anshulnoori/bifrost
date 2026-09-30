@@ -14,7 +14,7 @@ import {
 import { getErrorMessage, useLazyGetCoreConfigQuery } from "@/lib/store";
 import { useUpdateClientMetadataMutation } from "@/lib/store/apis/configApi";
 import { cn } from "@/lib/utils";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import type confetti from "canvas-confetti";
 import { AlertTriangle, ChevronRight, Minus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -52,10 +52,9 @@ async function fireConfettiFrom(el: HTMLElement) {
 
 export default function OnboardingWidget() {
 	const navigate = useNavigate();
-	const pathname = useLocation({ select: (l) => l.pathname });
 	// "Remind me later" is a real snooze: it survives navigation and reloads
 	// until the chosen date, via a cookie whose own expiry is that date.
-	const [cookies, setCookie, removeCookie] = useCookies([REMIND_LATER_COOKIE, HIDDEN_UNTIL_NAV_COOKIE]);
+	const [cookies, setCookie] = useCookies([REMIND_LATER_COOKIE, HIDDEN_UNTIL_NAV_COOKIE]);
 	const isSnoozed = !!cookies[REMIND_LATER_COOKIE];
 	const hiddenUntilNav = !!cookies[HIDDEN_UNTIL_NAV_COOKIE];
 	const [minimized, setMinimized] = useState(false);
@@ -122,16 +121,6 @@ export default function OnboardingWidget() {
 			setActiveStepId(null);
 		}
 	}, [activeStepId, steps, skippedIds, checklistReady]);
-
-	// A route change means the user moved on to something else — resurface
-	// the widget there (unless every step is done, handled by the doneCount
-	// check below) rather than leaving it hidden for the rest of the visit.
-	useEffect(() => {
-		removeCookie(HIDDEN_UNTIL_NAV_COOKIE, { path: "/" });
-		setMinimized(false);
-		// Only the route itself should trigger a reset, not re-renders.
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [pathname]);
 
 	if (hiddenUntilNav || isSnoozed) {
 		return null;

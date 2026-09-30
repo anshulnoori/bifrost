@@ -148,6 +148,7 @@
                   "providers/supported-providers/ollama",
                   "providers/supported-providers/opencode",
                   "providers/supported-providers/openai",
+                  "providers/codex",
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
@@ -1323,6 +1324,17 @@
                 "pages": ["GET /ws", "GET /mcp", "POST /mcp", "GET /metrics", "POST /inspect"]
               },
               {
+                "group": "API Keys",
+                "expanded": false,
+                "pages": [
+                  "GET /api/api-keys",
+                  "POST /api/api-keys",
+                  "GET /api/api-keys/{id}",
+                  "PUT /api/api-keys/{id}",
+                  "DELETE /api/api-keys/{id}"
+                ]
+              },
+              {
                 "group": "Webhooks",
                 "expanded": false,
                 "pages": [
@@ -1753,6 +1765,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.2.3",
               "changelogs/v2.2.2",
               "changelogs/v2.2.1",
               "changelogs/v2.2.0",
@@ -1972,6 +1985,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.2.3",
               "changelogs/ent-v2.2.2",
               "changelogs/ent-v2.2.1",
               "changelogs/ent-v2.2.0",
@@ -2068,7 +2082,8 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
-              "changelogs/edge-v0.9.0",
+              "changelogs/edge-v0.9.1",
+        "changelogs/edge-v0.9.0",
               "changelogs/edge-v0.8.0",
               "changelogs/edge-v0.7.0",
               "changelogs/edge-v0.6.0",

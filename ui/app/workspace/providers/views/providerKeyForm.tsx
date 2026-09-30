@@ -5,16 +5,18 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { getErrorMessage } from "@/lib/store";
 import { useCreateProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
-import { modelProviderKeySchema } from "@/lib/types/schemas";
+import { modelProviderKeySchema, codexProviderKeyFieldsSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
+import CodexConnection from "./codexConnection";
+import { codexAccountAlias } from "./codexAccountLabel";
 import { stripDatabricksAuthDiscriminator } from "./providerKeyForm.utils";
 interface Props {
 	provider: ModelProvider;
@@ -23,27 +25,30 @@ interface Props {
 	onSave: () => void;
 }
 
-// Create a simple form schema using only ModelProviderKeySchema
-const providerKeyFormSchema = z.object({
-	key: modelProviderKeySchema,
-});
-
 type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 
 export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: Props) {
+	const providerKeyFormSchema = z.object({ key: provider.name === "codex" ? codexProviderKeyFieldsSchema : modelProviderKeySchema });
+	const [createdAccountId, setCreatedAccountId] = useState<string>();
+	const accountId = createdAccountId ?? keyId;
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [createProviderKey, { isLoading: isCreatingProviderKey }] = useCreateProviderKeyMutation();
 	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
 	const { data: keys = [] } = useGetProviderKeysQuery(provider.name);
-	const isEditing = keyId !== null;
-	const currentKey = keyId ? keys.find((k) => k.id === keyId) : undefined;
+	const isEditing = accountId != null;
+	const currentKey = accountId ? keys.find((k) => k.id === accountId) : undefined;
 
 	const form = useForm({
 		resolver: zodResolver(providerKeyFormSchema),
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			key: (currentKey as ProviderKeyFormValues) ?? {
+			key: (currentKey
+				? ({
+						...currentKey,
+						name: provider.name === "codex" ? codexAccountAlias(currentKey.name) : currentKey.name,
+					} as ProviderKeyFormValues)
+				: undefined) ?? {
 				id: uuid(),
 				name: "",
 				models: ["*"],
@@ -58,8 +63,13 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 	// Skip reset if user has unsaved edits to avoid discarding changes during background refetches
 	useEffect(() => {
 		if (!isEditing || !currentKey || form.formState.isDirty) return;
-		form.reset({ key: currentKey as ProviderKeyFormValues });
-	}, [isEditing, currentKey, form]);
+		form.reset({
+			key: {
+				...currentKey,
+				name: provider.name === "codex" ? codexAccountAlias(currentKey.name) : currentKey.name,
+			} as ProviderKeyFormValues,
+		});
+	}, [isEditing, currentKey, form, provider.name]);
 
 	// Trigger validation on mount when editing existing data
 	useEffect(() => {
@@ -75,16 +85,21 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		if (!form.formState.isValid && form.formState.errors.root?.message) {
 			return form.formState.errors.root?.message;
 		}
-		if (!form.formState.isDirty) {
+		if (!form.formState.isDirty && (isEditing || provider.name !== "codex")) {
 			return "No changes made";
 		}
 		return null;
-	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess]);
+	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess, isEditing, provider.name]);
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
 		// Strip internal _auth_type fields before sending to API
 		const key = { ...value.key };
+		if (provider.name === "codex") {
+			// An empty API name means "unchanged", and names must be unique.
+			// Preserve existing generated names, or create a unique fallback.
+			key.name = key.name.trim() || (currentKey && !codexAccountAlias(currentKey.name) ? currentKey.name : `Codex ${uuid()}`);
+		}
 		if (key.azure_key_config) {
 			const { _auth_type, ...rest } = key.azure_key_config;
 			key.azure_key_config = rest;
@@ -117,8 +132,11 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 
 		mutation
 			.unwrap()
-			.then(() => {
-				onSave();
+			.then((saved) => {
+				if (provider.name === "codex" && !isEditing) {
+					setCreatedAccountId(saved.id);
+					form.reset({ key: { ...saved, name: codexAccountAlias(saved.name) } as ProviderKeyFormValues });
+				} else onSave();
 			})
 			.catch((err) => {
 				if (err?.status === 409) {
@@ -135,6 +153,11 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="flex grow flex-col gap-6 pt-4">
 				<div className="grow px-4 md:px-8">
+					{provider.name === "codex" && accountId && (
+						<div className="mb-6 border-b pb-6">
+							<CodexConnection keyId={accountId} />
+						</div>
+					)}
 					<ApiKeyFormFragment
 						control={form.control}
 						providerName={provider.name}
@@ -154,12 +177,12 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 									<span>
 										<Button
 											type="submit"
-											disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
+											disabled={(!form.formState.isDirty && (isEditing || provider.name !== "codex")) || !hasUpdateProviderAccess}
 											isLoading={form.formState.isSubmitting || isCreatingProviderKey || isUpdatingProviderKey}
 											data-testid="key-save-btn"
 										>
 											<Save className="h-4 w-4 shrink-0" />
-											Save
+											{provider.name === "codex" && !isEditing ? "Continue" : "Save"}
 										</Button>
 									</span>
 								</TooltipTrigger>

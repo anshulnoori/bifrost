@@ -48,6 +48,10 @@
     in
     {
       nixosModules = {
+        deployment = { pkgs, lib, ... }: {
+          imports = [ ./nix/modules/bifrost.nix ./deploy/nixos/module.nix ];
+          services.bifrost.package = lib.mkDefault self.packages.${pkgs.system}.bifrost-stack;
+        };
         bifrost =
           { pkgs, lib, ... }:
           {
@@ -71,6 +75,11 @@
         in
         {
           bifrost-ui = bifrost-ui;
+
+          bifrost-stack = pkgs.callPackage ./nix/packages/bifrost-stack.nix {
+            src = self;
+            inherit bifrost-ui;
+          };
 
           bifrost-http = pkgs.callPackage ./nix/packages/bifrost-http.nix {
             inherit inputs;
@@ -104,6 +113,9 @@
         {
           # Run `nix develop` to activate this environment or `direnv allow` if you have direnv installed
           default = import ./nix/devshells/default.nix { inherit pkgs; };
+          deployment = pkgs.mkShell {
+            packages = [ pkgs.caddy pkgs.nodejs ];
+          };
         }
       );
     };

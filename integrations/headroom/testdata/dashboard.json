@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "retention_seconds": 900,
+  "quality": "not_evaluated",
+  "ccr": "unsupported",
+  "cost_savings": null,
+  "attempt_coverage": "primary_and_fallback_hooks; internal_retry_usage_unknown",
+  "events": [
+    {
+      "started": "2026-09-22T12:00:00Z",
+      "provider": "openai",
+      "model": "fixture-model",
+      "project": "evaluation-project",
+      "principal_hash": "opaque-fixture-principal",
+      "thread_hash": "opaque-fixture-thread",
+      "status": "compressed",
+      "reason": "",
+      "eligible": true,
+      "quality": "not_evaluated",
+      "tool_result_estimate": {"before_estimated_tokens": 5272, "after_estimated_tokens": 145},
+      "compression_ms": 1534.4,
+      "plugin_attempt_ms": 2411.9,
+      "provider_usage": {"prompt_tokens": 317, "completion_tokens": 29, "prompt_tokens_details": {"cached_tokens": 211}},
+      "network_retries": 0
+    },
+    {
+      "started": "2026-09-22T12:00:01Z",
+      "provider": "codex",
+      "model": "fixture-model",
+      "project": "evaluation-project",
+      "principal_hash": "opaque-fixture-principal",
+      "thread_hash": "opaque-fixture-thread-2",
+      "status": "bypassed",
+      "reason": "raw_stream",
+      "eligible": false,
+      "quality": "not_evaluated",
+      "tool_result_estimate": null,
+      "compression_ms": 0,
+      "plugin_attempt_ms": 502.3,
+      "provider_usage": null,
+      "network_retries": 1
+    }
+  ]
+}

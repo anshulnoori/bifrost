@@ -1,28 +1,8 @@
----
-title: "v2.2.2"
-description: "v2.2.2 changelog - 2026-09-23"
----
-<Tabs>
-  <Tab title="NPX">
-    ```bash
-    npx -y @maximhq/bifrost --transport-version v2.2.2
-    ```
-  </Tab>
-  <Tab title="Docker">
-    ```bash
-    docker pull maximhq/bifrost:v2.2.2
-    docker run -p 8080:8080 maximhq/bifrost:v2.2.2
-    ```
-  </Tab>
-</Tabs>
-
-<Update label="Bifrost(HTTP)" description="2.2.2">
 ## ✨ Features
 
-- **Typesafe Provider and Decisions API** - New typesafe provider, `/v1/decisions` endpoint and `/typesafe` integration. Providers without native decision support now answer decision requests through forced tool-calling on their chat model, whether used as the primary or as a fallback. Probabilities are normalized to sum to exactly 1 and the chosen option must be the most likely one. Decision requests are priced from the datasheet and logged with their answers (#7355, #7361, #7384, #7440)
-- **Provider-Level Session Affinity** - A session (from `x-bf-session-id` or the session header that Claude Code, Codex CLI or OpenCode already send) stays on the provider and key that last served it. Affinity only reorders the chain routing built and never restores a provider routing excluded. The logs UI shows it as a routing engine
-- **Claude Opus 5.5 Support** - Computer use sends `computer_toolset_20260801` on the Anthropic API and Vertex, while Bedrock and Azure keep `computer_20251124`. `toolset_name` is carried on both halves of each call/result pair across typed, raw passthrough and streaming paths. Disabled thinking and forced tool choice are rejected for Opus 5.5+, and the datasheet `supports_reasoning_disable` field can override this (#7433, #7434, #7441)
-- **Claude Code Auto-Mode Safeguards Passthrough** - `safeguards` and `safeguard_results` are forwarded byte-for-byte on requests, responses and stream events to the direct Anthropic provider and stripped on every other provider. The `dangerous-tool-use` and `auto-mode-classifier` betas are gated the same way. Unknown Anthropic SSE events are forwarded raw on the Anthropic passthrough (#7393, #7440)
+- **Anthropic Between-Tools Thinking** - `reasoning.type: "between_tools"` on chat and Responses requests, and `thinking: {"type": "between_tools"}` on the Anthropic drop-in route, are forwarded to Anthropic, Bedrock and Vertex with the caller's effort passed independently. Models without it get `disabled` or no thinking field, so a fallback to an older model never fails. The datasheet `supports_between_tools_thinking` field can override this (#7665)
+- **Tool Search for GPT-5.4 and Later** - `defer_loading` on function and MCP tools now reaches OpenAI, Azure, Bedrock and Bedrock Mantle for gpt-5.4, gpt-5.5, gpt-5.6 and gpt-6 models, so the model can search deferred tools instead of loading every tool eagerly. Other OpenAI-compatible backends still have it stripped. The datasheet `supports_tool_search` field can override this (#7534)
+- **Skipped Routing Fallbacks Are Logged** - A rule fallback that names no known provider is now reported in the request's routing log with the rule name and the configured entry, instead of being skipped silently (#7546)
 
 ## 🐞 Fixed
 
@@ -42,6 +22,17 @@ description: "v2.2.2 changelog - 2026-09-23"
 - **Responses Deep Copy** - `DeepCopyResponsesMessage` now deep copies cache controls, provider-native parts, computer/MCP/code-interpreter tool fields and annotations, so copies no longer share pointers with the original (#7422)
 - **Request Preparation Performance** - Responses requests are decoded once instead of several times, and the compat plugin clones only the fields it writes (#7412, #7097) (thanks [@G-XD](https://github.com/G-XD)!)
 - **Virtual Key PUT Round-Trip** - PUT `/api/governance/virtual-keys/{vk_id}` no longer drops provider-config key associations when the request body omits `key_ids`. The GET response exposes `allow_all_keys` and `keys` but not `key_ids`, so the standard GET -> edit -> PUT round-trip silently flipped AllowAllKeys to false and detached every key, and inference through the virtual key then failed with "no keys found for provider". An omitted `key_ids` list now leaves the existing associations untouched; an explicit list (including `[]`) still replaces them (#7347) (thanks [@xiechimon](https://github.com/xiechimon)!)
+- **Routing Fallbacks Dropped After Restart** - Legacy `provider/model` fallback strings are re-parsed at route time, so a custom provider registered after routing rules were decoded at boot is no longer skipped while the API still listed the fallback. Object-form fallbacks naming an unregistered or blank provider are now rejected on create and update (#7543, #7544, #7545)
+- **Bedrock Thinking Tokens** - Requests on `/bedrock/model/{id}/invoke` and its streaming sibling with extended thinking on are served through InvokeModel, and `usage.output_tokens_details.thinking_tokens` is reported in unary responses and in the `message_start` and `message_delta` events (#7691)
+- **Encrypted Reasoning Retry After a Provider Switch** - The strip-and-retry for replayed reasoning now fires on any 400 that names a reasoning token, instead of matching each provider's wording, so a mid-conversation switch such as bedrock to bedrock_mantle heals instead of returning the 400 to the client. Gemini and Vertex thought signatures carried inside call ids are stripped as well (#7680)
+- **OpenRouter Error Messages** - The upstream provider's own error message is lifted out of `error.metadata.raw`, replacing the generic "Provider returned error" (#7680)
+- **Truncated Turns on Anthropic and Gemini** - Responses turns cut off by `max_output_tokens` or a refusal now report status `incomplete` with `incomplete_details`, streams end with `response.incomplete`, and the Bedrock, Gemini and Cursor drop-in routes translate that into their own stop reason. A Gemini stream that ends without a finish reason no longer reads as a clean stop (#7677)
+- **File Data on OpenAI-Compatible Providers** - `file_data` sent as bare base64 with a `file_type` is folded into a `data:` URL, which OpenAI and Databricks require, instead of being rejected with "Invalid base64 data URL format" (#7682)
+- **Gemini Histories Replayed to OpenAI** - A `function_call` input item whose id does not start with `fc` no longer fails OpenAI validation natively or through a fallback. The id is dropped and `call_id` is kept so outputs still pair (#7676)
+- **Gemini Thought Signatures on Images and Files** - A thought signature on an inline image or file part stays on that content block and round-trips back to Gemini, instead of being dropped or emitted as a separate reasoning item (#7692)
+- **Governance Resets During Startup** - Startup resets and the periodic reset worker now run only after governance state is fully hydrated, and team-owned budgets and rate limits keep the team's calendar alignment after a restart, so calendar-aligned limits are no longer reset on a creation-anchored boundary (#7615, #7637)
+- **Model Histogram Unnamed Series** - Rows without a model, such as list_models, file and batch operations, are excluded from the model histogram (#7632)
+- **Ungoverned Virtual Key Creation** - A user without an access profile no longer sees locked governance fields when creating a virtual key. The form locks only when a profile actually governs, and a failed policy lookup shows a warning with a retry instead of locking (#7413)
 
 ## 🗄️ Database Migrations
 
@@ -49,93 +40,5 @@ description: "v2.2.2 changelog - 2026-09-23"
 
 ## 🐙 Closed GitHub Issues
 
-- [#7223](https://github.com/maximhq/bifrost/issues/7223) - MCP client HTTP transport ignores HTTP_PROXY/HTTPS_PROXY and fails on any deployment behind an egress proxy
-- [#7336](https://github.com/maximhq/bifrost/issues/7336) - Bedrock InvokeModel drops message-level cache_control when any historical message content is a JSON string
-- [#7356](https://github.com/maximhq/bifrost/issues/7356) - Responses web search API source name is dropped during round-trip
-- [#7402](https://github.com/maximhq/bifrost/issues/7402) - Grok 4.7 xhigh reasoning effort is silently downgraded to high
-- [#7411](https://github.com/maximhq/bifrost/issues/7411) - Redundant JSON decoding in Responses request preparation
-- [#7425](https://github.com/maximhq/bifrost/issues/7425) - Responses: `{"type":"computer"}` is rewritten to `computer_use_preview`, breaking GPT-6 Astra / GPT-5.6 computer use
-
-</Update>
-<Update label="Core" description="1.10.1">
-- feat: typesafe provider, /v1/decisions endpoint, and decision emulation via forced tool-calling for providers without native decision support (#7355, #7361, #7384, #7440)
-- feat: provider-level session affinity through the SessionAffinity seam, bound on request outcome
-- feat: Claude Opus 5.5 computer_toolset_20260801 support with toolset_name round-trip, and disabled-thinking/forced-tool-choice gating overridable from the datasheet (#7433, #7434, #7441)
-- feat: safeguards/safeguard_results passthrough for Claude Code auto-mode on direct Anthropic, stripped elsewhere; raw carrier for unknown Anthropic stream events (#7393, #7440)
-- fix: rewrite tool-schema regex NUL escapes and lookarounds for Moonshot and DeepSeek models only (#7430)
-- fix: strip Anthropic billing header at ingress and restore it only for Anthropic-family attempts (#7431)
-- fix: honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY for MCP connections with a pre-proxy link-local guard (#7437)
-- fix: stop rewriting OpenAI `computer` tool to computer_use_preview (#7426) (thanks [@abhishekgahlot2](https://github.com/abhishekgahlot2)!)
-- fix: linear StripEmptyThinkingBlocks and beta-header gating without full body decode (#7406)
-- fix: strip Bedrock cachePoint markers copy-on-write for non-Bedrock providers, preserved for fallbacks (#7182)
-- fix: Bedrock tool results with empty-string JSON keys sent as text (#7396)
-- fix: deep copy extended Responses fields in DeepCopyResponsesMessage (#7422)
-- fix: frame bundled OpenAI chat stream raw frames with a data prefix each (#7440)
-- fix: stream errors after startup events (response.created, in_progress, empty role delta) now reach retry and fallback for OpenAI models on every host (OpenAI, Bedrock, Bedrock Mantle, Vertex, custom providers), not only Azure; an overloaded stream no longer reaches the client as an error when a fallback is configured
-- [perf]: avoid redundant JSON decoding in Responses request preparation
-- [fix]: preserve xhigh reasoning effort for Grok 4.7 [@nettee](https://github.com/nettee)
-- [fix]: Bedrock InvokeModel keeps cache_control when any message's content is a plain string. BedrockMessage.Content is typed as content blocks, so one bare string anywhere in messages[] failed the standard unmarshal and diverted the whole request into the AI21 string fallback, which rebuilt the messages without calling applyMessageContentCacheControl. Every cache_control in the request was dropped rather than only the one on the string message, so prompt caching went off silently with just the system cachePoint surviving. The fallback now makes the same translation the standard path does (#7336) [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)
-- [fix]: web search action sources round-trip their name and no longer fabricate an empty url. OpenAI Responses web search can return specialized API sources (`{"type":"api","name":"oai-weather"}`) that carry a name and no URL; the typed source schema only modeled type and a required url, so decode dropped name and re-encode emitted "url":"", and the OpenAI request-side source sanitization rebuilt sources without name. url is now omitempty and name survives both the schema round-trip and the sanitization path (#7356) [@g-yixuan](https://github.com/g-yixuan)
-
-</Update>
-<Update label="Framework" description="1.7.3">
-- feat: decision request pricing and "decisions" usage type in the datasheet
-- chore: upgraded core to v1.10.0
-- fix: replace streaming gate replay-buffer size accounting with cached zero-marshal estimates (eliminates per-chunk MarshalJSON on the full-hold path)
-
-</Update>
-<Update label="compat" description="0.3.2">
-- fix: Bedrock cachePoint handling moved to core dispatch; plugin no longer mutates the shared request (#7182)
-- fix: clone only Reasoning, ToolChoice and Tools in PreLLMHook (#7097)
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="governance" description="1.8.2">
-- fix: allow-all virtual keys list and route every configured provider (#7375)
-- fix: routing log names providers excluded for having no weight
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="jsonparser" description="1.6.5">
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="logging" description="1.8.2">
-- feat: log decision requests with usage, cost and answers (#7355)
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="maxim" description="1.7.5">
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="mocker" description="1.6.5">
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="modelcatalogresolver" description="1.1.5">
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="otel" description="1.5.5">
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="prompts" description="1.1.5">
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="routing" description="1.1.2">
-- chore: complexity routing session keys built through the shared session-state builder
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="semanticcache" description="1.6.5">
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
-<Update label="telemetry" description="1.8.1">
-- chore: shared label-value splice helper for metric labels (#7378)
-- chore: upgraded core to v1.10.0 and framework to v1.7.3
-
-</Update>
+- [#7538](https://github.com/maximhq/bifrost/issues/7538) - Routing-rule fallbacks are dropped after restart in v2.2.3 (still listed by the API)
+- [#7649](https://github.com/maximhq/bifrost/issues/7649) - Bedrock provider drops extended-thinking token count (`output_tokens_details.thinking_tokens`) that AWS returns

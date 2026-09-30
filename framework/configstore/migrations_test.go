@@ -44,6 +44,44 @@ type namedDB struct {
 	db   *gorm.DB
 }
 
+func TestCodexConnectionMigrationIsIdempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	defer sqlDB.Close()
+	for i := 0; i < 2; i++ {
+		require.NoError(t, migrationAddCodexConnections(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasTable("codex_connections"))
+	for _, column := range []string{"id", "owner", "secret", "version", "state", "operation_until"} {
+		require.True(t, db.Migrator().HasColumn("codex_connections", column), column)
+	}
+}
+
+func TestDashboardOIDCMigrationPreservesPasswordSessions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	defer sqlDB.Close()
+	// Simulate the old schema, rather than AutoMigrate on the new Go model.
+	require.NoError(t, db.Exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, token TEXT NOT NULL, expires_at DATETIME)").Error)
+	require.NoError(t, db.Exec("INSERT INTO sessions (id, token, expires_at) VALUES (1, ?, ?)", "existing-password-session", time.Now().Add(time.Hour)).Error)
+	for i := 0; i < 2; i++ {
+		require.NoError(t, migrationAddDashboardOIDC(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasTable(&tables.OIDCLogin{}))
+	var row struct {
+		Token                   string
+		OIDCIssuer, OIDCSubject *string
+	}
+	require.NoError(t, db.Table("sessions").First(&row).Error)
+	require.Equal(t, "existing-password-session", row.Token)
+	require.Nil(t, row.OIDCIssuer)
+	require.Nil(t, row.OIDCSubject)
+}
+
 // setupTestDB creates an in-memory SQLite database for testing
 func setupTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

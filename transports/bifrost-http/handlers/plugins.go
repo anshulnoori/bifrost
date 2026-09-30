@@ -465,6 +465,12 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// A configuration-only update must retain the already installed native
+	// plugin. Apply this AFTER checking explicitly supplied paths: omission
+	// cannot select new code, and must not turn a custom plugin into a builtin.
+	if !isBuiltin && request.Path == nil && existingPlugin != nil {
+		request.Path = existingPlugin.Path
+	}
 	// Merge incoming config over the existing DB config so fields unknown to the
 	// calling form (e.g. plugin_span_filter set by a separate UI sheet) are not wiped.
 	mergedConfig := request.Config

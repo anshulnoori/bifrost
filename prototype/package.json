@@ -1,0 +1,20 @@
+{
+  "name": "private-container-lifecycle-proof",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "tsc --noEmit",
+    "dry-run": "wrangler deploy --dry-run --outdir /tmp/private-container-worker"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260923.1",
+    "esbuild": "0.28.1",
+    "miniflare": "5.20260921.0-alpha",
+    "typescript": "7.0.2",
+    "wrangler": "4.136.3"
+  }
+}

@@ -161,6 +161,12 @@ type ServerConfig struct {
 	PluginDownloadPrivateAllowlist []string `json:"plugin_download_private_allowlist,omitempty"`
 }
 
+// ProviderDefaults supplies configuration inherited by providers that do not set an
+// explicit value. Provider-level configuration always wins, including explicit false.
+type ProviderDefaults struct {
+	PromptCache *schemas.PromptCacheConfig `json:"prompt_cache,omitempty"`
+}
+
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
 // It contains the client configuration, provider configurations, MCP configuration,
 // vector store configuration, config store configuration, and logs store configuration.
@@ -184,6 +190,7 @@ type ConfigData struct {
 	// the same value from its own identical config/env rather than relying on a
 	// per-process generated value.
 	SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
+	ProviderDefaults  ProviderDefaults                      `json:"provider_defaults,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -451,6 +458,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
+		ProviderDefaults  ProviderDefaults                      `json:"provider_defaults,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
 		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
@@ -478,6 +486,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
 	cd.SetupToken = temp.SetupToken
+	cd.ProviderDefaults = temp.ProviderDefaults
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Webhooks = temp.Webhooks
@@ -589,6 +598,7 @@ type Config struct {
 	ServerConfig     *ServerConfig
 	ClientConfig     *configstore.ClientConfig
 	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
+	ProviderDefaults ProviderDefaults
 	MCPConfig        *schemas.MCPConfig
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
@@ -1011,6 +1021,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// 5. Providers (store → file → auto-detect)
+	config.ProviderDefaults = configData.ProviderDefaults
 	if err := loadProviders(ctx, config, &configData); err != nil {
 		return nil, err
 	}
@@ -1665,6 +1676,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					Models:                 dbKey.Models,
 					BlacklistedModels:      dbKey.BlacklistedModels,
 					Weight:                 dbKey.Weight,
+					CodexReservePercent:    dbKey.CodexReservePercent,
 					AzureKeyConfig:         dbKey.AzureKeyConfig,
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -1750,6 +1762,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					Models:                 dbKey.Models,
 					BlacklistedModels:      dbKey.BlacklistedModels,
 					Weight:                 dbKey.Weight,
+					CodexReservePercent:    dbKey.CodexReservePercent,
 					AzureKeyConfig:         dbKey.AzureKeyConfig,
 					VertexKeyConfig:        dbKey.VertexKeyConfig,
 					BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -7040,14 +7053,15 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				blacklisted = []string{}
 			}
 			configStoreKey := configstoreTables.TableKey{
-				KeyID:             key.ID,
-				Name:              key.Name,
-				Value:             *key.Value.Redacted(),
-				Models:            models,
-				BlacklistedModels: blacklisted,
-				Weight:            bifrost.Ptr(key.Weight),
-				Provider:          string(providerKey),
-				ConfigHash:        key.ConfigHash,
+				KeyID:               key.ID,
+				Name:                key.Name,
+				Value:               *key.Value.Redacted(),
+				Models:              models,
+				BlacklistedModels:   blacklisted,
+				Weight:              bifrost.Ptr(key.Weight),
+				CodexReservePercent: key.CodexReservePercent,
+				Provider:            string(providerKey),
+				ConfigHash:          key.ConfigHash,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

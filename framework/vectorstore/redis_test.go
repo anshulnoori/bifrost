@@ -705,6 +705,16 @@ func TestVectorDimensionFromFTInfo(t *testing.T) {
 			found:    true,
 		},
 		{
+			name: "Valkey Search nested index dimensions",
+			reply: []interface{}{"attributes", []interface{}{
+				[]interface{}{"identifier", "embedding", "type", "VECTOR", "index", []interface{}{
+					"capacity", int64(10240), "dimensions", int64(384), "distance_metric", "COSINE",
+				}},
+			}},
+			expected: 384,
+			found:    true,
+		},
+		{
 			// Redis reports numerics as strings under RESP2 and as integers
 			// under RESP3, so both must parse.
 			name:     "dim as string",
@@ -2073,9 +2083,15 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		assert.Equal(t, "dimension_512", result.Properties["test"])
 
 		// Step 2: Delete the namespace
+		otherKey := testNamespace + "Other:sentinel"
+		require.NoError(t, setup.Store.client.HSet(setup.ctx, otherKey, "keep", "other-tenant").Err())
+		defer setup.Store.client.Del(setup.ctx, otherKey)
 		err = setup.Store.DeleteNamespace(setup.ctx, testNamespace)
 		require.NoError(t, err)
 		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
+		_, err = setup.Store.GetChunk(setup.ctx, testNamespace, "test-key-512")
+		require.Error(t, err, "dropping an index must also remove its cached responses")
+		assert.Equal(t, "other-tenant", setup.Store.client.HGet(setup.ctx, otherKey, "keep").Val())
 
 		// Step 3: Create namespace with same name but different dimension - should not crash
 		err = setup.Store.CreateNamespace(setup.ctx, testNamespace, 1024, properties)

@@ -183,6 +183,31 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
+	// Codex uses the subscription transport, whose parameter support differs from
+	// the same model's OpenAI API catalog. Honor the existing opt-in to dropping
+	// unsupported parameters, and report every drop in response metadata.
+	// Do not drop store or previous_response_id: that would change conversation
+	// persistence semantics. The provider must continue to reject those requests.
+	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && modifiedReq.ResponsesRequest != nil && modifiedReq.ResponsesRequest.Provider == schemas.Codex && modifiedReq.ResponsesRequest.Params != nil {
+		params := modifiedReq.ResponsesRequest.Params
+		dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+		if params.MaxOutputTokens != nil {
+			params.MaxOutputTokens = nil
+			dropped = append(dropped, "max_output_tokens")
+		}
+		if params.Temperature != nil {
+			params.Temperature = nil
+			dropped = append(dropped, "temperature")
+		}
+		if params.TopP != nil {
+			params.TopP = nil
+			dropped = append(dropped, "top_p")
+		}
+		if len(dropped) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, dropped)
+		}
+	}
+
 	// Namespace-tool flattening used to run here under should_convert_params. It moved
 	// to core dispatch (prepareResponsesRequest), where it applies to every provider
 	// whose wire lacks the namespace type and maps tool calls back on the response.

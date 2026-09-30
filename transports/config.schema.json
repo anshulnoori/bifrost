@@ -437,6 +437,16 @@
       },
       "additionalProperties": false
     },
+    "provider_defaults": {
+      "type": "object",
+      "description": "Defaults inherited by every configured provider, including providers added at runtime. An explicit provider value takes precedence.",
+      "properties": {
+        "prompt_cache": {
+          "$ref": "#/$defs/prompt_cache"
+        }
+      },
+      "additionalProperties": false
+    },
     "providers": {
       "type": "object",
       "description": "AI provider configurations",
@@ -478,6 +488,10 @@
           "$ref": "#/$defs/provider"
         },
         "opencode-go": {
+          "$ref": "#/$defs/provider"
+        },
+        "codex": {
+          "description": "Owner-scoped ChatGPT subscription OAuth. Configure no static keys, base URL override, or extra headers. Requires encrypted database storage and authenticated virtual keys.",
           "$ref": "#/$defs/provider"
         },
         "opencode-zen": {
@@ -3917,6 +3931,11 @@
                       "type": "string",
                       "description": "Default cache key used when no per-request key is provided. When set, all requests without an explicit x-bf-cache-key header will use this value and be cached automatically."
                     },
+                    "scope_by_virtual_key": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Partition cache keys by the authenticated governance virtual-key ID. Requests without that identity bypass caching. Register governance before semantic cache."
+                    },
                     "conversation_history_threshold": {
                       "type": "integer",
                       "description": "Skip caching for requests with more than this number of messages in conversation history (default: 3)",
@@ -6003,6 +6022,12 @@
           "type": "number",
           "minimum": 0,
           "description": "Weight for load balancing"
+        },
+        "codex_reserve_percent": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Codex only: stop routing when the weekly subscription window reaches this percentage remaining. The five-hour window is ignored. Null disables the reserve."
         },
         "use_for_batch_api": {
           "type": "boolean",
@@ -11148,6 +11173,7 @@
             "ollama",
             "groq",
             "opencode-go",
+            "codex",
             "opencode-zen",
             "sgl",
             "parasail",

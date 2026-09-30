@@ -10,10 +10,9 @@ export const METADATA_SKIPPED_KEY = "onboarding_skipped";
 // "Remind me later" snoozes the widget by setting this cookie's expiry to the
 // chosen date — once the browser drops the cookie, the widget is due again.
 export const REMIND_LATER_COOKIE = "bifrost_onboarding_remind_at";
-// Closing via X is a session-scoped hide, not a long-lived dismissal — no
-// expiry, explicitly cleared on route change. Both cookies are shared
-// constants (not just widget-local) so the sidebar's "resume setup" promo
-// card can read the same hidden/snoozed state the floating widget uses.
+// Closing via X hides the widget for the browser session, including navigation
+// and reloads. Keep the existing cookie name for compatibility. The sidebar's
+// "Resume setup" action explicitly clears it.
 export const HIDDEN_UNTIL_NAV_COOKIE = "bifrost_onboarding_hidden_until_nav";
 
 export type OnboardingSection = "Security" | "Provider Setup" | "Everything Else";

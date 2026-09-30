@@ -1,0 +1,3 @@
+-c ../../../integrations/headroom/requirements.lock
+cryptography==50.0.1
+psycopg[binary]==3.3.6
