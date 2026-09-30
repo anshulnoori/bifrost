@@ -384,7 +384,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	// Create state up front so a reused/retried request ID never inherits stale fields.
 	state := plugin.createCacheState(requestID)
 	provider, model, _ := req.GetRequestFields()
-	if provider == schemas.Codex {
+	if provider == schemas.Codex || provider == schemas.ChatGPT {
 		if plugin.codexCacheScopeResolver == nil {
 			plugin.clearCacheState(requestID)
 			return req, nil, nil
@@ -610,7 +610,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		// to stamp and no entry to write.
 		return res, nil, nil
 	}
-	if extraFields.Provider == schemas.Codex && state.CodexProvider == "" {
+	if (extraFields.Provider == schemas.Codex || extraFields.Provider == schemas.ChatGPT) && state.CodexProvider == "" {
 		plugin.clearCacheState(requestID)
 		return res, nil, nil
 	}
@@ -618,7 +618,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		selectedID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 		_, selectedOK := state.CodexEligibleKeyIDs[selectedID]
 		scope, _, authErr := plugin.codexCacheScopeResolver(ctx, schemas.ModelProvider(state.CodexProvider), state.CodexModel)
-		if extraFields.Provider != schemas.Codex || string(extraFields.Provider) != state.CodexProvider ||
+		if string(extraFields.Provider) != state.CodexProvider ||
 			extraFields.OriginalModelRequested != state.CodexModel || !selectedOK || authErr != nil || scope != state.CodexScope {
 			plugin.clearCacheState(requestID)
 			return res, nil, nil

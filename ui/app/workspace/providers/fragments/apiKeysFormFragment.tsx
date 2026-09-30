@@ -280,11 +280,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						name={`key.name`}
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>{effectiveProvider === "codex" ? "Name (optional)" : "Name"}</FormLabel>
+								<FormLabel>{["codex", "chatgpt"].includes(effectiveProvider) ? "Name (optional)" : "Name"}</FormLabel>
 								<FormControl>
-									<Input placeholder={effectiveProvider === "codex" ? "e.g. Personal" : "Production Key"} type="text" {...field} />
+									<Input
+										placeholder={["codex", "chatgpt"].includes(effectiveProvider) ? "e.g. Personal" : "Production Key"}
+										type="text"
+										{...field}
+									/>
 								</FormControl>
-								{effectiveProvider === "codex" && (
+								{["codex", "chatgpt"].includes(effectiveProvider) && (
 									<p className="text-muted-foreground text-xs">Shown as Name (email). Leave blank to show only your email.</p>
 								)}
 								<FormMessage />
@@ -345,34 +349,40 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{effectiveProvider !== "codex" && !isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
-				<FormField
-					control={control}
-					name={`key.value`}
-					render={({ field }) => (
-						<FormItem>
-							<FormLabel>
-								{isGithubCopilot ? "Copilot API Token" : "API Key"} {isVLLM || isGithubCopilot ? "(Optional)" : ""}
-							</FormLabel>
-							{isGithubCopilot && (
-								<FormDescription>
-									Requires Network Config &gt; Base URL set to the host the token was issued for, because a Copilot token does not carry
-									one. Also expires after about 30 minutes, and Bifrost cannot refresh a token it did not mint, so prefer the GitHub App
-									below for anything long-running.
-								</FormDescription>
-							)}
-							<FormControl>
-								<SecretVarInput
-									placeholder={isGithubCopilot ? "Copilot API token, or leave blank to use a GitHub App" : "API Key or env.MY_KEY"}
-									type="text"
-									{...field}
-								/>
-							</FormControl>
-							<FormMessage />
-						</FormItem>
-					)}
-				/>
-			)}
+			{effectiveProvider !== "codex" &&
+				effectiveProvider !== "chatgpt" &&
+				!isAzure &&
+				!isBedrock &&
+				!isBedrockMantle &&
+				!isVertex &&
+				!isDatabricks && (
+					<FormField
+						control={control}
+						name={`key.value`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>
+									{isGithubCopilot ? "Copilot API Token" : "API Key"} {isVLLM || isGithubCopilot ? "(Optional)" : ""}
+								</FormLabel>
+								{isGithubCopilot && (
+									<FormDescription>
+										Requires Network Config &gt; Base URL set to the host the token was issued for, because a Copilot token does not carry
+										one. Also expires after about 30 minutes, and Bifrost cannot refresh a token it did not mint, so prefer the GitHub App
+										below for anything long-running.
+									</FormDescription>
+								)}
+								<FormControl>
+									<SecretVarInput
+										placeholder={isGithubCopilot ? "Copilot API token, or leave blank to use a GitHub App" : "API Key or env.MY_KEY"}
+										type="text"
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				)}
 			<>
 				<FormField
 					control={control}

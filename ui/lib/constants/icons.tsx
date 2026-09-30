@@ -26,6 +26,9 @@ const resolveSize = (size: IconSize): number => {
 
 // Provider Icons with theme awareness where applicable
 export const ProviderIcons = {
+	chatgpt: ({ className = "" }: IconProps) => (
+		<img src="/images/openai.png" alt="ChatGPT" width={20} height={20} loading="lazy" decoding="async" className={className} />
+	),
 	codex: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);

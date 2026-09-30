@@ -24,7 +24,7 @@ type codexKeyMetadata struct {
 // credentials, subscription usage, or reserve policy, and never refreshes OAuth.
 func CodexCacheScopeResolver(store configstore.ConfigStore) func(*schemas.BifrostContext, schemas.ModelProvider, string) (string, []string, error) {
 	return func(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) (string, []string, error) {
-		if store == nil || ctx == nil || provider != schemas.Codex || ctx.Grant() == nil || ctx.Grant().Access() == nil ||
+		if store == nil || ctx == nil || (provider != schemas.Codex && provider != schemas.ChatGPT) || ctx.Grant() == nil || ctx.Grant().Access() == nil ||
 			ctx.Grant().Identity() == nil || ctx.Grant().Identity().VirtualKey() == nil || ctx.Grant().Identity().VirtualKey().ID == "" ||
 			!ctx.Grant().Access().IsModelAllowed(string(provider), model) {
 			return "", nil, errors.New("Codex cache authorization unavailable")
@@ -112,7 +112,12 @@ func CodexCacheScopeResolver(store configstore.ConfigStore) func(*schemas.Bifros
 			if key.Enabled != nil && !*key.Enabled || json.Unmarshal([]byte(key.ModelsJSON), &wl) != nil || json.Unmarshal([]byte(key.BlacklistedModelsJSON), &bl) != nil || !wl.IsAllowed(model) || bl.IsBlocked(model) || restricted && !allowed[key.ID] || pinID != "" && key.ID != pinID || pinName != "" && key.Name != pinName {
 				continue
 			}
-			connection, err := codexStore.CurrentMetadata(ctx, "provider:codex:"+key.ID)
+			var connection codex.ConnectionMetadata
+			if provider == schemas.ChatGPT {
+				err = store.DB().WithContext(ctx).Table("chatgpt_connections").Select("id", "state").Where("owner = ?", "provider:chatgpt:"+key.ID).First(&connection).Error
+			} else {
+				connection, err = codexStore.CurrentMetadata(ctx, "provider:codex:"+key.ID)
+			}
 			if err != nil || connection.State != "connected" && connection.State != "refreshing" {
 				continue
 			}
@@ -184,7 +189,7 @@ func codexCredential(store configstore.ConfigStore) func(*schemas.BifrostContext
 // that account and return a nil error. Credential resolution rechecks policy.
 func CodexKeyPoolFilter(store configstore.ConfigStore) schemas.KeyPoolFilter {
 	return func(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, keys []schemas.Key) ([]schemas.Key, error) {
-		if provider != schemas.Codex {
+		if provider != schemas.Codex && provider != schemas.ChatGPT {
 			return keys, nil
 		}
 		eligible := make([]schemas.Key, 0, len(keys))
@@ -198,6 +203,14 @@ func CodexKeyPoolFilter(store configstore.ConfigStore) schemas.KeyPoolFilter {
 		for _, candidate := range keys {
 			key, err := store.GetProviderKey(ctx, provider, candidate.ID)
 			if err != nil || key == nil || key.Enabled != nil && !*key.Enabled {
+				continue
+			}
+			if provider == schemas.ChatGPT {
+				var connection codex.ConnectionMetadata
+				if err := store.DB().WithContext(ctx).Table("chatgpt_connections").Select("id", "state").Where("owner = ?", "provider:chatgpt:"+key.ID).First(&connection).Error; err != nil || connection.State != "connected" && connection.State != "refreshing" {
+					continue
+				}
+				eligible = append(eligible, candidate)
 				continue
 			}
 			if key.CodexReservePercent != nil {

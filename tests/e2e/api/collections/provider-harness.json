@@ -178213,7 +178213,46 @@
       }]
     },
 {
-      "name": "133. Headroom dedicated retrieval boundary (headroom-ccr)",
+      "name": "133. ChatGPT subscription management boundary (chatgpt-oauth-management)",
+      "description": "No OAuth credential or paid inference call is needed. Pins the distinct ChatGPT provider's genuine-dashboard-authentication boundary. The all-zero UUID is a syntactically valid account identifier and cannot expose a real connection.",
+      "item": [
+        {
+          "name": "ChatGPT current connection rejects an unauthenticated caller (chatgpt-oauth-management) [EXPECT-401]",
+          "request": {
+            "method": "GET",
+            "header": [{"key":"x-bf-chatgpt-key","value":"00000000-0000-0000-0000-000000000000"}],
+            "url": "{{baseUrl}}/api/chatgpt/connections/current"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('ChatGPT OAuth status requires genuine dashboard authentication', function () {",
+            "  pm.expect(pm.response.code, pm.response.text()).to.equal(401);",
+            "  pm.expect(pm.response.headers.get('Cache-Control')).to.equal('no-store');",
+            "  pm.expect(pm.response.text()).not.to.match(/access[_ -]?token|refresh[_ -]?token/i);",
+            "});"
+          ]}}]
+        },
+        {
+          "name": "ChatGPT authorization rejects an upstream bearer as dashboard authentication (chatgpt-oauth-management) [EXPECT-401]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"x-bf-chatgpt-key","value":"00000000-0000-0000-0000-000000000000"},
+              {"key":"Authorization","value":"Bearer upstream-private-token"}
+            ],
+            "url": "{{baseUrl}}/api/chatgpt/connections"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('ChatGPT OAuth management rejects upstream tokens before account lookup', function () {",
+            "  pm.expect(pm.response.code, pm.response.text()).to.equal(401);",
+            "  pm.expect(pm.response.headers.get('Cache-Control')).to.equal('no-store');",
+            "  pm.expect(pm.response.text()).not.to.match(/authorization_url|upstream-private-token|access[_ -]?token|refresh[_ -]?token/i);",
+            "});"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "134. Headroom dedicated retrieval boundary (headroom-ccr)",
       "description": "Requires the Headroom monitoring credential configured on the gateway and headroomVirtualKey set to an admitted virtual key. Set headroomCCRReady=1 explicitly. These MCP requests make no provider or compression calls. The unavailable handle must not exist in the disposable fixture store.",
       "event": [{"listen":"prerequest","script":{"type":"text/javascript","exec":[
         "if (String(pm.variables.get('headroomCCRReady')) !== '1') { throw new Error('Configure the authenticated Headroom MCP fixture first'); }"

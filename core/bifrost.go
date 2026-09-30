@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
+	"github.com/maximhq/bifrost/core/providers/chatgpt"
 	"github.com/maximhq/bifrost/core/providers/codex"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/databricks"
@@ -4556,6 +4557,9 @@ func (bifrost *Bifrost) UpdateMCPToolSyncInterval(interval time.Duration) error 
 
 // createBaseProvider creates a provider based on the base provider type
 func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+	if providerKey == schemas.ChatGPT {
+		return chatgpt.New(config, bifrost.logger)
+	}
 	if providerKey == schemas.Codex {
 		return codex.New(config, bifrost.logger)
 	}

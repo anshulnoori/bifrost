@@ -42200,6 +42200,104 @@
         }
       }
     },
+    "/api/session/oidc/login": {
+      "post": {
+        "operationId": "startDashboardOIDC",
+        "summary": "Sign in to the dashboard with Tailscale",
+        "description": "Starts the configured OIDC authorization-code flow with S256 PKCE.\nRequires enabled dashboard authentication, encrypted persistence, and an\nOrigin header equal to the configured callback origin. Sets an HttpOnly,\nSecure, SameSite=Lax browser-binding cookie. State expires after five minutes.\nNo caller-supplied issuer, return URL, or identity header is accepted.\n",
+        "tags": [
+          "Session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Redirect to the IdP, or to the login page with a fixed error code.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session/oidc/callback": {
+      "get": {
+        "operationId": "completeDashboardOIDC",
+        "summary": "Complete dashboard OIDC sign-in",
+        "description": "Consumes browser-bound state once across replicas, then verifies the ID\ntoken signature, issuer, audience, expiry, nonce, and allowed subject.\nIssues an independent Bifrost admin session, not an upstream bearer token.\nAll responses use no-store and no-referrer. Raw provider errors are not returned.\n",
+        "tags": [
+          "Session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "__Host-bifrost_oidc",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Redirect to /workspace with a session cookie, or /login with a fixed error code.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/session/logout": {
       "post": {
         "operationId": "logout",
@@ -43581,21 +43679,30 @@
       }
     },
     "/api/codex/connections": {
+      "parameters": [
+        {
+          "name": "x-bf-codex-key",
+          "in": "header",
+          "required": true,
+          "description": "Configured Codex provider-key ID. This is not a credential.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
       "post": {
         "operationId": "startCodexConnection",
         "summary": "Start Codex device authorization",
-        "description": "Replaces this virtual key's previous connection. Never returns upstream credentials.",
+        "description": "Replaces this provider account's previous connection. Never returns upstream credentials.",
         "tags": [
           "Providers"
         ],
         "security": [
           {
-            "ManagementBearerAuth": [],
-            "VirtualKeyAuth": []
+            "ManagementBearerAuth": []
           },
           {
-            "BasicAuth": [],
-            "VirtualKeyAuth": []
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43614,6 +43721,10 @@
                         "id": {
                           "type": "string",
                           "format": "uuid"
+                        },
+                        "email": {
+                          "type": "string",
+                          "description": "OAuth display metadata only; not an authorization identity."
                         },
                         "state": {
                           "type": "string",
@@ -43664,7 +43775,7 @@
             }
           },
           "401": {
-            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+            "description": "Genuine dashboard authentication is required, even when management auth is disabled or the route is whitelisted."
           },
           "503": {
             "description": "Encrypted database storage is not configured."
@@ -43676,20 +43787,29 @@
       }
     },
     "/api/codex/connections/current": {
+      "parameters": [
+        {
+          "name": "x-bf-codex-key",
+          "in": "header",
+          "required": true,
+          "description": "Configured Codex provider-key ID. This is not a credential.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
       "get": {
         "operationId": "getCurrentCodexConnection",
-        "summary": "Get this virtual key's connection status",
+        "summary": "Get this provider account's connection status",
         "tags": [
           "Providers"
         ],
         "security": [
           {
-            "ManagementBearerAuth": [],
-            "VirtualKeyAuth": []
+            "ManagementBearerAuth": []
           },
           {
-            "BasicAuth": [],
-            "VirtualKeyAuth": []
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43706,6 +43826,10 @@
                     "id": {
                       "type": "string",
                       "format": "uuid"
+                    },
+                    "email": {
+                      "type": "string",
+                      "description": "OAuth display metadata only; not an authorization identity."
                     },
                     "state": {
                       "type": "string",
@@ -43737,7 +43861,7 @@
             }
           },
           "401": {
-            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+            "description": "Genuine dashboard authentication is required, even when management auth is disabled or the route is whitelisted."
           },
           "409": {
             "description": "Another replica owns the operation, or reconnect is required."
@@ -43751,8 +43875,201 @@
         }
       }
     },
+    "/api/codex/connections/usage": {
+      "parameters": [
+        {
+          "name": "x-bf-codex-key",
+          "in": "header",
+          "required": true,
+          "description": "Configured Codex provider-key ID. This is not a credential.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getCodexSubscriptionUsage",
+        "summary": "Get this account's subscription allowance windows",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OpenAI usage snapshot. Missing windows are not unlimited allowance. Not cacheable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "plan_type": {
+                      "type": "string"
+                    },
+                    "checked_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "rate_limit": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "allowed": {
+                          "type": "boolean"
+                        },
+                        "limit_reached": {
+                          "type": "boolean"
+                        },
+                        "primary_window": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "used_percent": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "limit_window_seconds": {
+                              "type": "integer"
+                            },
+                            "reset_at": {
+                              "type": "integer",
+                              "description": "Unix timestamp in seconds"
+                            }
+                          }
+                        },
+                        "secondary_window": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "used_percent": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "limit_window_seconds": {
+                              "type": "integer"
+                            },
+                            "reset_at": {
+                              "type": "integer",
+                              "description": "Unix timestamp in seconds"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "additional_rate_limits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "limit_name": {
+                            "type": "string"
+                          },
+                          "metered_feature": {
+                            "type": "string"
+                          },
+                          "rate_limit": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "allowed": {
+                                "type": "boolean"
+                              },
+                              "limit_reached": {
+                                "type": "boolean"
+                              },
+                              "primary_window": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "properties": {
+                                  "used_percent": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
+                                  },
+                                  "limit_window_seconds": {
+                                    "type": "integer"
+                                  },
+                                  "reset_at": {
+                                    "type": "integer",
+                                    "description": "Unix timestamp in seconds"
+                                  }
+                                }
+                              },
+                              "secondary_window": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "properties": {
+                                  "used_percent": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
+                                  },
+                                  "limit_window_seconds": {
+                                    "type": "integer"
+                                  },
+                                  "reset_at": {
+                                    "type": "integer",
+                                    "description": "Unix timestamp in seconds"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Genuine dashboard authentication is required, even when management auth is disabled or the route is whitelisted."
+          },
+          "502": {
+            "description": "Subscription usage is unavailable. No upstream error body is returned."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          }
+        }
+      }
+    },
     "/api/codex/connections/{id}/poll": {
       "parameters": [
+        {
+          "name": "x-bf-codex-key",
+          "in": "header",
+          "required": true,
+          "description": "Configured Codex provider-key ID. This is not a credential.",
+          "schema": {
+            "type": "string"
+          }
+        },
         {
           "name": "id",
           "in": "path",
@@ -43765,19 +44082,17 @@
       ],
       "post": {
         "operationId": "pollCodexConnection",
-        "summary": "Poll a device authorization owned by this virtual key",
+        "summary": "Poll this provider account's device authorization",
         "description": "Poll no faster than interval_seconds. Pending authorization returns 200 with state pending.",
         "tags": [
           "Providers"
         ],
         "security": [
           {
-            "ManagementBearerAuth": [],
-            "VirtualKeyAuth": []
+            "ManagementBearerAuth": []
           },
           {
-            "BasicAuth": [],
-            "VirtualKeyAuth": []
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43794,6 +44109,10 @@
                     "id": {
                       "type": "string",
                       "format": "uuid"
+                    },
+                    "email": {
+                      "type": "string",
+                      "description": "OAuth display metadata only; not an authorization identity."
                     },
                     "state": {
                       "type": "string",
@@ -43825,7 +44144,7 @@
             }
           },
           "401": {
-            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+            "description": "Genuine dashboard authentication is required, even when management auth is disabled or the route is whitelisted."
           },
           "404": {
             "description": "Connection does not exist for this owner."
@@ -43845,6 +44164,15 @@
     "/api/codex/connections/{id}": {
       "parameters": [
         {
+          "name": "x-bf-codex-key",
+          "in": "header",
+          "required": true,
+          "description": "Configured Codex provider-key ID. This is not a credential.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
           "name": "id",
           "in": "path",
           "required": true,
@@ -43863,12 +44191,10 @@
         ],
         "security": [
           {
-            "ManagementBearerAuth": [],
-            "VirtualKeyAuth": []
+            "ManagementBearerAuth": []
           },
           {
-            "BasicAuth": [],
-            "VirtualKeyAuth": []
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -43885,6 +44211,10 @@
                     "id": {
                       "type": "string",
                       "format": "uuid"
+                    },
+                    "email": {
+                      "type": "string",
+                      "description": "OAuth display metadata only; not an authorization identity."
                     },
                     "state": {
                       "type": "string",
@@ -43916,7 +44246,7 @@
             }
           },
           "401": {
-            "description": "Missing, inactive, expired, or disallowed gateway virtual key, or failed management authentication."
+            "description": "Genuine dashboard authentication is required, even when management auth is disabled or the route is whitelisted."
           },
           "404": {
             "description": "Connection does not exist for this owner."
@@ -43926,6 +44256,410 @@
           },
           "502": {
             "description": "Authorization could not complete. Upstream details are intentionally hidden."
+          }
+        }
+      }
+    },
+    "/api/chatgpt/connections": {
+      "parameters": [
+        {
+          "name": "x-bf-chatgpt-key",
+          "in": "header",
+          "required": true,
+          "description": "Configured ChatGPT account UUID. This identifier is not a credential.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "startChatGPTConnection",
+        "summary": "Start Sign in with ChatGPT",
+        "description": "Creates a short-lived OpenAI PKCE authorization attempt. Replaces any unfinished attempt for this account and never returns OAuth tokens. Responses use `Cache-Control: no-store`.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorization started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "disconnected",
+                            "pending",
+                            "exchanging",
+                            "connected",
+                            "refreshing",
+                            "revoking",
+                            "expired",
+                            "reconnect_required"
+                          ]
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email",
+                          "description": "OAuth display metadata only. It is not an authorization identity."
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "authorization_url"
+                      ],
+                      "properties": {
+                        "authorization_url": {
+                          "type": "string",
+                          "format": "uri",
+                          "description": "Generated `https://auth.openai.com/api/accounts/authorize` URL with PKCE parameters."
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Dashboard authentication is required, including when dashboard authentication is disabled for other management routes."
+          },
+          "403": {
+            "description": "Cross-site requests are not permitted."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          },
+          "502": {
+            "description": "Authorization could not complete. Upstream credentials and error bodies are not returned."
+          }
+        }
+      }
+    },
+    "/api/chatgpt/connections/current": {
+      "parameters": [
+        {
+          "name": "x-bf-chatgpt-key",
+          "in": "header",
+          "required": true,
+          "description": "Configured ChatGPT account UUID. This identifier is not a credential.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getCurrentChatGPTConnection",
+        "summary": "Get the ChatGPT connection status",
+        "description": "Returns connection metadata only. OAuth tokens are never returned. Response uses `Cache-Control: no-store`.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current connection state, including `disconnected` when the configured account has no connection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "disconnected",
+                        "pending",
+                        "exchanging",
+                        "connected",
+                        "refreshing",
+                        "revoking",
+                        "expired",
+                        "reconnect_required"
+                      ]
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email",
+                      "description": "OAuth display metadata only. It is not an authorization identity."
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Dashboard authentication is required, including when dashboard authentication is disabled for other management routes."
+          },
+          "403": {
+            "description": "Cross-site requests are not permitted."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          }
+        }
+      }
+    },
+    "/api/chatgpt/connections/{id}/complete": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        [
+          {
+            "name": "x-bf-chatgpt-key",
+            "in": "header",
+            "required": true,
+            "description": "Configured ChatGPT account UUID. This identifier is not a credential.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      ],
+      "post": {
+        "operationId": "completeChatGPTConnection",
+        "summary": "Complete Sign in with ChatGPT",
+        "description": "Exchanges the code from the pasted final loopback callback URL. The URL must be `http://127.0.0.1:1455/auth/callback?...`. Responses use `Cache-Control: no-store` and never expose OAuth tokens.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "callback_url"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "callback_url": {
+                    "type": "string",
+                    "format": "uri",
+                    "example": "http://127.0.0.1:1455/auth/callback?code=REDACTED&state=REDACTED"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Connection completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "disconnected",
+                        "pending",
+                        "exchanging",
+                        "connected",
+                        "refreshing",
+                        "revoking",
+                        "expired",
+                        "reconnect_required"
+                      ]
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email",
+                      "description": "OAuth display metadata only. It is not an authorization identity."
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Callback URL is invalid, expired, or does not match the authorization attempt."
+          },
+          "401": {
+            "description": "Dashboard authentication is required, including when dashboard authentication is disabled for other management routes."
+          },
+          "403": {
+            "description": "Cross-site requests are not permitted."
+          },
+          "404": {
+            "description": "Connection not found for this configured account."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
+          },
+          "502": {
+            "description": "Authorization could not complete. Upstream credentials and error bodies are not returned."
+          }
+        }
+      }
+    },
+    "/api/chatgpt/connections/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        [
+          {
+            "name": "x-bf-chatgpt-key",
+            "in": "header",
+            "required": true,
+            "description": "Configured ChatGPT account UUID. This identifier is not a credential.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      ],
+      "delete": {
+        "operationId": "disconnectChatGPTConnection",
+        "summary": "Disconnect or cancel a ChatGPT connection",
+        "description": "Revokes the renewable session and clears local tokens or cancels a pending attempt. Retains the account/client mapping for the next sign-in. Responses use `Cache-Control: no-store`.",
+        "tags": [
+          "Providers"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Disconnected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "disconnected",
+                        "pending",
+                        "exchanging",
+                        "connected",
+                        "refreshing",
+                        "revoking",
+                        "expired",
+                        "reconnect_required"
+                      ]
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email",
+                      "description": "OAuth display metadata only. It is not an authorization identity."
+                    },
+                    "expires_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Dashboard authentication is required, including when dashboard authentication is disabled for other management routes."
+          },
+          "403": {
+            "description": "Cross-site requests are not permitted."
+          },
+          "404": {
+            "description": "Connection not found for this configured account."
+          },
+          "503": {
+            "description": "Encrypted database storage is not configured."
           }
         }
       }
@@ -98403,104 +99137,6 @@
             "BasicAuth": []
           }
         ]
-      }
-    },
-    "/api/session/oidc/login": {
-      "post": {
-        "operationId": "startDashboardOIDC",
-        "summary": "Sign in to the dashboard with Tailscale",
-        "description": "Starts the configured OIDC authorization-code flow with S256 PKCE.\nRequires enabled dashboard authentication, encrypted persistence, and an\nOrigin header equal to the configured callback origin. Sets an HttpOnly,\nSecure, SameSite=Lax browser-binding cookie. State expires after five minutes.\nNo caller-supplied issuer, return URL, or identity header is accepted.\n",
-        "tags": [
-          "Session"
-        ],
-        "security": [],
-        "parameters": [
-          {
-            "in": "header",
-            "name": "Origin",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "303": {
-            "description": "Redirect to the IdP, or to the login page with a fixed error code.",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Set-Cookie": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/session/oidc/callback": {
-      "get": {
-        "operationId": "completeDashboardOIDC",
-        "summary": "Complete dashboard OIDC sign-in",
-        "description": "Consumes browser-bound state once across replicas, then verifies the ID\ntoken signature, issuer, audience, expiry, nonce, and allowed subject.\nIssues an independent Bifrost admin session, not an upstream bearer token.\nAll responses use no-store and no-referrer. Raw provider errors are not returned.\n",
-        "tags": [
-          "Session"
-        ],
-        "security": [],
-        "parameters": [
-          {
-            "in": "query",
-            "name": "state",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "code",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "error",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "cookie",
-            "name": "__Host-bifrost_oidc",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "303": {
-            "description": "Redirect to /workspace with a session cookie, or /login with a fixed error code.",
-            "headers": {
-              "Location": {
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Set-Cookie": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        }
       }
     }
   },

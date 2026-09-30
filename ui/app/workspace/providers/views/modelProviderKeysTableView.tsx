@@ -30,6 +30,7 @@ import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
 import CodexUsage from "./codexUsage";
+import ChatGPTAccount from "./chatgptAccount";
 
 interface Props {
 	className?: string;
@@ -93,8 +94,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
 	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
-	const entityLabel = providerName === "codex" ? "account" : isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
-	const entityLabelPlural = providerName === "codex" ? "accounts" : isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
+	const isSubscriptionProvider = providerName === "codex" || providerName === "chatgpt";
+	const entityLabel = isSubscriptionProvider ? "account" : isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
+	const entityLabelPlural = isSubscriptionProvider ? "accounts" : isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
@@ -259,9 +261,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							<col className="w-[12%]" />
 							<col className="w-[12%]" />
 						</colgroup>
-						<TableHeader className={providerName === "codex" ? "sr-only" : "w-full"}>
+						<TableHeader className={isSubscriptionProvider ? "sr-only" : "w-full"}>
 							<TableRow>
-								<TableHead>{providerName === "codex" ? "Account" : isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
+								<TableHead>{isSubscriptionProvider ? "Account" : isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>
@@ -277,7 +279,26 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							)}
 							{keys.map((key) => {
 								const isKeyEnabled = key.enabled ?? true;
-								if (providerName === "codex")
+								if (providerName === "chatgpt")
+									return (
+										<ChatGPTAccount
+											key={key.id}
+											account={key}
+											revision={usageRevision}
+											canUpdate={hasUpdateProviderAccess}
+											onEdit={() => setShowAddNewKeyDialog({ show: true, keyId: key.id })}
+											menu={
+												<ProviderKeyActionsMenu
+													keyId={key.id}
+													hasUpdateAccess={hasUpdateProviderAccess}
+													hasDeleteAccess={hasDeleteProviderAccess}
+													onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
+													onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
+												/>
+											}
+										/>
+									);
+								if (isSubscriptionProvider)
 									return (
 										<CodexUsage
 											key={key.id}

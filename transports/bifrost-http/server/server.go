@@ -1954,7 +1954,7 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		c := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 		c.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 		c.SetValue(schemas.BifrostContextKeyValidateKeys, true)
-		if provider == schemas.Codex && keyID != "" {
+		if (provider == schemas.Codex || provider == schemas.ChatGPT) && keyID != "" {
 			// This internal, per-key catalog operation is not an inference request.
 			// Give it only the configured account being refreshed; never borrow
 			// a caller's virtual key or authorize a provider-wide credential pool.
@@ -2490,6 +2490,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	handlers.NewCodexHandler(s.Config.ConfigStore).RegisterRoutes(s.Router, middlewares...)
+	handlers.NewChatGPTHandler(s.Config.ConfigStore).RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	if virtualMCPHandler != nil {
 		virtualMCPHandler.RegisterRoutes(s.Router, middlewares...)
