@@ -1451,6 +1451,9 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 			Weight:            config.Weight,
 		})
 	}
+	if vk.AllowAllProviders && gs.inMemoryStore != nil {
+		providerPermits = AppendAllProviderPermits(providerPermits, gs.inMemoryStore.GetConfiguredProviderNames())
+	}
 
 	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants
 	// exactly like a config: owns the clients it names, unions per client, blocks allowed-by-default.
@@ -3191,6 +3194,36 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	// Load providers
 	providers := config.Providers
 
+	// Populate teams with their relationships
+	for i := range teams {
+		team := &teams[i]
+
+		budgetIndexes := make(map[string]int, len(team.Budgets))
+		for j := range team.Budgets {
+			budgetIndexes[team.Budgets[j].ID] = j
+		}
+		for j := range budgets {
+			if budgets[j].TeamID == nil || *budgets[j].TeamID != team.ID {
+				continue
+			}
+			if index, exists := budgetIndexes[budgets[j].ID]; exists {
+				team.Budgets[index] = budgets[j]
+				continue
+			}
+			team.Budgets = append(team.Budgets, budgets[j])
+			budgetIndexes[budgets[j].ID] = len(team.Budgets) - 1
+		}
+
+		if team.RateLimitID != nil {
+			for j := range rateLimits {
+				if rateLimits[j].ID == *team.RateLimitID {
+					team.RateLimit = &rateLimits[j]
+					break
+				}
+			}
+		}
+	}
+
 	// Populate model configs with their relationships (Budgets and RateLimit)
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
@@ -3342,6 +3375,21 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 		gs.storeVirtualKey(vk.Value.GetValue(), vk)
+	}
+
+	// Stamp team-owned budget and rate-limit entries in the flat caches so
+	// calendar-aligned resets survive restarts and reloads. GORM runs AfterFind
+	// before attaching preloaded relationships, so TableTeam cannot reliably do
+	// this itself.
+	for i := range teams {
+		team := &teams[i]
+		configstoreTables.StampCalendarAlignment(team.CalendarAligned, team.Budgets, team.RateLimit)
+		for j := range team.Budgets {
+			gs.storeBudget(team.Budgets[j].ID, &team.Budgets[j])
+		}
+		if team.RateLimit != nil {
+			gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
+		}
 	}
 
 	// Build model configs map.

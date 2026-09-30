@@ -68,7 +68,7 @@ import { useAttachVirtualKeyUsersMutation, useDetachVirtualKeyUserMutation } fro
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
-import { Lock, RotateCcw, Users } from "lucide-react";
+import { AlertTriangle, Lock, RotateCcw, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 // Side-effect import: registers the enterprise user picker so "Assign to User"
 // becomes available. Resolves to an empty module on OSS builds.
@@ -308,14 +308,26 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
-	// On create, the VK is governed unless the role grants CreateStandalone (the freedom to
-	// create ungoverned keys); the profile that will apply comes from vkCreationPolicy. If
-	// governed, lock the governance fields up front — the server applies the profile regardless.
-	const { data: vkCreationPolicy } = useGetMyVKCreationPolicyQuery(undefined, {
+	// On create, the VK is governed when the role lacks CreateStandalone (the freedom to create
+	// ungoverned keys) *and* vkCreationPolicy resolves a profile to govern with — with no profile
+	// the server creates the key ungoverned. If governed, lock the governance fields up front:
+	// the server applies the profile regardless.
+	const {
+		data: vkCreationPolicy,
+		isError: isVkCreationPolicyError,
+		refetch: refetchVkCreationPolicy,
+	} = useGetMyVKCreationPolicyQuery(undefined, {
 		skip: isEditing,
 		refetchOnMountOrArgChange: true,
 	});
-	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone;
+	// Only a resolved profile governs. "Managed by your access profile" is a claim about a
+	// specific profile, so it is never made on a guess: a caller who holds none gets the plain
+	// form, which is exactly the key the server will create for them.
+	const willBeGovernedOnCreate = !isEditing && !hasCreateStandalone && !!vkCreationPolicy?.has_access_profile;
+	// A failed lookup is not an answer either, and it neither locks the form nor blocks the
+	// create: the server governs the key correctly whatever this form shows, so all that is at
+	// stake is whether these fields survive. It says so and offers a retry.
+	const isVkCreationPolicyUnresolved = !isEditing && !hasCreateStandalone && isVkCreationPolicyError;
 	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
@@ -447,11 +459,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 					model_budgets: config.model_budgets?.map((mb) => ({
 						model_name: mb.model_name,
@@ -463,11 +475,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						})),
 						rate_limit: mb.rate_limit
 							? {
-								token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
-								token_reset_duration: mb.rate_limit.token_reset_duration,
-								request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: mb.rate_limit.request_reset_duration,
-							}
+									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
+									token_reset_duration: mb.rate_limit.token_reset_duration,
+									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
+									request_reset_duration: mb.rate_limit.request_reset_duration,
+								}
 							: undefined,
 					})),
 				})) || [],
@@ -486,18 +498,18 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			isActive: virtualKey?.is_active ?? true,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
-					const d = new Date(virtualKey.expires_at);
-					return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-				})()
+						const d = new Date(virtualKey.expires_at);
+						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+					})()
 				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
-						id: b.id,
-						max_limit: b.max_limit,
-						reset_duration: b.reset_duration ?? "1M",
-						reset_config: b.reset_config,
-					}))
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration ?? "1M",
+							reset_config: b.reset_config,
+						}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -1109,6 +1121,20 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="grow space-y-4 px-4 md:px-8">
+							{isVkCreationPolicyUnresolved && (
+								<Alert variant="warning">
+									<AlertTriangle className="h-4 w-4" />
+									<AlertDescription className="flex items-center justify-between gap-4">
+										<span>
+											Couldn&apos;t check whether an access profile governs the keys you create. You can still create one — if a profile
+											does govern it, the profile&apos;s providers, budgets, rate limits and MCP access replace what you set here.
+										</span>
+										<Button type="button" size="sm" variant="outline" onClick={() => refetchVkCreationPolicy()}>
+											Retry
+										</Button>
+									</AlertDescription>
+								</Alert>
+							)}
 							{isManagedByProfile && (
 								<>
 									<Alert variant="info">
@@ -1531,9 +1557,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
-																		}
+																				value: field.value,
+																				label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
+																			}
 																		: null
 																}
 																disabled={isTeamLocked}
@@ -1561,12 +1587,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label:
-																				field.value === virtualKey?.customer_id
-																					? (virtualKey?.customer?.name ?? field.value)
-																					: field.value,
-																		}
+																				value: field.value,
+																				label:
+																					field.value === virtualKey?.customer_id
+																						? (virtualKey?.customer?.name ?? field.value)
+																						: field.value,
+																			}
 																		: null
 																}
 																triggerClassName="h-9"
@@ -1595,9 +1621,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																fallbackOption={
 																	field.value
 																		? {
-																			value: field.value,
-																			label: field.value === assignedUserId ? assignedUserLabel : field.value,
-																		}
+																				value: field.value,
+																				label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																			}
 																		: null
 																}
 																triggerClassName="h-9"

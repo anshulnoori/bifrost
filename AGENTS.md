@@ -579,6 +579,8 @@ Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/
 
 These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
 
+**Never skip any error status code in a harness test script.** Do not open a test with an early-return guard like `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }` — every unexpected status, including auth failures, rate limits, and 5xx, must fail the assertion loudly rather than silently passing the case. Assert the exact status (or bound) the case expects and include `pm.response.text()` in the failure message.
+
 Write the case so it is **red before the change and green after**, and validate it structurally while developing — no live paid run needed:
 
 ```bash
@@ -599,14 +601,20 @@ The live provider harness is the user's to run, not the agent's. Do not launch i
 **RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
 
 ```bash
-# 1. port 8080 must be free
-lsof -nP -iTCP:8080 -sTCP:LISTEN
+# 1. backing services: start Weaviate (idempotent)
+docker compose -f tests/docker-compose.yml up -d weaviate
 
-# 2. start Bifrost from the code under test, then wait for /health
-make dev APP_DIR=$(pwd)/tests/integrations/python
+# 2. wait until Weaviate HTTP is ready (-f fails on 503) AND gRPC answers (the client does not check it at startup)
+until curl -sf http://localhost:9000/v1/.well-known/ready >/dev/null && nc -z localhost 50051; do sleep 2; done
 
-# 3. run the harness against that server
-make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+# 3. pick a free port (worktrees run side by side, so never assume 8080)
+lsof -nP -iTCP:<port> -sTCP:LISTEN
+
+# 4. start Bifrost from the code under test on that port, then wait for /health
+make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python
+
+# 5. run the harness against that server
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
 ```
 
 Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs.
@@ -627,7 +635,7 @@ The profile is the shared provider config at `tests/integrations/python/config.j
 
 `HARNESS_MAX_REQUESTS=<n>` is an optional enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Add it when a run is broad enough that the cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to need it. The preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
 
-Port 8080 is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:8080 -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
+The gateway port is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers at `BASE_URL` and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:<port> -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait. Weaviate must be up before that `make dev`: the profile enables a `weaviate` vector store on `localhost:9000`, so bring it up with `docker compose -f tests/docker-compose.yml up -d weaviate` first or the server fails to bootstrap. `up -d` returns before Weaviate is ready, so retry until `curl -sf http://localhost:9000/v1/.well-known/ready` passes (`-f` makes a 503 fail) and `nc -z localhost 50051` succeeds: the profile sets `grpc_config` to `localhost:50051`, and the client does not check gRPC reachability at startup, so a missing gRPC port only fails on the first gRPC-backed call.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 
