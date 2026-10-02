@@ -145,7 +145,7 @@ export const RequestTypes = [
 export const ProviderLabels: Record<ProviderName, string> = {
 	openai: "OpenAI",
 	chatgpt: "ChatGPT",
-	codex: "Codex (ChatGPT subscription)",
+	codex: "Codex",
 	anthropic: "Anthropic",
 	azure: "Azure",
 	bedrock: "AWS Bedrock",

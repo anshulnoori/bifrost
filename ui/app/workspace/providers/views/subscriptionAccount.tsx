@@ -4,6 +4,7 @@ import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { codexAction, codexUsage, type CodexUsage as Usage } from "@/lib/store/apis/codexApi";
+import { chatgptAction } from "@/lib/store/apis/chatgptApi";
 import { useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { ModelProviderKey } from "@/lib/types/config";
 import { getErrorMessage } from "@/lib/store";
@@ -12,8 +13,10 @@ import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { codexAccountLabel } from "./codexAccountLabel";
+import { chatgptAccountLabel } from "./chatgptAccountLabel";
 
-export default function CodexUsage({
+export default function SubscriptionAccount({
+	provider,
 	account,
 	revision,
 	canUpdate,
@@ -22,6 +25,7 @@ export default function CodexUsage({
 	checking,
 	menu,
 }: {
+	provider: "codex" | "chatgpt";
 	account: ModelProviderKey;
 	revision: number;
 	canUpdate: boolean;
@@ -42,11 +46,14 @@ export default function CodexUsage({
 		let timer: ReturnType<typeof setTimeout>;
 		async function load() {
 			try {
-				const connection = await codexAction(keyId, "status", undefined, controller.signal);
+				const connection =
+					provider === "codex"
+						? await codexAction(keyId, "status", undefined, controller.signal)
+						: await chatgptAction(keyId, "status", undefined, undefined, controller.signal);
 				if (controller.signal.aborted) return;
 				setStatus(connection.state.replaceAll("_", " "));
 				setEmail(connection.email);
-				if (connection.state === "connected" || connection.state === "refreshing") {
+				if (provider === "codex" && (connection.state === "connected" || connection.state === "refreshing")) {
 					const result = await codexUsage(keyId, controller.signal);
 					if (!controller.signal.aborted) setUsage(result);
 				} else setUsage(undefined);
@@ -64,7 +71,7 @@ export default function CodexUsage({
 			controller.abort();
 			clearTimeout(timer);
 		};
-	}, [keyId, revision, refresh]);
+	}, [provider, keyId, revision, refresh]);
 	const groups = usage
 		? [
 				{ name: "", limits: usage.rate_limit },
@@ -83,8 +90,8 @@ export default function CodexUsage({
 		? Math.max(0, Math.min(100, ...primaryWindows.map(({ window }) => 100 - window.used_percent!)))
 		: undefined;
 	const enabled = account.enabled ?? true;
-	const label = codexAccountLabel(account.name, email);
-	const reserve = account.codex_reserve_percent;
+	const label = provider === "codex" ? codexAccountLabel(account.name, email) : chatgptAccountLabel(account.name, email);
+	const reserve = provider === "codex" ? account.codex_reserve_percent : undefined;
 	const weekly = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window].filter(
 		(window) => window?.limit_window_seconds === 604800,
 	);
@@ -103,7 +110,11 @@ export default function CodexUsage({
 	return (
 		<TableRow data-testid={`key-row-${account.name}`} className="hover:bg-transparent">
 			<TableCell colSpan={4} className="p-0 whitespace-normal">
-				<Collapsible open={open} onOpenChange={setOpen} data-testid={`codex-usage-${keyId}`}>
+				<Collapsible
+					open={open}
+					onOpenChange={setOpen}
+					data-testid={`${provider === "codex" ? "codex-usage" : "chatgpt-account"}-${keyId}`}
+				>
 					<CollapsibleTrigger asChild>
 						<button
 							type="button"
@@ -130,27 +141,36 @@ export default function CodexUsage({
 						<dl className="grid grid-cols-1 items-start gap-x-6 gap-y-2 text-sm [overflow-wrap:anywhere] sm:grid-cols-[auto_minmax(0,1fr)] sm:gap-y-4 [&>dt:not(:first-child)]:mt-2 sm:[&>dt:not(:first-child)]:mt-0">
 							<dt className="text-muted-foreground pt-1">Account</dt>
 							<dd className="flex flex-wrap items-center gap-3">
-								<span data-testid="codex-account-email">{email?.trim() || "Email unavailable"}</span>
+								<span data-testid={`${provider}-account-email`}>{email?.trim() || "Email unavailable"}</span>
 								<Button variant="outline" size="sm" disabled={!canUpdate || checking || !enabled} onClick={() => onCheck(label)}>
 									{checking ? "Checking…" : "Check access"}
 								</Button>
 							</dd>
 							<dt className="text-muted-foreground">Models</dt>
 							<dd className="break-words">
-								{!account.models?.length || account.models.includes("*") ? "All available Codex models" : account.models.join(", ")}
+								{!account.models?.length || account.models.includes("*")
+									? `All available ${provider === "codex" ? "Codex" : "ChatGPT"} models`
+									: account.models.join(", ")}
 								{!!account.blacklisted_models?.length && (
 									<span className="text-muted-foreground"> · Excludes {account.blacklisted_models.join(", ")}</span>
 								)}
 							</dd>
 							<dt className="text-muted-foreground">Billing</dt>
 							<dd>Uses your ChatGPT subscription allowance</dd>
-							<dt className="text-muted-foreground">Routing reserve</dt>
-							<dd>
-								{reserve == null ? "No reserve" : `Pause at ${reserve}% weekly allowance remaining`} ·{" "}
-								<a className="text-primary underline" href={`/workspace/model-limits?tab=subscriptions#${encodeURIComponent(account.id)}`}>
-									Edit in Budgets & Limits
-								</a>
-							</dd>
+							{provider === "codex" && (
+								<>
+									<dt className="text-muted-foreground">Routing reserve</dt>
+									<dd>
+										{reserve == null ? "No reserve" : `Pause at ${reserve}% weekly allowance remaining`} ·{" "}
+										<a
+											className="text-primary underline"
+											href={`/workspace/model-limits?tab=subscriptions#${encodeURIComponent(account.id)}`}
+										>
+											Edit in Budgets & Limits
+										</a>
+									</dd>
+								</>
+							)}
 							<dt className="text-muted-foreground">Usage</dt>
 							<dd className="space-y-3">
 								<div className="flex flex-wrap items-center gap-2">
@@ -166,7 +186,11 @@ export default function CodexUsage({
 										<RefreshCw className="size-3.5" />
 									</Button>
 									<Button variant="outline" size="sm" asChild>
-										<a href="https://chatgpt.com/codex/settings/usage" target="_blank" rel="noopener noreferrer">
+										<a
+											href={provider === "codex" ? "https://chatgpt.com/codex/settings/usage" : "https://chatgpt.com/settings/usage"}
+											target="_blank"
+											rel="noopener noreferrer"
+										>
 											ChatGPT usage <ExternalLink className="size-3" />
 										</a>
 									</Button>
@@ -214,7 +238,7 @@ export default function CodexUsage({
 									disabled={!canUpdate || updating}
 									onClick={async () => {
 										try {
-											await updateKey({ provider: "codex", keyId, key: { ...account, enabled: !enabled } }).unwrap();
+											await updateKey({ provider, keyId, key: { ...account, enabled: !enabled } }).unwrap();
 										} catch (error) {
 											toast.error("Could not update account", { description: getErrorMessage(error) });
 										}

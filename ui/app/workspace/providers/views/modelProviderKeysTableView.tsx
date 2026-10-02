@@ -29,8 +29,7 @@ import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, RefreshC
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
-import CodexUsage from "./codexUsage";
-import ChatGPTAccount from "./chatgptAccount";
+import SubscriptionAccount from "./subscriptionAccount";
 
 interface Props {
 	className?: string;
@@ -279,29 +278,11 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							)}
 							{keys.map((key) => {
 								const isKeyEnabled = key.enabled ?? true;
-								if (providerName === "chatgpt")
+								if (providerName === "codex" || providerName === "chatgpt")
 									return (
-										<ChatGPTAccount
+										<SubscriptionAccount
 											key={key.id}
-											account={key}
-											revision={usageRevision}
-											canUpdate={hasUpdateProviderAccess}
-											onEdit={() => setShowAddNewKeyDialog({ show: true, keyId: key.id })}
-											menu={
-												<ProviderKeyActionsMenu
-													keyId={key.id}
-													hasUpdateAccess={hasUpdateProviderAccess}
-													hasDeleteAccess={hasDeleteProviderAccess}
-													onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
-													onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
-												/>
-											}
-										/>
-									);
-								if (isSubscriptionProvider)
-									return (
-										<CodexUsage
-											key={key.id}
+											provider={providerName}
 											account={key}
 											revision={usageRevision}
 											canUpdate={hasUpdateProviderAccess}

@@ -1,5 +1,65 @@
 import { test, expect } from '../../core/fixtures/base.fixture'
 
+for (const width of [320, 390, 1440]) {
+  test(`ChatGPT uses Codex account controls and stays readable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 })
+    await page.addInitScript(() => localStorage.setItem('theme', 'dark'))
+    const email = 'personal.subscription.account@example.test'
+    const account = { id: 'personal', name: 'Personal', models: ['*'], blacklisted_models: ['gpt-excluded'], weight: 2, enabled: true }
+    const provider = { name: 'chatgpt', keys: [account], network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
+    let checked = false
+    await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+    await page.route('**/api/providers/chatgpt', route => route.fulfill({ json: provider }))
+    await page.route('**/api/providers/chatgpt/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+    await page.route('**/api/providers/chatgpt/keys/personal', route => {
+      expect(route.request().method()).toBe('PUT')
+      Object.assign(account, route.request().postDataJSON())
+      return route.fulfill({ json: account })
+    })
+    await page.route('**/api/providers/chatgpt/keys/personal/refresh-models', route => {
+      expect(route.request().method()).toBe('POST')
+      checked = true
+      return route.fulfill({ json: { ...account, status: 'success' } })
+    })
+    await page.route('**/api/chatgpt/connections**', route => {
+      expect(route.request().headers()['x-bf-chatgpt-key']).toBe('personal')
+      return route.fulfill({ json: { state: 'connected', email } })
+    })
+    await page.route('**/api/codex/**', () => { throw new Error('ChatGPT must not use Codex credentials or usage') })
+    await page.goto('/workspace/providers')
+    const closeSetup = page.getByRole('button', { name: 'Close for now', exact: true })
+    if (await closeSetup.isVisible()) await closeSetup.click()
+    const closeWidget = page.getByTestId('onboarding-widget-close')
+    if (await closeWidget.isVisible()) await closeWidget.click()
+    const row = page.getByTestId('chatgpt-account-personal')
+    const trigger = row.getByRole('button', { name: `Personal (${email}) subscription details` })
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    await trigger.click()
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(row.getByRole('button', { name: 'Check access', exact: true })).toBeVisible()
+    await expect(row).toContainText('Excludes gpt-excluded')
+    await expect(row).toContainText('Routing weight: 2')
+    await expect(row.getByRole('link', { name: 'ChatGPT usage' })).toHaveAttribute('href', 'https://chatgpt.com/settings/usage')
+    await expect(row.getByRole('progressbar')).toHaveCount(0)
+    await expect(row.getByText('Routing reserve', { exact: true })).toHaveCount(0)
+    expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+    if (width === 1440) {
+      await expect(page.getByTestId('provider-item-chatgpt').locator('svg path')).toHaveAttribute('fill', 'white')
+      await row.getByRole('button', { name: 'Check access', exact: true }).click()
+      await expect.poll(() => checked).toBe(true)
+      await row.getByRole('button', { name: 'Deactivate', exact: true }).click()
+      await expect(row.getByRole('button', { name: 'Activate', exact: true })).toBeVisible()
+      await expect(row.getByRole('button', { name: 'Check access', exact: true })).toBeDisabled()
+      await expect(trigger).toContainText('Inactive')
+      await row.getByRole('button', { name: 'Activate', exact: true }).click()
+      await expect(row.getByRole('button', { name: 'Check access', exact: true })).toBeEnabled()
+    }
+    if (await closeWidget.isVisible()) await closeWidget.click()
+    await expect(closeWidget).toBeHidden()
+    if (process.env.CHATGPT_SCREENSHOT_DIR) await page.screenshot({ animations: 'disabled', path: `${process.env.CHATGPT_SCREENSHOT_DIR}/chatgpt-${width}-expanded.png` })
+  })
+}
+
 test('ChatGPT accounts use keyless plan authorization and keep callback codes out of URLs', async ({ page }) => {
   const account = { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true }
   const provider = { name: 'chatgpt', keys: [account], network_config: {}, concurrency_and_buffer_size: {}, status: 'active' }

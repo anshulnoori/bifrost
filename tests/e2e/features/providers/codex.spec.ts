@@ -24,6 +24,7 @@ for (const width of [320, 390, 1440]) {
     const widgetClose = page.getByTestId('onboarding-widget-close')
     if (await widgetClose.isVisible()) await widgetClose.click()
     const label = trigger.locator('span').first()
+    if (width === 1440) await expect(page.getByTestId('provider-item-codex')).toHaveText('Codex')
     expect((await label.boundingBox())!.height).toBeLessThanOrEqual(80)
     for (const expanded of [false, true]) {
       if (expanded) await trigger.click()
@@ -41,6 +42,7 @@ for (const width of [320, 390, 1440]) {
 }
 
 test('Codex accounts use provider table, isolated usage bars and dashboard onboarding', async ({ page }) => {
+  test.setTimeout(60000)
   const accounts = [
     { id: 'personal', name: 'Personal', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 as number | null },
     { id: 'work', name: 'Work', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 },

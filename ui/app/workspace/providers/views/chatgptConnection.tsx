@@ -61,8 +61,9 @@ export default function ChatGPTConnection({ keyId }: { keyId: string }) {
 			{state === "pending" && (
 				<div className="space-y-4 rounded-md border p-4" data-testid="chatgpt-callback-form">
 					<p className="text-muted-foreground text-sm">
-						Continue in your browser. When Bifrost runs remotely, the final localhost page may not load. Copy its full URL from the browser
-						and paste it here.
+						OpenAI requires a local callback address. After approval, your browser may show “This site can’t be reached.” This is expected
+						when Bifrost runs remotely. Copy the full address from that tab, paste it below, and select Complete sign-in. Do not replace the
+						local address with this dashboard’s address.
 					</p>
 					<Button asChild disabled={!canOpenAuthorization}>
 						<a
