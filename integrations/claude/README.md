@@ -10,11 +10,17 @@ time, `patch.mjs` replaces only its Bun entrypoint with `entry.js` and the
 compiled `bridge.ts`. The replacement calls the binary's existing authenticated
 Messages client. It does not start the Claude Code agent loop.
 
-The patch accepts only Claude Code 2.1.287 from the Linux x64 glibc native npm
-package 0.3.287, with SHA-256
-`3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0`.
+The patch accepts only Claude Code 2.1.287 from the Linux glibc native npm
+packages 0.3.287. The pinned executable SHA-256 values are:
+
+1. x64: `3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0`.
+2. ARM64: `e4daf793d1e74fb0d9874dd09e98690bbfd7be515f78a87fd05b9e2b4bb33b03`.
+
 Other builds fail closed. Upgrades require inspection of module names, entrypoint
-layout, authentication, and synthetic request tests. ARM is not supported yet.
+layout, authentication, and synthetic request tests. Both architectures use the
+same bridge and native interface, with inspected architecture-specific imports.
+Optional npm dependencies install the matching host binary. Nix packaging selects
+`x86_64-linux` or `aarch64-linux`; it does not rewrite the ELF interpreter.
 
 Each request supplies all history, system blocks, tool definitions, and content.
 The bridge forwards native Messages fields without adding prompts, tools,
@@ -121,6 +127,10 @@ They also verify native PKCE login URLs, account isolation, state validation,
 dashboard authentication, credential redaction, and cancellation. Browser tests
 exercise the account table at narrow and desktop widths and manual-code errors.
 The gateway test is skipped unless a gateway binary/package is supplied.
+With `BIFROST_PACKAGE` set, native tests patch that package's original `bin/claude`
+and run its `bin/bifrost-claude`, rather than a development machine's binary.
+The ARM64 native runtime, account isolation/login, unary, SSE, and gateway tests
+also pass under QEMU on x64. Emulation does not replace the native NixOS canary.
 
 Saved subscription login, token refresh, real quota behavior, and the NixOS
 `nix-ld` service still require a live-account/host canary. Synthetic OAuth proves
