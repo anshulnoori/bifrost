@@ -1,4 +1,4 @@
-import { Database, Landmark, Link2, Network, Shuffle, Terminal, Workflow } from "lucide-react";
+import { Database, Landmark, Link2, Network, Shuffle, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
 
@@ -27,8 +27,12 @@ const resolveSize = (size: IconSize): number => {
 // Provider Icons with theme awareness where applicable
 export const ProviderIcons = {
 	chatgpt: (props: IconProps) => <ProviderIcons.openai {...props} />,
-	codex: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
-	claude: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
+	codex: ({ size = "md", className = "" }: IconProps) => (
+		<img src="/images/harness/codex.svg" alt="Codex" width={resolveSize(size)} height={resolveSize(size)} className={cn("object-contain", className)} />
+	),
+	claude: ({ size = "md", className = "" }: IconProps) => (
+		<img src="/images/claude-desktop.png" alt="Claude" width={resolveSize(size)} height={resolveSize(size)} className={cn("object-contain", className)} />
+	),
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return theme === "light" ? (

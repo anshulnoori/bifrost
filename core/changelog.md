@@ -7,3 +7,7 @@
 - fix: file_data sent as bare base64 with a file_type is folded into a data URL for OpenAI-shaped providers, which rejected the bare payload (#7682)
 - fix: OpenAI Responses drops a function_call input item id that does not begin with fc so Gemini streaming histories replay cleanly; call_id is kept (#7676)
 - fix: Gemini thought signatures on inline image and file parts stay on the content block and round-trip back to Gemini (#7692)
+- fix: bill openai service_tier fast at the priority rates and echo it to clients
+- fix: enforce tools_to_execute and tools_to_auto_execute at invocation time in code mode
+- fix: strip Gemini-only fields when falling back from Gemini to OpenAI Responses
+- fix: use the raw request path for auth checks and tidy SSRF helper formatting

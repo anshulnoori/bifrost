@@ -38,6 +38,7 @@ for (const width of [320, 390, 1440]) {
       }
       if (process.env.CODEX_SCREENSHOT_DIR) await accountRow.screenshot({ animations: 'disabled', path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-${width}-${expanded ? 'expanded' : 'collapsed'}.png` })
     }
+    if (process.env.CODEX_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.CODEX_SCREENSHOT_DIR}/codex-${width}-page.png` })
   })
 }
 

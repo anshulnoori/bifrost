@@ -1,8 +1,7 @@
 ## ✨ Features
 
-- **Anthropic Between-Tools Thinking** - `reasoning.type: "between_tools"` on chat and Responses requests, and `thinking: {"type": "between_tools"}` on the Anthropic drop-in route, are forwarded to Anthropic, Bedrock and Vertex with the caller's effort passed independently. Models without it get `disabled` or no thinking field, so a fallback to an older model never fails. The datasheet `supports_between_tools_thinking` field can override this (#7665)
-- **Tool Search for GPT-5.4 and Later** - `defer_loading` on function and MCP tools now reaches OpenAI, Azure, Bedrock and Bedrock Mantle for gpt-5.4, gpt-5.5, gpt-5.6 and gpt-6 models, so the model can search deferred tools instead of loading every tool eagerly. Other OpenAI-compatible backends still have it stripped. The datasheet `supports_tool_search` field can override this (#7534)
-- **Skipped Routing Fallbacks Are Logged** - A rule fallback that names no known provider is now reported in the request's routing log with the rule name and the configured entry, instead of being skipped silently (#7546)
+- **First-Time Setup Token** - New installs now require a setup token before the initial dashboard setup can be completed, so a fresh instance is no longer open to anyone who can reach it (#7830)
+- **Long-Context Fast Tier Pricing** - Added ultrafast and priority above-272k pricing columns so fast-tier requests over 272k tokens, including cache writes, bill at the published long-context rates (#7834, #7838)
 
 ## 🐞 Fixed
 
@@ -33,12 +32,13 @@
 - **Governance Resets During Startup** - Startup resets and the periodic reset worker now run only after governance state is fully hydrated, and team-owned budgets and rate limits keep the team's calendar alignment after a restart, so calendar-aligned limits are no longer reset on a creation-anchored boundary (#7615, #7637)
 - **Model Histogram Unnamed Series** - Rows without a model, such as list_models, file and batch operations, are excluded from the model histogram (#7632)
 - **Ungoverned Virtual Key Creation** - A user without an access profile no longer sees locked governance fields when creating a virtual key. The form locks only when a profile actually governs, and a failed policy lookup shows a warning with a retry instead of locking (#7413)
+- **Route parsing bug fix** - Auth whitelist and temp-token scope checks fixes fasthttp routing bug
+- **Code Mode Auto-Execute Allow List** - `tools_to_execute` and `tools_to_auto_execute` are now enforced at invocation time inside code mode, so indirect calls like `getattr(server, name)(...)` or a plugin tool rename cannot bypass them. Approved runs through `/v1/mcp/tool/execute` are bound only by `tools_to_execute` (#7833)
+- **OpenAI service_tier Fast Billing** - Requests with `service_tier` fast now bill at the priority rates, and the tier is echoed back to clients (#7837)
+- **Gemini to OpenAI Fallback** - Fallbacks from Gemini to OpenAI Responses now strip fields OpenAI rejects: item `status`, generated reasoning and function output IDs, function output `name`, and content signatures (#7835)
+- **Guardrail Redaction Alignment** - Anthropic raw transform targets now match normalized guardrail ordinals when billing headers or MCP blocks are present, so redaction hits the right fields (#7808)
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
-
-## 🐙 Closed GitHub Issues
-
-- [#7538](https://github.com/maximhq/bifrost/issues/7538) - Routing-rule fallbacks are dropped after restart in v2.2.3 (still listed by the API)
-- [#7649](https://github.com/maximhq/bifrost/issues/7649) - Bedrock provider drops extended-thinking token count (`output_tokens_details.thinking_tokens`) that AWS returns
+- **add_ultrafast_above_272k_pricing_columns** - Adds ultrafast above-272k pricing columns to the model pricing table. Reversible: rollback drops the added columns. Nullable additions, safe for rolling deploys.
+- **add_priority_above_272k_cache_creation_pricing_column** - Adds the priority above-272k cache creation pricing column. Reversible: rollback drops the added column. Nullable addition, safe for rolling deploys.

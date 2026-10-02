@@ -1,3 +1,3 @@
-- fix: routing fallbacks in the legacy provider/model string form are re-parsed at route time, so custom providers registered after the rules were decoded at boot are no longer dropped; object-form fields are trimmed on decode (#7543)
-- fix: model histogram queries exclude rows with an empty model, so list_models, file and batch operations no longer appear as an unnamed series (#7632)
-- chore: upgraded core to v1.11.0
+- feat: add ultrafast and priority above-272k pricing columns and bill long-context fast-tier requests at the published rates
+- fix: bill openai service_tier fast at the priority rates
+- chore: upgraded core to v1.11.1
