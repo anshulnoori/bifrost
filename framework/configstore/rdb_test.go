@@ -645,6 +645,38 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 	assert.Equal(t, "original-uuid", result["openai"].Keys[0].ID, "Original KeyID should be preserved")
 }
 
+func TestUpdateProviderKeyClearsCodexReserve(t *testing.T) {
+	for _, reserve := range []float64{25, 0} {
+		t.Run(fmt.Sprintf("reserve-%g", reserve), func(t *testing.T) {
+			store := setupRDBTestStore(t)
+			ctx := context.Background()
+			personal := schemas.Key{
+				ID: "personal", Name: "Personal", Models: []string{"*"},
+				Weight: 1, Enabled: schemas.Ptr(true), CodexReservePercent: &reserve,
+			}
+			workReserve := 40.0
+			work := schemas.Key{
+				ID: "work", Name: "Work", Models: []string{"*"},
+				Weight: 1, Enabled: schemas.Ptr(true), CodexReservePercent: &workReserve,
+			}
+			require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+				schemas.Codex: {Keys: []schemas.Key{personal, work}},
+			}))
+			personal.CodexReservePercent = nil
+			require.NoError(t, store.UpdateProviderKey(ctx, schemas.Codex, personal.ID, personal))
+			cleared, err := store.GetProviderKey(ctx, schemas.Codex, personal.ID)
+			require.NoError(t, err)
+			require.Nil(t, cleared.CodexReservePercent)
+			require.Equal(t, personal.Name, cleared.Name)
+			require.Equal(t, personal.Models, cleared.Models)
+			require.True(t, *cleared.Enabled)
+			unchanged, err := store.GetProviderKey(ctx, schemas.Codex, work.ID)
+			require.NoError(t, err)
+			require.Equal(t, &workReserve, unchanged.CodexReservePercent)
+		})
+	}
+}
+
 func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
