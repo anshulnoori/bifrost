@@ -66,9 +66,9 @@ export function patchBinary(input, output) {
       ["chunk-vrng99ca.js", "chunk-rtycvjbr.js"],
       ["chunk-ydbv64xy.js", "chunk-4z0v3gv5.js"],
       ["chunk-k985080f.js", "chunk-g77csgy5.js"],
-      ["const { tD, NDr, dO }", "const { tN: tD, FNr: NDr, dI: dO }"],
+      ["const { tD, NDr }", "const { tN: tD, FNr: NDr }"],
       ["const { LHe }", "const { LMe: LHe }"],
-      ["const { el, In, h$, JU }", "const { el, On: In, h$, JB: JU }"],
+      ["const { el, In, h$, JU, Wt, ft, Gp }", "const { el, On: In, h$, JB: JU, Wt, ft, Gp }"],
     ]) {
       assert.ok(entrySource.includes(from), `missing pinned native import: ${from}`);
       entrySource = entrySource.replaceAll(from, to);

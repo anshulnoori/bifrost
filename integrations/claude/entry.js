@@ -9,7 +9,7 @@ let ready;
 let native;
 async function initialize() {
   if (!ready) ready = (async () => {
-    const { tD, NDr, dO } = await import("/$bunfs/root/chunk-da9jta6b.js");
+    const { tD, NDr } = await import("/$bunfs/root/chunk-da9jta6b.js");
     const { startMdmRawRead } = await import("/$bunfs/root/chunk-cd7krv4h.js");
     const { startKeychainPrefetch } = await import("/$bunfs/root/chunk-y8e2dq66.js");
     startMdmRawRead();
@@ -19,10 +19,20 @@ async function initialize() {
     const { cp } = await import("/$bunfs/root/chunk-djntk4j0.js");
     const { GL } = await import("/$bunfs/root/chunk-vrng99ca.js");
     const { LHe } = await import("/$bunfs/root/chunk-ydbv64xy.js");
-    const { el, In, h$, JU } = await import("/$bunfs/root/chunk-k985080f.js");
-    if (![tD, NDr, dO, GL, LHe, el, In, h$, JU].every((f) => typeof f === "function"))
+    const { el, In, h$, JU, Wt, ft, Gp } = await import("/$bunfs/root/chunk-k985080f.js");
+    if (![tD, NDr, GL, LHe, el, In, h$, JU, Wt?.get, ft, Gp].every((f) => typeof f === "function"))
       throw new Error("native interface mismatch");
-    native = { tD, NDr, usage: dO, cp, GL, LHe, el, In, policy: h$, subscriptionScopes: JU };
+    // Same request as the native allowance reader, but exempt from the
+    // worker-wide essential-traffic mode for this one read only.
+    const usage = async () => {
+      if (!ft() || !Gp()) return {};
+      const response = await Wt.get("/api/oauth/usage", { timeout: 5000, refreshOAuth: true,
+        bypassEssentialTrafficOnly: true, headers: { "Content-Type": "application/json" },
+        validateStatus: (status) => status >= 200 && status < 300 });
+      if (!response.ok) throw new Error("usage unavailable");
+      return response.data;
+    };
+    native = { tD, NDr, usage, cp, GL, LHe, el, In, policy: h$, subscriptionScopes: JU };
   })();
   await ready;
 }

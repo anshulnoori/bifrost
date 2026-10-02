@@ -88,8 +88,11 @@ and no idle eviction; restart the bridge to release idle workers.
 The Claude Accounts table shows the subscription allowance like Codex: a headline
 bar (the tighter of the 5-hour session and 7-day windows) and, when expanded, the
 5-hour, 7-day, model-specific weekly windows and their reset times. The bridge
-calls the pinned binary's own allowance reader (`dO` on x64, `dI` on ARM64), which
-reads `GET /api/oauth/usage` with the account's credentials and native refresh.
+reads `GET /api/oauth/usage` through the pinned binary's first-party API client,
+with the account's credentials and native refresh. Workers run with
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which blocks the native allowance
+reader. This one request sets `bypassEssentialTrafficOnly`; the worker-wide mode
+stays on for every other request.
 Workers cache the result for 30 seconds; the dashboard polls every 60 seconds.
 Bifrost returns only window percentages and reset times, never spend, identity,
 or token data. Missing or malformed windows are omitted rather than invented, and a

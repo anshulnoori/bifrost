@@ -59,6 +59,45 @@ test("native browser login isolates accounts, binds manual state, and cancels wi
   assert.equal((await (await action("account-b")).json()).id, other.id, "cancel must not affect the other account");
 });
 
+test("usage read bypasses essential-traffic mode for that request only", { timeout: 30000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "claude-usage-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const patched = join(dir, "claude-raw");
+  patchBinary(process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/claude") : nativeBinary, patched);
+  writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: {
+    accessToken: "synthetic-usage-access-token", refreshToken: "synthetic-usage-refresh-token",
+    expiresAt: Date.now() + 3600000, scopes: ["user:inference", "user:profile"], subscriptionType: "pro",
+  } }), { mode: 0o600 });
+  const requests = [];
+  // Plain-HTTP proxy: the native client sends the absolute HTTPS URL, so no TLS is needed.
+  const proxy = createServer((req, res) => {
+    requests.push({ url: req.url, authorization: req.headers.authorization, beta: req.headers["anthropic-beta"] });
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+      five_hour: { utilization: 71, resets_at: "2026-10-03T01:30:00.226479+00:00" },
+      seven_day: { utilization: 12, resets_at: "2026-10-03T16:00:00.2265+00:00" },
+    }));
+  });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  t.after(() => proxy.close());
+  const token = "synthetic-usage-bridge-token-for-tests-only";
+  const child = spawn(process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/bifrost-claude") : patched, [], {
+    env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CONFIG_DIR: dir, CLAUDE_BRIDGE_WORKER: "1", CLAUDE_BRIDGE_PORT: "0",
+      CLAUDE_BRIDGE_TOKEN: token, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}`, NO_PROXY: "127.0.0.1,localhost" },
+  });
+  t.after(async () => { if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "exit"); } });
+  const [line] = await once(createInterface({ input: child.stdout }), "line");
+  const usage = await fetch(`http://127.0.0.1:${JSON.parse(line).port}/accounts/account-a/usage`,
+    { headers: { "x-claude-bridge-token": token }, signal: AbortSignal.timeout(15000) });
+  assert.equal(usage.status, 200, await usage.clone().text());
+  assert.deepEqual((await usage.json()).five_hour.utilization, 71);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.anthropic.com/api/oauth/usage");
+  assert.equal(requests[0].authorization, "Bearer synthetic-usage-access-token");
+  assert.match(requests[0].beta, /oauth-2025-04-20/);
+});
+
 for (const authentication of ["api-key", "oauth-token"]) {
   test(
     `pinned raw binary preserves native requests and stops at tool_use (${authentication})`,
