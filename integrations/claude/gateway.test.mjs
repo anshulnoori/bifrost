@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
-import { patchBinary } from "./patch.mjs";
+import { nativeBinary, patchBinary } from "./patch.mjs";
 
 const binary =
   process.env.BIFROST_BINARY ??
@@ -86,7 +86,7 @@ test(
     const token = "synthetic-bridge-token-for-tests-only";
     const patched = join(dir, "claude-raw");
     patchBinary(
-      new URL("./node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude", import.meta.url),
+      process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/claude") : nativeBinary,
       patched,
     );
     const executable = process.env.BIFROST_PACKAGE

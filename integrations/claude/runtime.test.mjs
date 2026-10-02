@@ -7,13 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
-import { patchBinary } from "./patch.mjs";
+import { nativeBinary, patchBinary } from "./patch.mjs";
 
 test("native browser login isolates accounts, binds manual state, and cancels without credentials", { timeout: 30000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "claude-login-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const patched = join(dir, "claude-raw");
-  patchBinary(new URL("./node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude", import.meta.url), patched);
+  patchBinary(process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/claude") : nativeBinary, patched);
   const token = "synthetic-account-management-token-only";
   const child = spawn(process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/bifrost-claude") : patched, [], {
     env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CONFIG_DIR: dir, CLAUDE_BRIDGE_PORT: "0", CLAUDE_BRIDGE_TOKEN: token,
@@ -62,10 +62,7 @@ for (const authentication of ["api-key", "oauth-token"]) {
     async (t) => {
       const dir = mkdtempSync(join(tmpdir(), "claude-raw-test-"));
       t.after(() => rmSync(dir, { recursive: true, force: true }));
-      const original = new URL(
-        "./node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",
-        import.meta.url,
-      );
+      const original = process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/claude") : nativeBinary;
       const patched = join(dir, "claude-raw");
       const wrong = join(dir, "wrong-build");
       writeFileSync(wrong, "not the approved pinned executable");
