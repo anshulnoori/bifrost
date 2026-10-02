@@ -1,12 +1,27 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
-import { claudeAction, type ClaudeConnection as Connection } from "@/lib/store/apis/claudeApi";
+import { claudeAction, claudeUsage, type ClaudeConnection as Connection, type ClaudeUsage } from "@/lib/store/apis/claudeApi";
 import { ModelProviderKey } from "@/lib/types/config";
-import { ChevronDown } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
 import { codexAccountLabel } from "./codexAccountLabel";
+
+function usageWindows(usage?: ClaudeUsage) {
+	if (!usage) return [];
+	return [
+		{ id: "five_hour", label: "5h session", window: usage.five_hour, headline: true },
+		{ id: "seven_day", label: "7d all models", window: usage.seven_day, headline: true },
+		{ id: "seven_day_opus", label: "7d Opus", window: usage.seven_day_opus, headline: false },
+		{ id: "seven_day_sonnet", label: "7d Sonnet", window: usage.seven_day_sonnet, headline: false },
+		...(usage.models ?? []).map((model) => ({ id: `model:${model.name}`, label: `7d ${model.name}`, window: model, headline: false })),
+	].flatMap(({ window, ...rest }) =>
+		window ? [{ ...rest, remaining: Math.max(0, Math.min(100, 100 - window.utilization)), resetsAt: window.resets_at }] : [],
+	);
+}
 
 export default function ClaudeAccount({
 	account,
@@ -23,31 +38,55 @@ export default function ClaudeAccount({
 }) {
 	const [open, setOpen] = useState(false);
 	const [connection, setConnection] = useState<Connection>();
+	const [usage, setUsage] = useState<ClaudeUsage>();
+	const [usageError, setUsageError] = useState(false);
 	const [error, setError] = useState("");
+	const [refresh, setRefresh] = useState(0);
 	useEffect(() => {
 		const controller = new AbortController();
-		const refresh = () =>
-			claudeAction(account.id, "status", controller.signal)
-				.then((result) => {
+		const load = async () => {
+			try {
+				const result = await claudeAction(account.id, "status", controller.signal);
+				if (controller.signal.aborted) return;
+				setConnection(result);
+				setError("");
+				if (result.state !== "connected") {
+					setUsage(undefined);
+					setUsageError(false);
+					return;
+				}
+				try {
+					const value = await claudeUsage(account.id, controller.signal);
 					if (!controller.signal.aborted) {
-						setConnection(result);
-						setError("");
+						setUsage(value);
+						setUsageError(false);
 					}
-				})
-				.catch(() => {
-					if (!controller.signal.aborted) setError("Status unavailable");
-				});
-		void refresh();
+				} catch {
+					// Never show a stale or fabricated allowance when the read fails.
+					if (!controller.signal.aborted) {
+						setUsage(undefined);
+						setUsageError(true);
+					}
+				}
+			} catch {
+				if (!controller.signal.aborted) setError("Status unavailable");
+			}
+		};
+		void load();
 		const timer = setInterval(() => {
-			void refresh();
-		}, 30000);
+			void load();
+		}, 60000);
 		return () => {
 			clearInterval(timer);
 			controller.abort();
 		};
-	}, [account.id, revision]);
+	}, [account.id, revision, refresh]);
 	const label = codexAccountLabel(account.name, connection?.email, "claude");
 	const status = account.enabled === false ? "Inactive" : error || connection?.state.replaceAll("_", " ") || "Loading…";
+	const windows = usageWindows(usage);
+	// The tighter of the session and weekly windows determines what is usable now.
+	const headlineWindows = windows.filter((window) => window.headline);
+	const headline = headlineWindows.length ? Math.min(...headlineWindows.map((window) => window.remaining)) : undefined;
 	return (
 		<TableRow data-testid={`key-row-${account.name}`} className="hover:bg-transparent">
 			<TableCell colSpan={4} className="p-0 whitespace-normal">
@@ -60,6 +99,12 @@ export default function ClaudeAccount({
 						>
 							<span className="min-w-0 basis-full font-medium [overflow-wrap:anywhere] sm:flex-1">{label}</span>
 							<span className="text-muted-foreground text-xs">Claude subscription</span>
+							{headline !== undefined && (
+								<span className="flex items-center gap-2 text-xs tabular-nums">
+									<Progress className="h-1.5 w-20" value={headline} aria-label="Remaining allowance" aria-valuenow={headline} />
+									<span>{Math.round(headline)}%</span>
+								</span>
+							)}
 							<Badge variant="secondary" className="capitalize">
 								{status}
 							</Badge>
@@ -81,6 +126,52 @@ export default function ClaudeAccount({
 							</dd>
 							<dt className="text-muted-foreground">Billing</dt>
 							<dd>Uses Claude subscription allowance</dd>
+							<dt className="text-muted-foreground">Usage</dt>
+							<dd className="space-y-3" data-testid="claude-usage">
+								<div className="flex flex-wrap items-center gap-2">
+									<span className="text-muted-foreground text-xs">
+										{usageError
+											? "Usage unavailable"
+											: connection?.state === "connected"
+												? usage
+													? "Subscription allowance"
+													: "Loading…"
+												: "Connect to view usage"}
+									</span>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										className="size-6"
+										aria-label="Refresh usage"
+										onClick={() => setRefresh((value) => value + 1)}
+									>
+										<RefreshCw className="size-3.5" />
+									</Button>
+									<Button variant="outline" size="sm" asChild>
+										<a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer">
+											Claude usage <ExternalLink className="size-3" />
+										</a>
+									</Button>
+								</div>
+								{windows.map((window) => (
+									<div key={window.id} className="max-w-sm space-y-1">
+										<div className="flex justify-between gap-3 text-xs">
+											<span>{window.label}</span>
+											<span>{Math.round(window.remaining)}% left</span>
+										</div>
+										<Progress value={window.remaining} aria-label={`${window.label} remaining`} aria-valuenow={window.remaining} />
+										{window.resetsAt && (
+											<p className="text-muted-foreground text-xs" title={new Date(window.resetsAt).toLocaleString()}>
+												{new Date(window.resetsAt).getTime() > Date.now()
+													? `Resets ${formatDistanceToNow(new Date(window.resetsAt), { addSuffix: true })}`
+													: "Reset pending refresh"}
+											</p>
+										)}
+									</div>
+								))}
+								{usage && windows.length === 0 && <p className="text-muted-foreground text-xs">No usage limits reported</p>}
+							</dd>
 						</dl>
 						<div className="mt-5 flex flex-wrap items-center justify-between gap-3">
 							<span className="text-muted-foreground text-xs">Routing weight: {account.weight}</span>

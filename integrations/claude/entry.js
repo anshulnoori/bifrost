@@ -9,7 +9,7 @@ let ready;
 let native;
 async function initialize() {
   if (!ready) ready = (async () => {
-    const { tD, NDr } = await import("/$bunfs/root/chunk-da9jta6b.js");
+    const { tD, NDr, dO } = await import("/$bunfs/root/chunk-da9jta6b.js");
     const { startMdmRawRead } = await import("/$bunfs/root/chunk-cd7krv4h.js");
     const { startKeychainPrefetch } = await import("/$bunfs/root/chunk-y8e2dq66.js");
     startMdmRawRead();
@@ -20,7 +20,9 @@ async function initialize() {
     const { GL } = await import("/$bunfs/root/chunk-vrng99ca.js");
     const { LHe } = await import("/$bunfs/root/chunk-ydbv64xy.js");
     const { el, In, h$, JU } = await import("/$bunfs/root/chunk-k985080f.js");
-    native = { tD, NDr, cp, GL, LHe, el, In, policy: h$, subscriptionScopes: JU };
+    if (![tD, NDr, dO, GL, LHe, el, In, h$, JU].every((f) => typeof f === "function"))
+      throw new Error("native interface mismatch");
+    native = { tD, NDr, usage: dO, cp, GL, LHe, el, In, policy: h$, subscriptionScopes: JU };
   })();
   await ready;
 }
@@ -28,6 +30,7 @@ let login;
 let flow;
 let expiry;
 let starting;
+let usageCache;
 async function status() {
   if (login && login.state !== "connected") return login;
   await initialize();
@@ -37,9 +40,17 @@ async function status() {
   return { state: "connected", email: native.In()?.emailAddress };
 }
 async function manage(method, path, body) {
-  const route = /^\/accounts\/[a-zA-Z0-9_-]{1,128}(\/start|\/code)?$/.exec(path);
+  const route = /^\/accounts\/[a-zA-Z0-9_-]{1,128}(\/start|\/code|\/usage)?$/.exec(path);
   if (!route) return Response.json({ error: "not found" }, { status: 404 });
   if (method === "GET" && !route[1]) return Response.json(await status());
+  if (method === "GET" && route[1] === "/usage") {
+    // Native subscription allowance reader: same credentials and refresh path.
+    if ((await status()).state !== "connected") return Response.json({ error: "not connected" }, { status: 409 });
+    // Cache briefly: several dashboard tabs/rows must not multiply upstream reads.
+    if (!usageCache || Date.now() - usageCache.at > 30000)
+      usageCache = { at: Date.now(), value: await native.usage() };
+    return Response.json(usageCache.value);
+  }
   if (method !== "POST") return Response.json({ error: "not found" }, { status: 404 });
   await initialize();
   if (route[1] === "/code") {
@@ -59,6 +70,7 @@ async function manage(method, path, body) {
   if (route[1] !== "/start") return Response.json({ error: "not found" }, { status: 404 });
   if (starting) return Response.json(await starting);
   if (login && ["pending", "connecting"].includes(login.state)) return Response.json(login);
+  usageCache = undefined;
   flow?.cleanup();
   clearTimeout(expiry);
   const attempt = new native.GL();

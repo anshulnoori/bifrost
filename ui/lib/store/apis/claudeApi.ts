@@ -16,6 +16,27 @@ const connectionSchema = z.object({
 });
 export type ClaudeConnection = z.infer<typeof connectionSchema>;
 
+const usageWindow = z.object({ utilization: z.number(), resets_at: z.string().optional() });
+const usageSchema = z.object({
+	five_hour: usageWindow.optional(),
+	seven_day: usageWindow.optional(),
+	seven_day_opus: usageWindow.optional(),
+	seven_day_sonnet: usageWindow.optional(),
+	models: z.array(usageWindow.extend({ name: z.string() })).optional(),
+});
+export type ClaudeUsage = z.infer<typeof usageSchema>;
+
+export async function claudeUsage(key: string, signal?: AbortSignal): Promise<ClaudeUsage> {
+	const response = await fetch("/api/claude/connections/usage", {
+		headers: { "x-bf-claude-key": key },
+		credentials: "same-origin",
+		cache: "no-store",
+		signal,
+	});
+	if (!response.ok) throw new Error("Usage unavailable");
+	return usageSchema.parse(await response.json());
+}
+
 export async function claudeAction(
 	key: string,
 	action: "status" | "start" | "code" | "disconnect",

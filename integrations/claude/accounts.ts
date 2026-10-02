@@ -78,7 +78,7 @@ export function createAccounts(root: string, executable: string) {
     } });
   }
   const manage: Manage = async (method, path, body) => {
-    const match = /^\/accounts\/([a-zA-Z0-9_-]{1,128})(\/start|\/code)?$/.exec(path);
+    const match = /^\/accounts\/([a-zA-Z0-9_-]{1,128})(\/start|\/code|\/usage)?$/.exec(path);
     if (!match) return Response.json({ error: "not found" }, { status: 404 });
     const account = match[1];
     if (method === "DELETE" && !match[2]) {

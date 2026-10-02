@@ -205,6 +205,8 @@ test(
     });
     assert.equal((await management("/current", { headers: { "x-bf-vk": "sk-bf-fixture-owner" } })).status, 401,
       "inference authentication must not manage subscription credentials");
+    assert.equal((await management("/usage", { headers: { "x-bf-vk": "sk-bf-fixture-owner" } })).status, 401,
+      "inference authentication must not read subscription usage");
     const signedIn = await fetch(origin + "/api/session/login", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "fixture", password: "synthetic-local-password" }) });
     assert.equal(signedIn.status, 200, await signedIn.clone().text());
@@ -213,6 +215,13 @@ test(
     assert.equal(current.status, 200, await current.clone().text());
     assert.equal(current.headers.get("cache-control"), "no-store");
     assert.doesNotMatch(await current.text(), /accessToken|refreshToken|synthetic-gateway-oauth-token/);
+    const usage = await management("/usage", { headers: { cookie } });
+    const usageText = await usage.text();
+    assert.equal(usage.status, 200, usageText);
+    assert.equal(usage.headers.get("cache-control"), "no-store");
+    // The native reader calls api.anthropic.com only for tokens with the profile
+    // scope; this synthetic token lacks it, so no allowance is reported or invented.
+    assert.deepEqual(JSON.parse(usageText), {});
     assert.equal((await management("", { method: "POST", headers: { cookie, "sec-fetch-site": "cross-site" } })).status, 403);
     assert.equal((await management("/current", { headers: { cookie, "x-bf-claude-key": "unknown-account" } })).status, 404);
     const started = await management("", { method: "POST", headers: { cookie } });

@@ -14,7 +14,9 @@ for (const width of [390, 1440]) {
     await page.route('**/api/claude/connections**', route => {
       expect(route.request().headers()['x-bf-claude-key']).toBe(account.id)
       expect(route.request().headers()['x-bf-vk']).toBeUndefined()
-      return unavailable ? route.fulfill({ status: 502, json: { error: 'unavailable' } }) : route.fulfill({ json: { state, email } })
+      if (unavailable) return route.fulfill({ status: 502, json: { error: 'unavailable' } })
+      // An account that reports no windows must not get a fabricated bar.
+      return route.fulfill({ json: route.request().url().endsWith('/usage') ? {} : { state, email } })
     })
     await page.goto('/workspace/providers')
     const setup = page.getByRole('button', { name: 'Close for now', exact: true })
@@ -47,14 +49,51 @@ for (const width of [390, 1440]) {
         page.getByRole('button', { name: 'Refresh account status' }).click(),
       ])
       state = 'reconnect_required'
-      await page.clock.runFor(30000)
+      await page.clock.runFor(60000)
       await expect(row.getByText('reconnect required', { exact: true })).toBeVisible()
       unavailable = true
-      await page.clock.runFor(30000)
+      await page.clock.runFor(60000)
       await expect(row.getByText('Status unavailable', { exact: true })).toBeVisible()
     }
   })
 }
+
+test('Claude subscription usage shows 5h and weekly allowance without inventing missing data', async ({ page }) => {
+  const account = { id: 'claude-usage', name: 'Personal', models: ['*'], weight: 1, enabled: true }
+  const provider = { name: 'claude', keys: [account], network_config: { max_retries: 0 }, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  let failUsage = false
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/claude', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/claude/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+  await page.route('**/api/claude/connections/usage', route => {
+    expect(route.request().headers()['x-bf-claude-key']).toBe(account.id)
+    return failUsage
+      ? route.fulfill({ status: 502, json: { error: 'unavailable' } })
+      : route.fulfill({ json: {
+          five_hour: { utilization: 6, resets_at: new Date(Date.now() + 3 * 3600_000).toISOString() },
+          seven_day: { utilization: 81, resets_at: new Date(Date.now() + 4 * 86400_000).toISOString() },
+          models: [{ name: 'Fable', utilization: 40 }],
+        } })
+  })
+  await page.route('**/api/claude/connections/current', route => route.fulfill({ json: { state: 'connected', email: 'owner@example.test' } }))
+  await page.goto('/workspace/providers')
+  const setup = page.getByRole('button', { name: 'Close for now', exact: true })
+  if (await setup.isVisible()) await setup.click()
+  const row = page.getByTestId('claude-account-claude-usage')
+  // Headline is the tighter of the session and weekly windows: 100 - 81.
+  await expect(row.getByRole('progressbar', { name: 'Remaining allowance' })).toHaveAttribute('aria-valuenow', '19')
+  await row.getByRole('button', { name: /subscription details/ }).click()
+  const usage = row.getByTestId('claude-usage')
+  await expect(usage.getByRole('progressbar', { name: '5h session remaining' })).toHaveAttribute('aria-valuenow', '94')
+  await expect(usage.getByRole('progressbar', { name: '7d all models remaining' })).toHaveAttribute('aria-valuenow', '19')
+  await expect(usage.getByRole('progressbar', { name: '7d Fable remaining' })).toHaveAttribute('aria-valuenow', '60')
+  await expect(usage.getByText(/Resets in about 3 hours/)).toBeVisible()
+  await expect(usage.getByRole('progressbar', { name: '7d Opus remaining' })).toHaveCount(0)
+  failUsage = true
+  await usage.getByRole('button', { name: 'Refresh usage' }).click()
+  await expect(usage.getByText('Usage unavailable')).toBeVisible()
+  await expect(row.getByRole('progressbar')).toHaveCount(0)
+})
 
 test('Claude creates an account before browser login and handles manual code, errors and cancellation', async ({ page }) => {
   const accounts: { id: string; name: string; models: string[]; weight: number; enabled: boolean }[] = []

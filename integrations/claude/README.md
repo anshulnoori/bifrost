@@ -83,6 +83,19 @@ credential caches from mixing accounts. Workers do not inherit deployment
 Anthropic API keys or Claude OAuth tokens. There is a limit of 32 resident workers
 and no idle eviction; restart the bridge to release idle workers.
 
+## Subscription usage
+
+The Claude Accounts table shows the subscription allowance like Codex: a headline
+bar (the tighter of the 5-hour session and 7-day windows) and, when expanded, the
+5-hour, 7-day, model-specific weekly windows and their reset times. The bridge
+calls the pinned binary's own allowance reader (`dO` on x64, `dI` on ARM64), which
+reads `GET /api/oauth/usage` with the account's credentials and native refresh.
+Workers cache the result for 30 seconds; the dashboard polls every 60 seconds.
+Bifrost returns only window percentages and reset times, never spend, identity,
+or token data. Missing or malformed windows are omitted rather than invented, and a
+failed read shows "Usage unavailable". This endpoint is undocumented; its shape
+was taken from the pinned binary and must be re-inspected on upgrades.
+
 ```nix
 services.bifrost.claude = {
   enable = true;

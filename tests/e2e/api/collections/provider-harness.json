@@ -179486,7 +179486,7 @@
       "name": "112. Claude native Messages (claude-native)"
     },
     {
-      "description": "Requires claudeVirtualKey set to an inference virtual key. No dashboard cookie or live Claude login is needed. Both requests must reject inference authorization before accessing native credentials or starting login; no quota is consumed.",
+      "description": "Requires claudeVirtualKey set to an inference virtual key. No dashboard cookie or live Claude login is needed. All three requests must reject inference authorization before accessing native credentials, starting login, or reading subscription usage; no quota is consumed.",
       "item": [
         {
           "event": [
@@ -179550,6 +179550,34 @@
             ],
             "method": "POST",
             "url": "{{baseUrl}}/api/claude/connections"
+          }
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Inference key cannot read subscription usage', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(401); pm.expect(pm.response.text()).not.to.match(/five_hour|seven_day|utilization|accessToken|refreshToken/); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "[EXPECT-4XX] Claude subscription usage requires dashboard login (claude-accounts)",
+          "request": {
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{claudeVirtualKey}}"
+              },
+              {
+                "key": "x-bf-claude-key",
+                "value": "account-a"
+              }
+            ],
+            "method": "GET",
+            "url": "{{baseUrl}}/api/claude/connections/usage"
           }
         }
       ],

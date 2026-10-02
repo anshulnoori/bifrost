@@ -18,6 +18,7 @@ func NewClaudeHandler(store configstore.ConfigStore) *ClaudeHandler {
 func (h *ClaudeHandler) RegisterRoutes(r *router.Router, middleware ...schemas.BifrostHTTPMiddleware) {
 	middleware = append(middleware, h.managementAuth)
 	r.GET("/api/claude/connections/current", lib.ChainMiddlewares(h.current, middleware...))
+	r.GET("/api/claude/connections/usage", lib.ChainMiddlewares(h.usage, middleware...))
 	r.POST("/api/claude/connections", lib.ChainMiddlewares(h.start, middleware...))
 	r.POST("/api/claude/connections/code", lib.ChainMiddlewares(h.code, middleware...))
 	r.DELETE("/api/claude/connections/current", lib.ChainMiddlewares(h.disconnect, middleware...))
@@ -47,17 +48,17 @@ func (h *ClaudeHandler) managementAuth(next fasthttp.RequestHandler) fasthttp.Re
 	}
 }
 
-func (h *ClaudeHandler) action(ctx *fasthttp.RequestCtx, method, action string) {
+func (h *ClaudeHandler) client(ctx *fasthttp.RequestCtx) (*claude.Client, string, bool) {
 	id := string(ctx.Request.Header.Peek("x-bf-claude-key"))
 	key, err := h.configStore.GetProviderKey(ctx, schemas.Claude, id)
 	if err != nil || key == nil || key.ID != id {
 		SendError(ctx, 404, "Claude account not found")
-		return
+		return nil, "", false
 	}
 	config, err := h.configStore.GetProvider(ctx, schemas.Claude)
 	if err != nil || config == nil {
 		SendError(ctx, 404, "Claude provider not found")
-		return
+		return nil, "", false
 	}
 	base := ""
 	if config.NetworkConfig != nil {
@@ -66,6 +67,14 @@ func (h *ClaudeHandler) action(ctx *fasthttp.RequestCtx, method, action string) 
 	client, err := claude.NewClient(base)
 	if err != nil {
 		SendError(ctx, 503, "Claude account service is not configured")
+		return nil, "", false
+	}
+	return client, id, true
+}
+
+func (h *ClaudeHandler) action(ctx *fasthttp.RequestCtx, method, action string) {
+	client, id, ok := h.client(ctx)
+	if !ok {
 		return
 	}
 	if len(ctx.PostBody()) > 8192 {
@@ -79,6 +88,20 @@ func (h *ClaudeHandler) action(ctx *fasthttp.RequestCtx, method, action string) 
 	}
 	SendJSON(ctx, result)
 }
+
+func (h *ClaudeHandler) usage(ctx *fasthttp.RequestCtx) {
+	client, id, ok := h.client(ctx)
+	if !ok {
+		return
+	}
+	result, status, err := client.Usage(ctx, id)
+	if err != nil {
+		SendError(ctx, status, err.Error())
+		return
+	}
+	SendJSON(ctx, result)
+}
+
 func (h *ClaudeHandler) current(ctx *fasthttp.RequestCtx)    { h.action(ctx, "GET", "") }
 func (h *ClaudeHandler) start(ctx *fasthttp.RequestCtx)      { h.action(ctx, "POST", "/start") }
 func (h *ClaudeHandler) code(ctx *fasthttp.RequestCtx)       { h.action(ctx, "POST", "/code") }

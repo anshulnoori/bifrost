@@ -30,6 +30,10 @@ test("native browser login isolates accounts, binds manual state, and cancels wi
   const status = await action("account-a");
   assert.equal(status.status, 200, await status.clone().text());
   assert.deepEqual(await status.json(), { state: "disconnected" });
+  // The native usage reader runs only for a connected subscription account.
+  const usage = await action("account-a", "/usage");
+  assert.equal(usage.status, 409, await usage.clone().text());
+  assert.doesNotMatch(await usage.text(), /accessToken|refreshToken|synthetic-must-not/);
   const start = await action("account-a", "/start", "POST");
   assert.equal(start.status, 200, await start.clone().text());
   const login = await start.json();
