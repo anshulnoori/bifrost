@@ -63,6 +63,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -788,6 +789,32 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 							rws.SetExtraParams(wrapper.ExtraParams)
 						}
 					}
+				}
+			}
+		}
+
+		// Claude consumes native Messages through the existing governed passthrough
+		// pipeline, not the Anthropic -> Responses converter below.
+		if config.Type == RouteConfigTypeAnthropic && strings.HasSuffix(config.Path, "/v1/messages") {
+			if messages, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+				provider, model := schemas.ParseModelString(messages.Model, schemas.Anthropic)
+				if provider == schemas.Claude {
+					request := &schemas.BifrostPassthroughRequest{
+						Provider: provider, Model: model, Method: method, Path: "/v1/messages",
+						RawQuery: string(ctx.URI().QueryString()), Body: rawBody,
+						SafeHeaders: map[string]string{
+							"x-bifrost-claude-session-id": string(ctx.Request.Header.Peek("x-bifrost-claude-session-id")),
+							"anthropic-beta":              string(ctx.Request.Header.Peek("anthropic-beta")),
+							"anthropic-version":           string(ctx.Request.Header.Peek("anthropic-version")),
+						},
+					}
+					if messages.IsStreamingRequested() {
+						streamingOwnsCancel = true
+						g.handlePassthroughStream(ctx, bifrostCtx, cancel, provider, request)
+					} else {
+						g.handlePassthroughNonStream(ctx, bifrostCtx, cancel, provider, request)
+					}
+					return
 				}
 			}
 		}
@@ -3481,6 +3508,15 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	}
 }
 
+func (g *GenericRouter) sendPassthroughError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, provider schemas.ModelProvider, bifrostErr *schemas.BifrostError) {
+	g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		if provider == schemas.Claude {
+			return anthropic.ToAnthropicChatCompletionError(err)
+		}
+		return err
+	}, bifrostErr)
+}
+
 func (g *GenericRouter) handlePassthroughNonStream(
 	ctx *fasthttp.RequestCtx,
 	bifrostCtx *schemas.BifrostContext,
@@ -3492,9 +3528,7 @@ func (g *GenericRouter) handlePassthroughNonStream(
 
 	resp, bifrostErr := g.client.Passthrough(bifrostCtx, provider, req)
 	if bifrostErr != nil {
-		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
-		}, bifrostErr)
+		g.sendPassthroughError(ctx, bifrostCtx, provider, bifrostErr)
 		return
 	}
 
@@ -3545,9 +3579,7 @@ func (g *GenericRouter) handlePassthroughStream(
 	stream, bifrostErr := g.client.PassthroughStream(bifrostCtx, provider, req)
 	if bifrostErr != nil {
 		cancel()
-		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
-		}, bifrostErr)
+		g.sendPassthroughError(ctx, bifrostCtx, provider, bifrostErr)
 		return
 	}
 
@@ -3555,32 +3587,24 @@ func (g *GenericRouter) handlePassthroughStream(
 	firstChunk, ok := <-stream
 	if !ok {
 		cancel()
-		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
-		}, newBifrostError(nil, "passthrough stream ended before headers were received"))
+		g.sendPassthroughError(ctx, bifrostCtx, provider, newBifrostError(nil, "passthrough stream ended before headers were received"))
 		return
 	}
 	if firstChunk == nil {
 		cancel()
-		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
-		}, newBifrostError(nil, "passthrough stream returned nil first chunk"))
+		g.sendPassthroughError(ctx, bifrostCtx, provider, newBifrostError(nil, "passthrough stream returned nil first chunk"))
 		return
 	}
 	if firstChunk.BifrostError != nil {
 		cancel()
-		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
-		}, firstChunk.BifrostError)
+		g.sendPassthroughError(ctx, bifrostCtx, provider, firstChunk.BifrostError)
 		return
 	}
 
 	passthroughResp := firstChunk.BifrostPassthroughResponse
 	if passthroughResp == nil {
 		cancel()
-		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return err
-		}, newBifrostError(nil, "passthrough stream returned empty first chunk"))
+		g.sendPassthroughError(ctx, bifrostCtx, provider, newBifrostError(nil, "passthrough stream returned empty first chunk"))
 		return
 	}
 
@@ -3667,6 +3691,9 @@ func (g *GenericRouter) handlePassthroughStream(
 				continue
 			}
 			if chunk.BifrostError != nil {
+				if provider == schemas.Claude {
+					reader.Send([]byte(anthropic.ToAnthropicResponsesStreamError(chunk.BifrostError)))
+				}
 				break
 			}
 			if chunk.BifrostPassthroughResponse != nil && len(chunk.BifrostPassthroughResponse.Body) > 0 {

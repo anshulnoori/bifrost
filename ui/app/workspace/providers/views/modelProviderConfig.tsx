@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -57,7 +58,25 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	return (
 		<div className="flex w-full flex-col gap-2">
 			<ProviderConfigSheet show={showConfigSheet} onCancel={() => setShowConfigSheet(false)} provider={provider} />
-			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
+			{provider.name === "claude" ? (
+				<Card data-testid="claude-provider-guidance">
+					<CardHeader className="flex flex-row items-center justify-between gap-2">
+						<CardTitle>Claude</CardTitle>
+						{editConfigButton}
+					</CardHeader>
+					<CardContent className="text-muted-foreground space-y-3 text-sm">
+						<p>Uses a pinned, modified Claude runtime. Configure the owner login on the bridge host, not in Bifrost.</p>
+						<p>
+							Send native history, system blocks, and caller tools to /v1/messages with a claude/ model prefix. Each request is independent.
+						</p>
+						<p>
+							Native streaming is supported. The bridge does not execute tools. OpenAI endpoints and session continuation are not supported.
+						</p>
+					</CardContent>
+				</Card>
+			) : (
+				<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
+			)}
 		</div>
 	);
 }

@@ -410,6 +410,10 @@
         "anthropic": {
           "$ref": "#/$defs/provider"
         },
+        "claude": {
+          "description": "Official Claude Agent SDK bridge. Native Messages only, admitted virtual keys, no static API keys. Requires CLAUDE_BRIDGE_TOKEN and max_retries=0.",
+          "$ref": "#/$defs/provider"
+        },
         "bedrock": {
           "$ref": "#/$defs/provider_with_bedrock_config"
         },

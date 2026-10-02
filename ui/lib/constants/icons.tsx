@@ -27,6 +27,7 @@ const resolveSize = (size: IconSize): number => {
 // Provider Icons with theme awareness where applicable
 export const ProviderIcons = {
 	codex: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
+	claude: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return theme === "light" ? (

@@ -158432,6 +158432,72 @@
           ]}}]
         }
       ]
+    },
+    {
+      "name": "112. Claude native Messages (claude-native)",
+      "description": "Requires the official SDK bridge, owner login, CLAUDE_BRIDGE_TOKEN, and claudeVirtualKey granting claude-sonnet-4-6. Two inference turns consume owner quota. Internal route is used against make dev; deployment maps public /v1/messages to this route.",
+      "item": [
+        {
+          "name": "Claude native independent unary (claude-native)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"X-Bf-Vk","value":"{{claudeVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"claude/claude-sonnet-4-6\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with NATIVE_OK only.\"}]}"},
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Native message without session continuation', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var body = pm.response.json(); pm.expect(body.type).to.equal('message'); pm.expect(body.role).to.equal('assistant'); pm.expect(body.content[0].text.trim()).to.equal('NATIVE_OK'); pm.expect(body.usage.input_tokens).to.be.above(0); pm.expect(pm.response.headers.has('x-bifrost-claude-session-id')).to.equal(false); pm.expect(body).not.to.have.property('choices'); });"
+          ]}}]
+        },
+        {
+          "name": "Claude native independent SSE (claude-native)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"X-Bf-Vk","value":"{{claudeVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"claude/claude-sonnet-4-6\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with SECOND_OK only.\"}]}"},
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Native SSE without OpenAI frames or session continuation', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var wire = pm.response.text(); pm.expect(wire).to.include('event: message_start'); pm.expect(wire).to.include('event: content_block_delta'); pm.expect(wire).to.include('event: message_stop'); pm.expect(wire).not.to.include('[DONE]'); pm.expect(wire).not.to.include('response.output_text'); pm.expect(pm.response.headers.has('x-bifrost-claude-session-id')).to.equal(false); });"
+          ]}}]
+        },
+        {
+          "name": "[EXPECT-4XX] Claude rejects session continuation (claude-native)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"X-Bf-Vk","value":"{{claudeVirtualKey}}"},{"key":"X-Bifrost-Claude-Session-ID","value":"7da76eaa-99e7-426f-b042-c77e1c0d365a"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"claude/claude-sonnet-4-6\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}"},
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Continuation is rejected rather than silently ignored', function () { pm.expect(pm.response.code).to.equal(400); pm.expect(pm.response.text()).to.include('session continuation is not supported'); });"
+          ]}}]
+        },
+        {
+          "name": "Claude native caller history and forced tool (claude-native)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"X-Bf-Vk","value":"{{claudeVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"claude/claude-sonnet-4-6\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"Remember the number 37.\"},{\"role\":\"assistant\",\"content\":\"The number is 37.\"},{\"role\":\"user\",\"content\":\"Call record with that number.\"}],\"tools\":[{\"name\":\"record\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},\"required\":[\"value\"]}}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"record\"}}"},
+            "url": "{{baseUrl}}/anthropic/v1/messages"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Caller history and tools remain native', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); var body = pm.response.json(); pm.expect(body.stop_reason).to.equal('tool_use'); var tool = body.content.find(function (block) { return block.type === 'tool_use'; }); pm.expect(tool.name).to.equal('record'); pm.expect(tool.input.value).to.equal(37); });"
+          ]}}]
+        },
+        {
+          "name": "[EXPECT-4XX] Claude rejects OpenAI Chat Completions (claude-native)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"X-Bf-Vk","value":"{{claudeVirtualKey}}"}],
+            "body": {"mode":"raw","raw":"{\"model\":\"claude/claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}"},
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Claude is not an OpenAI provider', function () { pm.expect(pm.response.code).to.be.within(400, 499); });"
+          ]}}]
+        }
+      ]
     }
   ]
 }

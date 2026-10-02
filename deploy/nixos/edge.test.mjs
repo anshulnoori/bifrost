@@ -131,6 +131,8 @@ test('Funnel target is inference-only; private target retains session routes', {
   await t.test('preserves body bytes, maps Anthropic, strips cookies, identity and routing overrides', async () => {
     const body = '{ "model": "synthetic", "messages": [] }';
     const res = await request('/v1/messages', {
+      'x-bifrost-claude-session-id': '7da76eaa-99e7-426f-b042-c77e1c0d365a',
+      'x-claude-bridge-owner': 'forged-owner', 'x-claude-bridge-token': 'forged-token',
       cookie: 'token=synthetic-admin', 'x-bf-api-key': 'provider-secret', 'cf-access-jwt-assertion': 'forged',
       'tailscale-user-login': 'forged', 'x-bf-url': 'http://evil.invalid',
     }, body);
@@ -141,6 +143,9 @@ test('Funnel target is inference-only; private target retains session routes', {
       assert.equal(headers[name], undefined, name);
     }
     assert.equal(headers['x-bf-vk'], 'sk-bf-synthetic');
+    assert.equal(headers['x-bifrost-claude-session-id'], '7da76eaa-99e7-426f-b042-c77e1c0d365a');
+    assert.equal(headers['x-claude-bridge-owner'], undefined);
+    assert.equal(headers['x-claude-bridge-token'], undefined);
   });
   await t.test('rejects content encoding and oversized bodies', async () => {
     assert.equal((await request('/v1/responses', { 'content-encoding': 'gzip' })).status, 415);

@@ -138,6 +138,7 @@
                 "pages": [
                   "providers/supported-providers/overview",
                   "providers/supported-providers/anthropic",
+                  "providers/supported-providers/claude",
                   "providers/supported-providers/azure",
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
