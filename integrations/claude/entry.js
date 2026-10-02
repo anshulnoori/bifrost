@@ -9,7 +9,7 @@ let ready;
 let native;
 async function initialize() {
   if (!ready) ready = (async () => {
-    const { tD } = await import("/$bunfs/root/chunk-da9jta6b.js");
+    const { tD, NDr } = await import("/$bunfs/root/chunk-da9jta6b.js");
     const { startMdmRawRead } = await import("/$bunfs/root/chunk-cd7krv4h.js");
     const { startKeychainPrefetch } = await import("/$bunfs/root/chunk-y8e2dq66.js");
     startMdmRawRead();
@@ -20,7 +20,7 @@ async function initialize() {
     const { GL } = await import("/$bunfs/root/chunk-vrng99ca.js");
     const { LHe } = await import("/$bunfs/root/chunk-ydbv64xy.js");
     const { el, In, h$, JU } = await import("/$bunfs/root/chunk-k985080f.js");
-    native = { tD, cp, GL, LHe, el, In, policy: h$, subscriptionScopes: JU };
+    native = { tD, NDr, cp, GL, LHe, el, In, policy: h$, subscriptionScopes: JU };
   })();
   await ready;
 }
@@ -92,19 +92,30 @@ const server = createBridge(
   accounts?.run ?? (async ({ body, headers, signal }) => {
     await initialize();
     if (!(await native.policy()).valid) throw new Error("native login policy denied");
+    const agentContext = { agentType: "main", isBackgroundAgent: false };
     const client = await native.tD({
       maxRetries: 0,
       model: body.model,
       source: "bifrost",
-      agentContext: { agentType: "main", isBackgroundAgent: false },
+      agentContext,
       signal,
     });
+    const request = client.authToken ? {
+      ...body,
+      system: native.NDr({
+        messages: body.messages,
+        system: body.system,
+        skipSystemPromptPrefix: true,
+        forceAttributionHeader: true,
+        agentContext,
+      }),
+    } : body;
     const beta = [headers["anthropic-beta"], client.authToken ? native.cp : null]
       .filter(Boolean)
       .join(",");
     try {
       return await client.beta.messages
-        .create(body, {
+        .create(request, {
           signal,
           headers: { ...headers, ...(beta ? { "anthropic-beta": beta } : {}) },
         })

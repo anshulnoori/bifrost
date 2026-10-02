@@ -66,7 +66,7 @@ export function patchBinary(input, output) {
       ["chunk-vrng99ca.js", "chunk-rtycvjbr.js"],
       ["chunk-ydbv64xy.js", "chunk-4z0v3gv5.js"],
       ["chunk-k985080f.js", "chunk-g77csgy5.js"],
-      ["const { tD }", "const { tN: tD }"],
+      ["const { tD, NDr }", "const { tN: tD, FNr: NDr }"],
       ["const { LHe }", "const { LMe: LHe }"],
       ["const { el, In, h$, JU }", "const { el, On: In, h$, JB: JU }"],
     ]) {

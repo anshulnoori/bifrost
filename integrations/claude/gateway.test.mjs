@@ -37,6 +37,13 @@ test(
       for await (const chunk of req) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks));
       captured.push(body);
+      if (!body.system?.[0]?.text?.startsWith("x-anthropic-billing-header:")) {
+        res.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({
+          type: "error",
+          error: { type: "rate_limit_error", message: "missing native billing metadata" },
+        }));
+        return;
+      }
       const message = {
         id: "msg_native",
         type: "message",
@@ -265,7 +272,9 @@ test(
     assert.deepEqual(result.content, [
       { type: "tool_use", id: "next", name: "lookup", input: { value: 37 } },
     ]);
-    assert.deepEqual(captured[0], { ...first, model: "claude-sonnet-4-6" });
+    const [billing, ...system] = captured[0].system;
+    assert.match(billing.text, /^x-anthropic-billing-header: cc_version=2\.1\.287\.2bf;/);
+    assert.deepEqual({ ...captured[0], system }, { ...first, model: "claude-sonnet-4-6" });
     const second = {
       model: first.model,
       max_tokens: 109,
@@ -290,7 +299,10 @@ test(
     }
     assert.match(output, /event: message_stop/);
     assert.doesNotMatch(output, /\[DONE\]|response\.output_text/);
-    assert.deepEqual(captured[1], { ...second, model: "claude-sonnet-4-6" });
+    const { system: secondSystem, ...secondBody } = captured[1];
+    assert.equal(secondSystem.length, 1, "only billing metadata when caller omits system");
+    assert.match(secondSystem[0].text, /^x-anthropic-billing-header: cc_version=2\.1\.287\.642;/);
+    assert.deepEqual(secondBody, { ...second, model: "claude-sonnet-4-6" });
     assert.equal(captured.length, 2, "no hidden inference or tool execution");
   },
 );

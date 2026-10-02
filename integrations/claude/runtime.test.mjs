@@ -79,6 +79,17 @@ for (const authentication of ["api-key", "oauth-token"]) {
       const gate = new Promise((resolve) => {
         release = resolve;
       });
+      const assertForwarded = (actual, expected, fingerprint) => {
+        if (authentication === "api-key") return assert.deepEqual(actual, expected);
+        const [billing, ...system] = actual.system;
+        assert.equal(billing.type, "text");
+        assert.match(billing.text, new RegExp(`^x-anthropic-billing-header: cc_version=2\\.1\\.287\\.${fingerprint};`));
+        assert.deepEqual(system, Array.isArray(expected.system)
+          ? expected.system : [{ type: "text", text: expected.system }]);
+        const { system: actualSystem, ...actualBody } = actual;
+        const { system: expectedSystem, ...expectedBody } = expected;
+        assert.deepEqual(actualBody, expectedBody);
+      };
       const upstream = createServer(async (req, res) => {
         assert.equal(req.url, "/v1/messages?beta=true");
         if (authentication === "oauth-token") {
@@ -90,6 +101,13 @@ for (const authentication of ["api-key", "oauth-token"]) {
         for await (const chunk of req) text += chunk;
         const body = JSON.parse(text);
         captured.push(body);
+        if (authentication === "oauth-token" && !body.system?.[0]?.text?.startsWith("x-anthropic-billing-header:")) {
+          res.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({
+            type: "error",
+            error: { type: "rate_limit_error", message: "missing native billing metadata" },
+          }));
+          return;
+        }
         if (body.messages[0].content === "NATIVE_ERROR") {
           res
             .writeHead(429, {
@@ -246,7 +264,9 @@ for (const authentication of ["api-key", "oauth-token"]) {
       assert.deepEqual((await response.json()).content, [
         { type: "tool_use", id: "tool_next", name: "caller_tool", input: { value: 37 } },
       ]);
-      assert.deepEqual(captured[0], first);
+      // Independently derived from the pinned fingerprint salt, positions 4/7/20,
+      // and version: SHA256("59cf53e54c78TO02.1.287").slice(0, 3).
+      assertForwarded(captured[0], first, "bf4");
       const second = {
         model: "claude-sonnet-4-6",
         max_tokens: 109,
@@ -288,7 +308,8 @@ for (const authentication of ["api-key", "oauth-token"]) {
       }
       assert.match(output, /event: message_stop/);
       assert.match(output, /"stop_reason":"tool_use"/);
-      assert.deepEqual(captured[1], second);
+      // The first user text is inside multimodal content, not a string body.
+      assertForwarded(captured[1], second, "764");
       assert.equal(captured.length, 2, "no tool execution or follow-up inference");
       const failed = await fetch(url, {
         method: "POST",

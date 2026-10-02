@@ -23,8 +23,12 @@ Optional npm dependencies install the matching host binary. Nix packaging select
 `x86_64-linux` or `aarch64-linux`; it does not rewrite the ELF interpreter.
 
 Each request supplies all history, system blocks, tool definitions, and content.
-The bridge forwards native Messages fields without adding prompts, tools,
-attachments, memory, session history, or compaction. It does not execute tools.
+For OAuth requests, the pinned native helper adds one billing metadata block
+before the caller's system blocks. It derives the fingerprint from the caller's
+messages and does not add the Claude Code agent prompt.
+The bridge preserves caller instructions, history, tools, and attachments.
+API-key requests remain unchanged. The bridge does not execute tools or add
+memory, session history, or compaction.
 Responses and SSE bytes remain native; streaming starts before completion.
 The native client adds its transport/authentication headers, including its OAuth
 beta. This is not a claim of support for every upstream beta feature.
