@@ -342,6 +342,12 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if provider == schemas.Claude {
+		if err := disconnectClaudeAccount(ctx, providerConfig.NetworkConfig, keyID); err != nil {
+			SendError(ctx, 502, "Disconnect the Claude account before deleting it")
+			return
+		}
+	}
 	if err := h.inMemoryStore.RemoveProviderKey(ctx, provider, keyID); err != nil {
 		logger.Warn("Failed to delete key %s for provider %s: %v", keyID, provider, err)
 		if errors.Is(err, lib.ErrNotFound) {
@@ -770,6 +776,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		return fmt.Errorf("codex_reserve_percent must be 0..100 and only applies to Codex")
 	}
 	switch provider {
+	case schemas.Claude:
+		if key.Value.IsSet() {
+			return fmt.Errorf("Claude accounts use browser sign-in, not API keys")
+		}
 	case schemas.Ollama:
 		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsSet() {
 			return fmt.Errorf("ollama_key_config.url is required for Ollama keys")

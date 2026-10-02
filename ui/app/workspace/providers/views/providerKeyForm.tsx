@@ -16,6 +16,7 @@ import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
 import CodexConnection from "./codexConnection";
+import ClaudeConnection from "./claudeConnection";
 import { codexAccountAlias } from "./codexAccountLabel";
 import { stripDatabricksAuthDiscriminator } from "./providerKeyForm.utils";
 interface Props {
@@ -28,7 +29,10 @@ interface Props {
 type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 
 export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: Props) {
-	const providerKeyFormSchema = z.object({ key: provider.name === "codex" ? codexProviderKeyFieldsSchema : modelProviderKeySchema });
+	const isSubscription = provider.name === "codex" || provider.name === "claude";
+	const providerKeyFormSchema = z.object({
+		key: isSubscription ? codexProviderKeyFieldsSchema : modelProviderKeySchema,
+	});
 	const [createdAccountId, setCreatedAccountId] = useState<string>();
 	const accountId = createdAccountId ?? keyId;
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
@@ -46,7 +50,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 			key: (currentKey
 				? ({
 						...currentKey,
-						name: provider.name === "codex" ? codexAccountAlias(currentKey.name) : currentKey.name,
+						name: isSubscription ? codexAccountAlias(currentKey.name, provider.name) : currentKey.name,
 					} as ProviderKeyFormValues)
 				: undefined) ?? {
 				id: uuid(),
@@ -66,7 +70,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		form.reset({
 			key: {
 				...currentKey,
-				name: provider.name === "codex" ? codexAccountAlias(currentKey.name) : currentKey.name,
+				name: isSubscription ? codexAccountAlias(currentKey.name, provider.name) : currentKey.name,
 			} as ProviderKeyFormValues,
 		});
 	}, [isEditing, currentKey, form, provider.name]);
@@ -85,20 +89,24 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		if (!form.formState.isValid && form.formState.errors.root?.message) {
 			return form.formState.errors.root?.message;
 		}
-		if (!form.formState.isDirty && (isEditing || provider.name !== "codex")) {
+		if (!form.formState.isDirty && (isEditing || !isSubscription)) {
 			return "No changes made";
 		}
 		return null;
-	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess, isEditing, provider.name]);
+	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess, isEditing, isSubscription]);
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
 		// Strip internal _auth_type fields before sending to API
 		const key = { ...value.key };
-		if (provider.name === "codex") {
+		if (isSubscription) {
 			// An empty API name means "unchanged", and names must be unique.
 			// Preserve existing generated names, or create a unique fallback.
-			key.name = key.name.trim() || (currentKey && !codexAccountAlias(currentKey.name) ? currentKey.name : `Codex ${uuid()}`);
+			key.name =
+				key.name.trim() ||
+				(currentKey && !codexAccountAlias(currentKey.name, provider.name)
+					? currentKey.name
+					: `${provider.name === "claude" ? "Claude" : "Codex"} ${uuid()}`);
 		}
 		if (key.azure_key_config) {
 			const { _auth_type, ...rest } = key.azure_key_config;
@@ -133,9 +141,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		mutation
 			.unwrap()
 			.then((saved) => {
-				if (provider.name === "codex" && !isEditing) {
+				if (isSubscription && !isEditing) {
 					setCreatedAccountId(saved.id);
-					form.reset({ key: { ...saved, name: codexAccountAlias(saved.name) } as ProviderKeyFormValues });
+					form.reset({
+						key: {
+							...saved,
+							name: codexAccountAlias(saved.name, provider.name),
+						} as ProviderKeyFormValues,
+					});
 				} else onSave();
 			})
 			.catch((err) => {
@@ -153,9 +166,9 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="flex grow flex-col gap-6 pt-4">
 				<div className="grow px-4 md:px-8">
-					{provider.name === "codex" && accountId && (
+					{isSubscription && accountId && (
 						<div className="mb-6 border-b pb-6">
-							<CodexConnection keyId={accountId} />
+							{provider.name === "claude" ? <ClaudeConnection keyId={accountId} /> : <CodexConnection keyId={accountId} />}
 						</div>
 					)}
 					<ApiKeyFormFragment
@@ -177,12 +190,12 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 									<span>
 										<Button
 											type="submit"
-											disabled={(!form.formState.isDirty && (isEditing || provider.name !== "codex")) || !hasUpdateProviderAccess}
+											disabled={(!form.formState.isDirty && (isEditing || !isSubscription)) || !hasUpdateProviderAccess}
 											isLoading={form.formState.isSubmitting || isCreatingProviderKey || isUpdatingProviderKey}
 											data-testid="key-save-btn"
 										>
 											<Save className="h-4 w-4 shrink-0" />
-											{provider.name === "codex" && !isEditing ? "Continue" : "Save"}
+											{isSubscription && !isEditing ? "Continue" : "Save"}
 										</Button>
 									</span>
 								</TooltipTrigger>

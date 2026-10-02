@@ -280,11 +280,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						name={`key.name`}
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>{effectiveProvider === "codex" ? "Name (optional)" : "Name"}</FormLabel>
+								<FormLabel>{["codex", "claude"].includes(effectiveProvider) ? "Name (optional)" : "Name"}</FormLabel>
 								<FormControl>
-									<Input placeholder={effectiveProvider === "codex" ? "e.g. Personal" : "Production Key"} type="text" {...field} />
+									<Input
+										placeholder={["codex", "claude"].includes(effectiveProvider) ? "e.g. Personal" : "Production Key"}
+										type="text"
+										{...field}
+									/>
 								</FormControl>
-								{effectiveProvider === "codex" && (
+								{["codex", "claude"].includes(effectiveProvider) && (
 									<p className="text-muted-foreground text-xs">Shown as Name (email). Leave blank to show only your email.</p>
 								)}
 								<FormMessage />
@@ -345,7 +349,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{effectiveProvider !== "codex" && !isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
+			{!["codex", "claude"].includes(effectiveProvider) && !isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
 				<FormField
 					control={control}
 					name={`key.value`}

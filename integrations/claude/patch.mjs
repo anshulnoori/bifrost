@@ -31,9 +31,9 @@ export function patchBinary(input, output) {
   const source = pointer(at + 8);
   assert.equal(source.length, 23369);
   assert.equal(bin.readUInt32LE(at + 28), 81632);
-  const bridge = ts
-    .transpileModule(readFileSync(new URL("./bridge.ts", import.meta.url), "utf8"), {
-      compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext },
+  const compile = (name) => ts
+    .transpileModule(readFileSync(new URL(`./${name}.ts`, import.meta.url), "utf8"), {
+      compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, removeComments: true },
     })
     .outputText.replace(
       /import \{([^}]+)\} from "(node:[^"]+)";/g,
@@ -43,8 +43,8 @@ export function patchBinary(input, output) {
   const replacement = Buffer.from(
     readFileSync(new URL("./entry.js", import.meta.url), "utf8").replace(
       "// __BIFROST_BRIDGE__",
-      bridge,
-    ),
+      compile("bridge"),
+    ).replace("// __BIFROST_ACCOUNTS__", compile("accounts")),
   );
   assert.ok(replacement.length <= source.length);
   source.fill(32);

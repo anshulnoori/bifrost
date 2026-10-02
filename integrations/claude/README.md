@@ -5,7 +5,7 @@ tools, and the agent loop. There is no Agent SDK query or CLIProxyAPI service.
 
 ## Runtime
 
-The package preserves the original Claude Code executable for login. At build
+The package preserves the original Claude Code executable. At build
 time, `patch.mjs` replaces only its Bun entrypoint with `entry.js` and the
 compiled `bridge.ts`. The replacement calls the binary's existing authenticated
 Messages client. It does not start the Claude Code agent loop.
@@ -48,8 +48,30 @@ is provided. API-key Anthropic remains a separate existing provider.
 Bifrost and the bridge require the same `CLAUDE_BRIDGE_TOKEN`, at least 32
 characters. Keep it outside the Nix store. Grant an authenticated virtual key
 access to the desired Claude models. Caller authentication headers are never
-used as subscription credentials. The deployment serves one account owner;
-virtual keys do not create independent Claude accounts.
+used as subscription credentials. Create configured Claude accounts in the
+dashboard, then grant virtual keys access to those account IDs and models.
+Account entries contain routing metadata, not API keys or OAuth credentials.
+
+## Browser sign-in
+
+The Claude Accounts table uses the same layout as Codex/ChatGPT. Add an account
+with an optional alias, select Continue, then Connect Claude. Open the Claude
+sign-in link and finish authorization in the browser. Copy the complete
+`code#state` displayed by Claude into Bifrost and select Complete sign-in.
+This uses the pinned binary's native manual browser OAuth flow; the callback
+belongs to Claude, not Bifrost. There is no gateway callback redirect to install.
+
+Only authenticated dashboard sessions can manage connections. Inference virtual
+keys cannot start login, submit codes, or disconnect accounts. Bifrost validates
+the current login attempt and state, and returns display metadata only. Pending
+attempts expire after ten minutes. Disconnect removes native credentials; deleting
+an account or provider also disconnects its accounts before removing configuration.
+
+Each configured account gets a separate native worker and private directory at
+`$CLAUDE_CONFIG_DIR/accounts/<account-ID>`. Process isolation prevents native
+credential caches from mixing accounts. Workers do not inherit deployment
+Anthropic API keys or Claude OAuth tokens. There is a limit of 32 resident workers
+and no idle eviction; restart the bridge to release idle workers.
 
 ```nix
 services.bifrost.claude = {
@@ -62,7 +84,8 @@ The option enables `programs.nix-ld`; it does not rewrite the ELF interpreter.
 The monorepo package includes `bin/claude` for original login and
 `bin/bifrost-claude` for the patched provider. The service runs as
 `bifrost-claude`, with `CLAUDE_CONFIG_DIR=/var/lib/bifrost-claude`.
-Run the original binary's `auth login` under that service identity and directory.
+Use the dashboard flow above; host CLI login is not required. Existing credentials
+at the directory root do not automatically connect a configured account.
 The gateway also needs the shared bridge token in its environment file.
 Do not configure `ANTHROPIC_API_KEY` for subscription use.
 
@@ -94,6 +117,9 @@ Tests use local synthetic upstreams and fake tokens, never a live account.
 They verify exact history, tool schemas/results, system and image content;
 native unary responses; streamed tool-input deltas before completion; no hidden
 tool execution; independent requests; admission; deadlines; and build rejection.
+They also verify native PKCE login URLs, account isolation, state validation,
+dashboard authentication, credential redaction, and cancellation. Browser tests
+exercise the account table at narrow and desktop widths and manual-code errors.
 The gateway test is skipped unless a gateway binary/package is supplied.
 
 Saved subscription login, token refresh, real quota behavior, and the NixOS

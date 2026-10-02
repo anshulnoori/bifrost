@@ -55,12 +55,12 @@ func TestClaudeNativePassthroughAndIsolation(t *testing.T) {
 		fmt.Fprint(w, `{"id":"msg_fixture","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"41"}],"stop_reason":"end_turn","usage":{"input_tokens":37,"output_tokens":2}}`)
 	}))
 	defer server.Close()
-	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testLogger{})
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}, ClaudeAccount: func(*schemas.BifrostContext, schemas.Key, string) error { return nil }}, testLogger{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := &schemas.BifrostPassthroughRequest{Provider: schemas.Claude, Model: "claude-sonnet-4-6", Method: "POST", Path: "/v1/messages", Body: []byte(`{"model":"claude/claude-sonnet-4-6","max_tokens":731,"messages":[{"role":"user","content":"hi"}]}`), SafeHeaders: map[string]string{"Authorization": "stolen", "x-claude-bridge-owner": "forged", "anthropic-beta": "caller-beta", "anthropic-version": "2023-06-01"}}
-	resp, failure := p.Passthrough(newContext(), schemas.Key{}, req)
+	resp, failure := p.Passthrough(newContext(), schemas.Key{ID: "account-a"}, req)
 	if failure != nil {
 		t.Fatal(failure)
 	}
@@ -73,7 +73,7 @@ func TestClaudeNativePassthroughAndIsolation(t *testing.T) {
 	if received.Get("Anthropic-Beta") != "caller-beta" || received.Get("Anthropic-Version") != "2023-06-01" {
 		t.Fatal("native feature headers lost", received)
 	}
-	admitted, failure := p.admitted(newContext(), req)
+	admitted, failure := p.admitted(newContext(), schemas.Key{ID: "account-a"}, req)
 	if failure != nil || gjson.GetBytes(admitted.Body, "model").String() != req.Model {
 		t.Fatalf("model not unprefixed: %+v", failure)
 	}
@@ -110,7 +110,7 @@ func TestClaudeRejectsRemoteBridgeAndProviderOverrides(t *testing.T) {
 		{Model: "claude-unauthorized", Method: "POST", Path: "/v1/messages"},
 		{Model: "claude-sonnet-4-6", Method: "POST", Path: "/v1/messages", Body: []byte(`{"messages":[]}`), SafeHeaders: map[string]string{"x-bifrost-claude-session-id": "session-fixture"}},
 	} {
-		if _, failure := p.admitted(newContext(), req); failure == nil {
+		if _, failure := p.admitted(newContext(), schemas.Key{ID: "account-a"}, req); failure == nil {
 			t.Fatalf("accepted %+v", req)
 		}
 	}

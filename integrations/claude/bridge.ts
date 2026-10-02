@@ -12,7 +12,9 @@ export type Run = (input: {
   body: NativeRequest;
   headers: Record<string, string>;
   signal: AbortSignal;
+  account?: string;
 }) => Promise<Response>;
+export type Manage = (method: string, path: string, body: Record<string, unknown>) => Promise<Response>;
 
 class RequestError extends Error {
   readonly status: number;
@@ -58,7 +60,7 @@ function sendError(res: ServerResponse, status: number, message: string) {
 }
 
 export function createBridge(
-  config: { token: string; maxConcurrent?: number; timeoutMs?: number },
+  config: { token: string; maxConcurrent?: number; timeoutMs?: number; manage?: Manage; requireAccount?: boolean },
   run: Run,
 ) {
   if (config.token.length < 32)
@@ -74,6 +76,30 @@ export function createBridge(
     }
     if (req.method === "GET" && req.url === "/health") {
       res.end("ok");
+      return;
+    }
+    if (config.manage && req.url?.startsWith("/accounts/")) {
+      try {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > 8192) throw new RequestError("account request too large", 413);
+          chunks.push(chunk);
+        }
+        const text = Buffer.concat(chunks).toString();
+        let body: Record<string, unknown> = {};
+        if (text) {
+          try { body = JSON.parse(text); } catch { throw new RequestError("invalid JSON body"); }
+          if (!body || typeof body !== "object" || Array.isArray(body)) throw new RequestError("invalid account request");
+        }
+        const response = await config.manage(req.method ?? "", req.url, body);
+        res.writeHead(response.status, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(await response.text());
+      } catch (error) {
+        sendError(res, error instanceof RequestError ? error.status : 502,
+          error instanceof RequestError ? error.message : "Claude account operation failed");
+      }
       return;
     }
     if (req.method !== "POST" || req.url !== "/v1/messages") {
@@ -101,6 +127,9 @@ export function createBridge(
       const owner = req.headers["x-claude-bridge-owner"];
       if (typeof owner !== "string" || !owner.length || owner.length > 256)
         throw new RequestError("admitted virtual-key owner required", 403);
+      const account = req.headers["x-claude-bridge-account"];
+      if (config.requireAccount && (typeof account !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(account)))
+        throw new RequestError("configured Claude account required", 403);
       if (req.headers["x-bifrost-claude-session-id"] !== undefined)
         throw new RequestError("session continuation is not supported");
       const chunks: Buffer[] = [];
@@ -122,7 +151,7 @@ export function createBridge(
         const value = req.headers[name];
         if (typeof value === "string") headers[name] = value;
       }
-      const upstream = await run({ body, headers, signal: controller.signal });
+      const upstream = await run({ body, headers, signal: controller.signal, account: typeof account === "string" ? account : undefined });
       if (controller.signal.aborted) return;
       const outgoing: Record<string, string> = {};
       upstream.headers.forEach((value, name) => {

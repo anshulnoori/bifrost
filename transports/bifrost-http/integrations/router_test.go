@@ -946,10 +946,10 @@ func (a claudeRouterAccount) GetConfiguredProviders() ([]schemas.ModelProvider, 
 	return []schemas.ModelProvider{schemas.Claude}, nil
 }
 func (a claudeRouterAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: a.url}, ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2}}, nil
+	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: a.url}, ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2}, ClaudeAccount: func(*schemas.BifrostContext, schemas.Key, string) error { return nil }}, nil
 }
 func (a claudeRouterAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
-	return nil, fmt.Errorf("Claude must not select an API key")
+	return []schemas.Key{{ID: "account-a", Name: "Claude", Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
 }
 
 type claudeRouterIdentity struct{ schemas.Identity }

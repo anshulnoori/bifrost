@@ -158435,7 +158435,7 @@
     },
     {
       "name": "112. Claude native Messages (claude-native)",
-      "description": "Requires the official SDK bridge, owner login, CLAUDE_BRIDGE_TOKEN, and claudeVirtualKey granting claude-sonnet-4-6. Two inference turns consume owner quota. Internal route is used against make dev; deployment maps public /v1/messages to this route.",
+      "description": "Requires the patched native bridge, a dashboard-connected Claude account, CLAUDE_BRIDGE_TOKEN, and claudeVirtualKey granting that account and claude-sonnet-4-6. Three inference turns consume subscription quota. Internal route is used against make dev; deployment maps public /v1/messages to this route.",
       "item": [
         {
           "name": "Claude native independent unary (claude-native)",
@@ -158495,6 +158495,35 @@
           },
           "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
             "pm.test('Claude is not an OpenAI provider', function () { pm.expect(pm.response.code).to.be.within(400, 499); });"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "113. Claude browser account boundary (claude-accounts)",
+      "description": "Requires claudeVirtualKey set to an inference virtual key. No dashboard cookie or live Claude login is needed. Both requests must reject inference authorization before accessing native credentials or starting login; no quota is consumed.",
+      "item": [
+        {
+          "name": "[EXPECT-4XX] Claude connection metadata requires dashboard login (claude-accounts)",
+          "request": {
+            "method": "GET",
+            "header": [{"key":"x-bf-vk","value":"{{claudeVirtualKey}}"},{"key":"x-bf-claude-key","value":"account-a"}],
+            "url": "{{baseUrl}}/api/claude/connections/current"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Inference key cannot read account metadata', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(401); pm.expect(pm.response.text()).not.to.match(/accessToken|refreshToken|authorization_url/); });"
+          ]}}]
+        },
+        {
+          "name": "[EXPECT-4XX] Claude browser login requires dashboard login (claude-accounts)",
+          "request": {
+            "method": "POST",
+            "header": [{"key":"Content-Type","value":"application/json"},{"key":"x-bf-vk","value":"{{claudeVirtualKey}}"},{"key":"x-bf-claude-key","value":"account-a"}],
+            "body": {"mode":"raw","raw":"{}"},
+            "url": "{{baseUrl}}/api/claude/connections"
+          },
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('Inference key cannot initiate subscription login', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(401); pm.expect(pm.response.text()).not.to.include('authorization_url'); });"
           ]}}]
         }
       ]

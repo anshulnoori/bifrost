@@ -4,6 +4,23 @@ import { test } from "node:test";
 import { createBridge, validate, type Run } from "./bridge.ts";
 
 const token = "synthetic-bridge-token-for-tests-only";
+test("account management requires bridge authentication and does not invoke inference", async (t) => {
+  let calls = 0;
+  const server = createBridge({ token, manage: async () => {
+    calls++;
+    return Response.json({ state: "disconnected" });
+  } }, async () => { throw new Error("not inference"); });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/accounts/account-a`;
+  assert.equal((await fetch(url)).status, 401);
+  assert.equal(calls, 0);
+  const response = await fetch(url, { headers: { "x-claude-bridge-token": token } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { state: "disconnected" });
+  assert.equal(calls, 1);
+});
 const request = {
   model: "claude-sonnet-4-6",
   max_tokens: 73,

@@ -568,6 +568,9 @@ type ProviderConfig struct {
 	// CodexCredential resolves an owner-bound subscription after gateway admission.
 	// It is installed by the host, never deserialized from provider configuration.
 	CodexCredential func(*BifrostContext, Key) (accessToken, accountID string, err error) `json:"-"`
+	// ClaudeAccount rechecks mutable account and virtual-key policy after selection.
+	// Native OAuth credentials remain in the account-isolated bridge worker.
+	ClaudeAccount func(*BifrostContext, Key, string) error `json:"-"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for

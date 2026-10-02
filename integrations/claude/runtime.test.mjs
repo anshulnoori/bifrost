@@ -9,6 +9,52 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { patchBinary } from "./patch.mjs";
 
+test("native browser login isolates accounts, binds manual state, and cancels without credentials", { timeout: 30000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "claude-login-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const patched = join(dir, "claude-raw");
+  patchBinary(new URL("./node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude", import.meta.url), patched);
+  const token = "synthetic-account-management-token-only";
+  const child = spawn(process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/bifrost-claude") : patched, [], {
+    env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CONFIG_DIR: dir, CLAUDE_BRIDGE_PORT: "0", CLAUDE_BRIDGE_TOKEN: token,
+      // Workers must not adopt these deployment-wide credentials.
+      ANTHROPIC_API_KEY: "synthetic-must-not-be-inherited", CLAUDE_CODE_OAUTH_TOKEN: "synthetic-must-not-be-inherited" },
+  });
+  t.after(async () => { if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "exit"); } });
+  const lines = createInterface({ input: child.stdout });
+  const [line] = await once(lines, "line");
+  const origin = `http://127.0.0.1:${JSON.parse(line).port}`;
+  const action = (account, suffix = "", method = "GET", body) => fetch(`${origin}/accounts/${account}${suffix}`, {
+    method, headers: { "x-claude-bridge-token": token }, ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const status = await action("account-a");
+  assert.equal(status.status, 200, await status.clone().text());
+  assert.deepEqual(await status.json(), { state: "disconnected" });
+  const start = await action("account-a", "/start", "POST");
+  assert.equal(start.status, 200, await start.clone().text());
+  const login = await start.json();
+  assert.equal(login.state, "pending");
+  const url = new URL(login.authorization_url);
+  assert.equal(url.origin + url.pathname, "https://claude.com/cai/oauth/authorize");
+  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(url.searchParams.get("redirect_uri"), "https://platform.claude.com/oauth/code/callback");
+  assert.ok(url.searchParams.get("state"));
+  assert.ok(url.searchParams.get("code_challenge"));
+  assert.doesNotMatch(JSON.stringify(login), /accessToken|refreshToken|codeVerifier|synthetic-must-not/);
+  const repeat = await (await action("account-a", "/start", "POST")).json();
+  assert.equal(repeat.id, login.id, "repeated start must keep the active attempt");
+  const other = await (await action("account-b", "/start", "POST")).json();
+  assert.notEqual(other.id, login.id);
+  assert.notEqual(new URL(other.authorization_url).searchParams.get("state"), url.searchParams.get("state"));
+  assert.equal((await action("account-a", "/code", "POST", { id: login.id, code: "fake#wrong-state" })).status, 400);
+  assert.equal((await action("account-b", "/code", "POST", { id: login.id, code: `fake#${url.searchParams.get("state")}` })).status, 409);
+  const disconnected = await action("account-a", "", "DELETE");
+  assert.equal(disconnected.status, 200);
+  assert.deepEqual(await disconnected.json(), { state: "disconnected" });
+  assert.deepEqual(await (await action("account-a")).json(), { state: "disconnected" });
+  assert.equal((await (await action("account-b")).json()).id, other.id, "cancel must not affect the other account");
+});
+
 for (const authentication of ["api-key", "oauth-token"]) {
   test(
     `pinned raw binary preserves native requests and stops at tool_use (${authentication})`,
@@ -129,6 +175,7 @@ for (const authentication of ["api-key", "oauth-token"]) {
           CLAUDE_BRIDGE_MODULE: new URL("./bridge.ts", import.meta.url).pathname,
           CLAUDE_BRIDGE_TOKEN: "synthetic-bridge-token-for-tests-only",
           CLAUDE_BRIDGE_PORT: "0",
+        CLAUDE_BRIDGE_WORKER: "1",
           ANTHROPIC_API_KEY: "synthetic-raw-fixture-only",
           ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstream.address().port}`,
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",

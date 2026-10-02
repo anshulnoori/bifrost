@@ -16,7 +16,7 @@ const binary =
   (process.env.BIFROST_PACKAGE && join(process.env.BIFROST_PACKAGE, "bin/bifrost-http"));
 test(
   "Bifrost governance -> patched Claude -> native inference and live SSE",
-  { skip: !binary, timeout: 30000 },
+  { skip: !binary, timeout: 60000 },
   async (t) => {
     const dir = mkdtempSync(join(tmpdir(), "claude-gateway-test-"));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -99,6 +99,7 @@ test(
         CLAUDE_CONFIG_DIR: dir,
         CLAUDE_BRIDGE_TOKEN: token,
         CLAUDE_BRIDGE_PORT: "0",
+      CLAUDE_BRIDGE_WORKER: "1",
         CLAUDE_CODE_OAUTH_TOKEN: "synthetic-gateway-oauth-token",
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstream.address().port}`,
@@ -135,7 +136,7 @@ test(
         config_store: { enabled: true, type: "sqlite", config: { path: join(dir, "config.db") } },
         providers: {
           claude: {
-            keys: [],
+            keys: [{ id: "account-a", name: "Claude fixture", weight: 1, models: ["*"], enabled: true }],
             network_config: { base_url: `http://127.0.0.1:${bridgePort}`, max_retries: 0 },
           },
         },
@@ -152,7 +153,7 @@ test(
               value: "sk-bf-fixture-owner",
               is_active: true,
               provider_configs: [
-                { provider: "claude", allowed_models: ["claude-sonnet-4-6"], weight: 1 },
+                { provider: "claude", allowed_models: ["claude-sonnet-4-6"], key_ids: ["account-a"], weight: 1 },
               ],
             },
           ],
@@ -181,7 +182,7 @@ test(
     });
     const origin = `http://127.0.0.1:${port}`;
     let ready = false;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 450; i++) {
       assert.equal(gateway.exitCode, null, diagnostics);
       try {
         if ((await fetch(origin + "/health")).ok) {
@@ -192,6 +193,30 @@ test(
       await delay(100);
     }
     assert.ok(ready, diagnostics);
+    const management = (path = "/current", options = {}) => fetch(origin + "/api/claude/connections" + path, {
+      ...options, headers: { "x-bf-claude-key": "account-a", ...options.headers },
+    });
+    assert.equal((await management("/current", { headers: { "x-bf-vk": "sk-bf-fixture-owner" } })).status, 401,
+      "inference authentication must not manage subscription credentials");
+    const signedIn = await fetch(origin + "/api/session/login", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "fixture", password: "synthetic-local-password" }) });
+    assert.equal(signedIn.status, 200, await signedIn.clone().text());
+    const cookie = signedIn.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
+    const current = await management("/current", { headers: { cookie } });
+    assert.equal(current.status, 200, await current.clone().text());
+    assert.equal(current.headers.get("cache-control"), "no-store");
+    assert.doesNotMatch(await current.text(), /accessToken|refreshToken|synthetic-gateway-oauth-token/);
+    assert.equal((await management("", { method: "POST", headers: { cookie, "sec-fetch-site": "cross-site" } })).status, 403);
+    assert.equal((await management("/current", { headers: { cookie, "x-bf-claude-key": "unknown-account" } })).status, 404);
+    const started = await management("", { method: "POST", headers: { cookie } });
+    assert.equal(started.status, 200, await started.clone().text());
+    const login = await started.json();
+    assert.equal(login.state, "pending");
+    assert.equal(new URL(login.authorization_url).origin, "https://claude.com");
+    const invalidCode = await management("/code", { method: "POST", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ id: login.id, code: "fake#invalid-state" }) });
+    assert.equal(invalidCode.status, 400);
+    assert.doesNotMatch(await invalidCode.text(), /fake#|invalid-state|synthetic-gateway-oauth-token/);
     const first = {
       model: "claude/claude-sonnet-4-6",
       max_tokens: 73,
