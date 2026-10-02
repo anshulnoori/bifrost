@@ -3158,7 +3158,9 @@ func (provider *AnthropicProvider) Passthrough(
 	if key.Value.GetValue() != "" {
 		fasthttpReq.Header.Set("x-api-key", key.Value.GetValue())
 	}
-	fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
+	if len(fasthttpReq.Header.Peek("anthropic-version")) == 0 {
+		fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
+	}
 
 	fasthttpReq.SetBody(req.Body)
 
@@ -3234,7 +3236,9 @@ func (provider *AnthropicProvider) PassthroughStream(
 	if key.Value.GetValue() != "" {
 		fasthttpReq.Header.Set("x-api-key", key.Value.GetValue())
 	}
-	fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
+	if len(fasthttpReq.Header.Peek("anthropic-version")) == 0 {
+		fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
+	}
 
 	fasthttpReq.SetBody(req.Body)
 

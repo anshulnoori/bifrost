@@ -1,0 +1,21 @@
+{
+  "name": "bifrost-claude",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node start.mjs",
+    "test": "node --test bridge.test.ts runtime.test.mjs gateway.test.mjs",
+    "typecheck": "tsc --noEmit --strict --target es2023 --module nodenext --allowImportingTsExtensions --skipLibCheck bridge.ts accounts.ts bridge.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.287"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

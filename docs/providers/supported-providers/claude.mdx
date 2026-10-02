@@ -1,0 +1,58 @@
+---
+title: "Claude"
+description: "Subscription-backed native Messages through a pinned Claude runtime"
+---
+
+Claude uses a build-pinned, modified Claude Code entrypoint. The original
+binary's authenticated client handles inference. Amp owns the agent loop,
+history, and tools. There is no Agent SDK query or CLIProxyAPI service.
+
+## Supported interface
+
+The edge exposes `POST /v1/messages`; Bifrost's internal route is
+`/anthropic/v1/messages`. Prefix the model with `claude/`, for example
+`claude/claude-sonnet-4-6`. OpenAI endpoints do not accept this provider.
+The existing Anthropic API-key provider is unchanged.
+
+Supply native Messages history, system blocks, tools and tool results, images,
+documents, and controls. Bifrost removes only the routing model prefix.
+The bridge does not add conversation context or execute returned tools.
+It forwards native unary responses and SSE deltas before completion.
+Each request is independent; session-continuation headers are rejected.
+Upstream validation and feature availability still apply.
+
+## Setup
+
+```json
+{
+  "providers": {
+    "claude": {
+      "keys": [],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8091",
+        "max_retries": 0
+      }
+    }
+  }
+}
+```
+
+Set the same runtime `CLAUDE_BRIDGE_TOKEN` in Bifrost and the bridge, with at
+least 32 characters. Grant the owner's virtual key access to the desired models.
+Subscription credentials stay in the bridge's owner-specific `CLAUDE_CONFIG_DIR`.
+Use the original `claude auth login` command under that identity.
+
+The monorepo packages both binaries and supplies `services.bifrost.claude.enable`.
+The NixOS module uses `nix-ld`, not an ELF interpreter patch. The current binary
+patch supports only Linux x64 glibc, Claude Code 2.1.287. Other builds fail closed.
+See `integrations/claude/README.md` for limits, deployment, and synthetic tests.
+
+## Subscription authorization
+
+The owner has stated approval for modifying this binary. That approval is not
+a general license for third-party subscription gateways or redistribution.
+The [legal guidance](https://code.claude.com/docs/en/legal-and-compliance) and
+[Agent SDK overview](https://platform.claude.com/docs/en/agent-sdk/overview)
+do not establish permission for this modified integration by themselves.
+Saved login, refresh, live service acceptance, and a NixOS host canary remain
+necessary before production use.

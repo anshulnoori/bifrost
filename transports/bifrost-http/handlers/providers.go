@@ -693,6 +693,17 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if provider == schemas.Claude {
+		config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+		if err == nil {
+			for _, key := range config.Keys {
+				if err := disconnectClaudeAccount(ctx, config.NetworkConfig, key.ID); err != nil {
+					SendError(ctx, 502, "Disconnect Claude accounts before deleting the provider")
+					return
+				}
+			}
+		}
+	}
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
 	}

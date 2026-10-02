@@ -100204,6 +100204,7 @@
         "description": "AI model provider identifier",
         "enum": [
           "anthropic",
+          "claude",
           "azure",
           "bedrock",
           "bedrock_mantle",

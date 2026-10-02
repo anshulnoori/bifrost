@@ -1,0 +1,100 @@
+import { test, expect } from '../../core/fixtures/base.fixture'
+
+for (const width of [390, 1440]) {
+  test(`Claude subscription account stays readable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1000 })
+    const email = 'personal.subscription.account@example.test'
+    let state = 'connected'
+    let unavailable = false
+    const account = { id: 'claude-account', name: 'Personal', models: ['*'], weight: 1, enabled: true }
+    const provider = { name: 'claude', keys: [account], network_config: { max_retries: 0 }, concurrency_and_buffer_size: {}, provider_status: 'active' }
+    await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+    await page.route('**/api/providers/claude', route => route.fulfill({ json: provider }))
+    await page.route('**/api/providers/claude/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+    await page.route('**/api/claude/connections**', route => {
+      expect(route.request().headers()['x-bf-claude-key']).toBe(account.id)
+      expect(route.request().headers()['x-bf-vk']).toBeUndefined()
+      return unavailable ? route.fulfill({ status: 502, json: { error: 'unavailable' } }) : route.fulfill({ json: { state, email } })
+    })
+    await page.goto('/workspace/providers')
+    const setup = page.getByRole('button', { name: 'Close for now', exact: true })
+    if (await setup.isVisible()) await setup.click()
+    const row = page.getByTestId('claude-account-claude-account')
+    const trigger = row.getByRole('button', { name: `Personal (${email}) subscription details` })
+    await expect(trigger).toBeVisible()
+    await trigger.click()
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(row.getByTestId('claude-account-email')).toHaveText(email)
+    expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+    const bounds = (await row.boundingBox())!
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
+    await expect(row.getByRole('progressbar')).toHaveCount(0)
+    await row.getByRole('button', { name: 'Edit connection' }).click()
+    await expect(page.getByTestId('claude-connected')).toContainText(email)
+    await expect(page.getByTestId('key-form').getByText('API Key', { exact: true })).toHaveCount(0)
+    if (width === 1440) {
+      await page.keyboard.press('Escape')
+      await page.clock.install()
+      // Manual refresh resets the polling interval after the clock is installed.
+      await Promise.all([
+        page.waitForResponse(response => response.url().endsWith('/api/claude/connections/current')),
+        page.getByRole('button', { name: 'Refresh account status' }).click(),
+      ])
+      state = 'reconnect_required'
+      await page.clock.runFor(30000)
+      await expect(row.getByText('reconnect required', { exact: true })).toBeVisible()
+      unavailable = true
+      await page.clock.runFor(30000)
+      await expect(row.getByText('Status unavailable', { exact: true })).toBeVisible()
+    }
+  })
+}
+
+test('Claude creates an account before browser login and handles manual code, errors and cancellation', async ({ page }) => {
+  const accounts: { id: string; name: string; models: string[]; weight: number; enabled: boolean }[] = []
+  const provider = { name: 'claude', keys: accounts, network_config: { max_retries: 0 }, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  let state = 'disconnected', id = '', receivedCode = false
+  const url = 'https://claude.com/cai/oauth/authorize?state=fixture-state&code_challenge=fixture&code_challenge_method=S256'
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/claude', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/claude/keys', route => {
+    if (route.request().method() === 'POST') {
+      const account = route.request().postDataJSON()
+      expect(account.value).toBeUndefined()
+      expect(account.name).toMatch(/^Claude /)
+      accounts.push(account); id = account.id
+      return route.fulfill({ json: account })
+    }
+    return route.fulfill({ json: { keys: accounts, total: accounts.length } })
+  })
+  await page.route('**/api/claude/connections**', route => {
+    expect(id).not.toBe('')
+    expect(route.request().headers()['x-bf-claude-key']).toBe(id)
+    const path = new URL(route.request().url()).pathname
+    if (route.request().method() === 'DELETE') state = 'disconnected'
+    else if (path.endsWith('/code')) {
+      expect(route.request().postDataJSON()).toEqual({ id: 'login-fixture', code: 'bad#fixture-state' })
+      receivedCode = true
+      return route.fulfill({ status: 400, json: { error: 'redacted' } })
+    } else if (route.request().method() === 'POST') state = 'pending'
+    return route.fulfill({ json: { state, ...(state === 'pending' ? { id: 'login-fixture', authorization_url: url, interval_seconds: 1 } : {}) } })
+  })
+  await page.goto('/workspace/providers')
+  const setup = page.getByRole('button', { name: 'Close for now', exact: true })
+  if (await setup.isVisible()) await setup.click()
+  await page.getByRole('button', { name: 'Add new account', exact: true }).click()
+  await expect(page.getByTestId('claude-onboarding')).toHaveCount(0)
+  await page.getByTestId('key-save-btn').click()
+  await page.getByTestId('claude-connect').click()
+  await expect(page.getByRole('link', { name: 'Open Claude sign-in' })).toHaveAttribute('href', url)
+  await page.getByTestId('claude-authorization-code').fill('bad#fixture-state')
+  await page.getByTestId('claude-submit-code').click()
+  await expect(page.getByTestId('claude-error')).toContainText('complete code#state')
+  expect(receivedCode).toBe(true)
+  // A subsequent silent status poll must not erase a manual-code error.
+  await page.waitForResponse(response => response.url().endsWith('/api/claude/connections/current'))
+  await expect(page.getByTestId('claude-error')).toBeVisible()
+  await page.getByTestId('claude-disconnect').click()
+  await expect(page.getByTestId('claude-status')).toHaveText('disconnected')
+  await expect(page.getByTestId('claude-authorization-code')).toHaveCount(0)
+})

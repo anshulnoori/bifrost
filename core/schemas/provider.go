@@ -573,6 +573,9 @@ type ProviderConfig struct {
 	CodexCredential func(*BifrostContext, Key) (accessToken, accountID string, err error) `json:"-"`
 	// ChatGPTCredential resolves a separate Sign in with ChatGPT registration.
 	ChatGPTCredential func(*BifrostContext, Key) (accessToken string, err error) `json:"-"`
+	// ClaudeAccount rechecks mutable account and virtual-key policy after selection.
+	// Native OAuth credentials remain in the account-isolated bridge worker.
+	ClaudeAccount func(*BifrostContext, Key, string) error `json:"-"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for

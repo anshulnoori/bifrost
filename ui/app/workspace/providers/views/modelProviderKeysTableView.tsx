@@ -29,6 +29,7 @@ import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, RefreshC
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
+import ClaudeAccount from "./claudeAccount";
 import SubscriptionAccount from "./subscriptionAccount";
 
 interface Props {
@@ -93,7 +94,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
 	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
-	const isSubscriptionProvider = providerName === "codex" || providerName === "chatgpt";
+	const isSubscriptionProvider = ["codex", "chatgpt", "claude"].includes(providerName);
 	const entityLabel = isSubscriptionProvider ? "account" : isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
 	const entityLabelPlural = isSubscriptionProvider ? "accounts" : isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
@@ -121,23 +122,36 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const isRefreshing = isRefreshingProvider || refreshingKeyIds.size > 0;
 
 	async function handleRefreshProviderModels() {
+		if (providerName === "claude") {
+			setUsageRevision((value) => value + 1);
+			return;
+		}
 		try {
 			await refreshProviderModels(provider.name).unwrap();
 			toast.success("Model list refreshed", {
 				description: `Re-checked every enabled ${entityLabel} for ${provider.name}.`,
 			});
 		} catch (err) {
-			toast.error("Failed to refresh model list", { description: getErrorMessage(err) });
+			toast.error("Failed to refresh model list", {
+				description: getErrorMessage(err),
+			});
 		}
 	}
 
 	async function handleRefreshKeyModels(keyId: string, keyName: string) {
 		setRefreshingKeyIds((prev) => new Set(prev).add(keyId));
 		try {
-			await refreshProviderKeyModels({ provider: provider.name, keyId }).unwrap();
-			toast.success("Model list refreshed", { description: `Re-checked ${keyName}.` });
+			await refreshProviderKeyModels({
+				provider: provider.name,
+				keyId,
+			}).unwrap();
+			toast.success("Model list refreshed", {
+				description: `Re-checked ${keyName}.`,
+			});
 		} catch (err) {
-			toast.error("Failed to refresh model list", { description: getErrorMessage(err) });
+			toast.error("Failed to refresh model list", {
+				description: getErrorMessage(err),
+			});
 		} finally {
 			setRefreshingKeyIds((prev) => {
 				const next = new Set(prev);
@@ -212,15 +226,25 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
 										disabled={isRefreshing}
 										data-testid="provider-refresh-models"
-										aria-label={isRefreshingProvider ? "Refreshing model list" : "Refresh model list"}
+										aria-label={
+											providerName === "claude"
+												? "Refresh account status"
+												: isRefreshingProvider
+													? "Refreshing model list"
+													: "Refresh model list"
+										}
 										onClick={handleRefreshProviderModels}
 									>
 										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
-										<span className="hidden xl:inline">{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}</span>
+										<span className="hidden xl:inline">
+											{providerName === "claude" ? "Refresh account status" : isRefreshingProvider ? "Refreshing..." : "Refresh model list"}
+										</span>
 									</Button>
 								</TooltipTrigger>
 								<TooltipContent className="max-w-xs">
-									Re-check what models this provider serves. Otherwise this runs on the interval set in Model Settings.
+									{providerName === "claude"
+										? "Re-check the connection status of each Claude account."
+										: "Re-check what models this provider serves. Otherwise this runs on the interval set in Model Settings."}
 								</TooltipContent>
 							</Tooltip>
 						) : null}
@@ -278,28 +302,34 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							)}
 							{keys.map((key) => {
 								const isKeyEnabled = key.enabled ?? true;
-								if (providerName === "codex" || providerName === "chatgpt")
-									return (
+								if (isSubscriptionProvider) {
+									const accountProps = {
+										account: key,
+										revision: usageRevision,
+										canUpdate: hasUpdateProviderAccess,
+										onEdit: () => setShowAddNewKeyDialog({ show: true, keyId: key.id }),
+										menu: (
+											<ProviderKeyActionsMenu
+												keyId={key.id}
+												hasUpdateAccess={hasUpdateProviderAccess}
+												hasDeleteAccess={hasDeleteProviderAccess}
+												onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
+												onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
+											/>
+										),
+									};
+									return providerName === "claude" ? (
+										<ClaudeAccount key={key.id} {...accountProps} />
+									) : (
 										<SubscriptionAccount
 											key={key.id}
-											provider={providerName}
-											account={key}
-											revision={usageRevision}
-											canUpdate={hasUpdateProviderAccess}
+											provider={providerName === "chatgpt" ? "chatgpt" : "codex"}
+											{...accountProps}
 											checking={isRefreshing}
 											onCheck={(label) => handleRefreshKeyModels(key.id, label)}
-											onEdit={() => setShowAddNewKeyDialog({ show: true, keyId: key.id })}
-											menu={
-												<ProviderKeyActionsMenu
-													keyId={key.id}
-													hasUpdateAccess={hasUpdateProviderAccess}
-													hasDeleteAccess={hasDeleteProviderAccess}
-													onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
-													onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
-												/>
-											}
 										/>
 									);
+								}
 								return (
 									<TableRow
 										key={key.id}
@@ -398,7 +428,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															toast.success(`${EntityLabel} ${checked ? "enabled" : "disabled"} successfully`);
 														})
 														.catch((err) => {
-															toast.error(`Failed to update ${entityLabel}`, { description: getErrorMessage(err) });
+															toast.error(`Failed to update ${entityLabel}`, {
+																description: getErrorMessage(err),
+															});
 														})
 														.finally(() => {
 															setTogglingKeyIds((prev) => {

@@ -103,6 +103,15 @@ in
         example = "/var/lib/secrets/bifrost.env";
       };
 
+      claude = {
+        enable = lib.mkEnableOption "the owner-scoped pinned Claude bridge";
+        environmentFile = lib.mkOption {
+          type = types.str;
+          default = "";
+          description = "Runtime file containing CLAUDE_BRIDGE_TOKEN, also supplied to Bifrost. Never put credentials in the Nix store.";
+        };
+      };
+
       openFirewall = lib.mkOption {
         type = types.bool;
         default = false;
@@ -134,7 +143,54 @@ in
           assertion = builtins.dirOf stateDirStr == "/var/lib";
           message = "services.bifrost.stateDir must be a direct child of /var/lib (e.g. /var/lib/bifrost) to work with systemd StateDirectory and DynamicUser.";
         }
-      ];
+      ] ++ lib.optional cfg.claude.enable {
+        assertion = lib.hasPrefix "/" cfg.claude.environmentFile && !lib.hasPrefix "/nix/store/" cfg.claude.environmentFile;
+        message = "Claude requires an absolute runtime environmentFile outside the Nix store.";
+      };
+
+    programs.nix-ld.enable = lib.mkIf cfg.claude.enable true;
+
+    users.groups.bifrost-claude = lib.mkIf cfg.claude.enable {};
+    users.users.bifrost-claude = lib.mkIf cfg.claude.enable {
+      isSystemUser = true;
+      group = "bifrost-claude";
+      home = "/var/lib/bifrost-claude";
+    };
+    systemd.services.bifrost-claude = lib.mkIf cfg.claude.enable {
+      description = "Claude native Messages bridge (owner account only)";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      environment = {
+        CLAUDE_CONFIG_DIR = "/var/lib/bifrost-claude";
+        HOME = "/var/lib/bifrost-claude";
+        SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+        NIX_LD = config.environment.sessionVariables.NIX_LD;
+        NIX_LD_LIBRARY_PATH = config.environment.sessionVariables.NIX_LD_LIBRARY_PATH;
+      };
+      serviceConfig = {
+        ExecStart = "${cfg.package}/bin/bifrost-claude";
+        EnvironmentFile = cfg.claude.environmentFile;
+        User = "bifrost-claude";
+        Group = "bifrost-claude";
+        StateDirectory = "bifrost-claude";
+        StateDirectoryMode = "0700";
+        WorkingDirectory = "/var/lib/bifrost-claude";
+        UMask = "0077";
+        Restart = "on-failure";
+        RestartSec = 5;
+        TimeoutStopSec = 45;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateDevices = true;
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        LimitCORE = 0;
+        StandardOutput = "null";
+        StandardError = "null";
+      };
+    };
 
     systemd.services.bifrost =
       let

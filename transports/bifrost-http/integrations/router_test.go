@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -1064,4 +1066,137 @@ func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
 	case <-time.After(5 * time.Second):
 		t.Fatal(msg)
 	}
+}
+
+type claudeRouterAccount struct {
+	schemas.Account
+	url string
+}
+
+func (a claudeRouterAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Claude}, nil
+}
+func (a claudeRouterAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: a.url}, ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2}, ClaudeAccount: func(*schemas.BifrostContext, schemas.Key, string) error { return nil }}, nil
+}
+func (a claudeRouterAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "account-a", Name: "Claude", Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+type claudeRouterIdentity struct{ schemas.Identity }
+
+func (claudeRouterIdentity) VirtualKey() *schemas.EntityRef { return &schemas.EntityRef{ID: "owner-a"} }
+
+type claudeRouterAccess struct{ schemas.Access }
+
+func (claudeRouterAccess) IsModelAllowed(provider, model string) bool {
+	return provider == "claude" && model == "claude-sonnet-4-6"
+}
+
+type claudeRouterGrant struct{ schemas.Grant }
+
+func (claudeRouterGrant) Identity() schemas.Identity        { return claudeRouterIdentity{} }
+func (claudeRouterGrant) Access() schemas.Access            { return claudeRouterAccess{} }
+func (claudeRouterGrant) SetIdentity(schemas.Identity) bool { return false }
+
+func TestClaudeMessagesRouteKeepsNativeBytesAndSessionHeaders(t *testing.T) {
+	t.Setenv("CLAUDE_BRIDGE_TOKEN", "synthetic-bridge-token-for-tests-only")
+	const session = "7da76eaa-99e7-426f-b042-c77e1c0d365a"
+	const response = `{"id":"msg_native","type":"message","role":"assistant","content":[{"type":"text","text":"41"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":37,"output_tokens":2}}`
+	const wire = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":37,\"output_tokens\":0}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "/v1/messages", r.URL.Path)
+		assert.Contains(t, string(body), `"model":"claude-sonnet-4-6"`)
+		assert.NotContains(t, string(body), `"input"`)
+		if strings.Contains(string(body), `"content":"truncate"`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: ping\ndata: {\"type\":\"ping\"}\n\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(100 * time.Millisecond)
+			return
+		}
+		assert.Equal(t, "owner-a", r.Header.Get("X-Claude-Bridge-Owner"))
+		assert.Empty(t, r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("X-Bifrost-Claude-Session-ID"), "first turn must not forward an empty session header")
+		if strings.Contains(string(body), `"max_tokens":0`) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens must be positive"}}`)
+			return
+		}
+		assert.Contains(t, string(body), `"max_tokens":731`)
+		w.Header().Set("X-Bifrost-Claude-Session-ID", session)
+		if strings.Contains(string(body), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, wire)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, response)
+		}
+	}))
+	defer upstream.Close()
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{Account: claudeRouterAccount{url: upstream.URL}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	route := RouteConfig{
+		Type: RouteConfigTypeAnthropic, Path: "/anthropic/v1/messages", Method: "POST",
+		GetRequestTypeInstance: func(context.Context) interface{} { return &anthropic.AnthropicMessageRequest{} },
+		RequestConverter: func(*schemas.BifrostContext, interface{}) (*schemas.BifrostRequest, error) {
+			t.Fatal("Claude must bypass cross-protocol conversion")
+			return nil, nil
+		},
+		ErrorConverter: func(_ *schemas.BifrostContext, e *schemas.BifrostError) interface{} { return e },
+	}
+	router := NewGenericRouter(client, nil, nil, []RouteConfig{route}, nil, bifrost.NewNoOpLogger())
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetRequestURI("/anthropic/v1/messages")
+			ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"claude/claude-sonnet-4-6","max_tokens":731,"messages":[{"role":"user","content":"What is 17 + 24?"}],"stream":%t}`, stream))
+			admitted := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			admitted.SetGrant(claudeRouterGrant{})
+			ctx.SetUserValue(lib.FastHTTPUserValueBifrostContext, admitted)
+			router.createHandler(route)(ctx)
+			require.Equal(t, 200, ctx.Response.StatusCode())
+			assert.Equal(t, session, string(ctx.Response.Header.Peek("X-Bifrost-Claude-Session-ID")))
+			if stream {
+				body, err := io.ReadAll(ctx.Response.BodyStream())
+				require.NoError(t, err)
+				assert.Contains(t, string(body), wire)
+				assert.NotContains(t, string(body), "[DONE]")
+			} else {
+				assert.Equal(t, response, string(ctx.Response.Body()))
+			}
+			failed := &fasthttp.RequestCtx{}
+			failed.Request.Header.SetMethod("POST")
+			failed.Request.SetRequestURI("/anthropic/v1/messages")
+			failed.Request.SetBodyString(fmt.Sprintf(`{"model":"claude/claude-sonnet-4-6","max_tokens":0,"messages":[{"role":"user","content":"invalid turn"}],"stream":%t}`, stream))
+			admitted = schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			admitted.SetGrant(claudeRouterGrant{})
+			failed.SetUserValue(lib.FastHTTPUserValueBifrostContext, admitted)
+			router.createHandler(route)(failed)
+			require.Equal(t, 400, failed.Response.StatusCode())
+			assert.JSONEq(t, `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens must be positive"}}`, string(failed.Response.Body()))
+		})
+	}
+	t.Run("upstream idle timeout reports native stream error", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.SetRequestURI("/anthropic/v1/messages")
+		ctx.Request.SetBodyString(`{"model":"claude/claude-sonnet-4-6","max_tokens":731,"messages":[{"role":"user","content":"truncate"}],"stream":true}`)
+		admitted := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		admitted.SetGrant(claudeRouterGrant{})
+		admitted.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 25*time.Millisecond)
+		ctx.SetUserValue(lib.FastHTTPUserValueBifrostContext, admitted)
+		router.createHandler(route)(ctx)
+		require.Equal(t, 200, ctx.Response.StatusCode())
+		wire, err := io.ReadAll(ctx.Response.BodyStream())
+		require.NoError(t, err)
+		assert.Contains(t, string(wire), "event: ping")
+		assert.Contains(t, string(wire), "event: error")
+		assert.NotContains(t, string(wire), "message_stop")
+	})
 }

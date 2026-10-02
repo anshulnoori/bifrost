@@ -16,6 +16,7 @@ import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
 import CodexConnection from "./codexConnection";
+import ClaudeConnection from "./claudeConnection";
 import { codexAccountAlias } from "./codexAccountLabel";
 import ChatGPTConnection from "./chatgptConnection";
 import { chatgptAccountAlias } from "./chatgptAccountLabel";
@@ -30,13 +31,13 @@ interface Props {
 type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 
 export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: Props) {
-	const isSubscriptionProvider = provider.name === "codex" || provider.name === "chatgpt";
-	const accountAlias = provider.name === "chatgpt" ? chatgptAccountAlias : codexAccountAlias;
+	const isSubscriptionProvider = ["codex", "chatgpt", "claude"].includes(provider.name);
+	const accountAlias = provider.name === "chatgpt" ? chatgptAccountAlias : (name: string) => codexAccountAlias(name, provider.name);
 	const providerKeyFormSchema = z.object({
 		key:
 			provider.name === "chatgpt"
 				? chatgptProviderKeyFieldsSchema
-				: provider.name === "codex"
+				: provider.name === "codex" || provider.name === "claude"
 					? codexProviderKeyFieldsSchema
 					: modelProviderKeySchema,
 	});
@@ -100,7 +101,14 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 			return "No changes made";
 		}
 		return null;
-	}, [form?.formState.errors, form?.formState.isValid, form?.formState.isDirty, hasUpdateProviderAccess, isEditing, provider.name]);
+	}, [
+		form?.formState.errors,
+		form?.formState.isValid,
+		form?.formState.isDirty,
+		hasUpdateProviderAccess,
+		isEditing,
+		isSubscriptionProvider,
+	]);
 
 	const onSubmit = (value: any) => {
 		if (isEditing && !currentKey) return;
@@ -111,7 +119,9 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 			// Preserve existing generated names, or create a unique fallback.
 			key.name =
 				key.name.trim() ||
-				(currentKey && !accountAlias(currentKey.name) ? currentKey.name : `${provider.name === "chatgpt" ? "ChatGPT" : "Codex"} ${uuid()}`);
+				(currentKey && !accountAlias(currentKey.name)
+					? currentKey.name
+					: `${provider.name === "chatgpt" ? "ChatGPT" : provider.name === "claude" ? "Claude" : "Codex"} ${uuid()}`);
 		}
 		if (key.azure_key_config) {
 			const { _auth_type, ...rest } = key.azure_key_config;
@@ -168,7 +178,13 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 				<div className="grow px-4 md:px-8">
 					{isSubscriptionProvider && accountId && (
 						<div className="mb-6 border-b pb-6">
-							{provider.name === "chatgpt" ? <ChatGPTConnection keyId={accountId} /> : <CodexConnection keyId={accountId} />}
+							{provider.name === "chatgpt" ? (
+								<ChatGPTConnection keyId={accountId} />
+							) : provider.name === "claude" ? (
+								<ClaudeConnection keyId={accountId} />
+							) : (
+								<CodexConnection keyId={accountId} />
+							)}
 						</div>
 					)}
 					<ApiKeyFormFragment

@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
 	"github.com/maximhq/bifrost/core/providers/chatgpt"
+	"github.com/maximhq/bifrost/core/providers/claude"
 	"github.com/maximhq/bifrost/core/providers/codex"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/databricks"
@@ -4582,6 +4583,9 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 	}
 	if providerKey == schemas.Codex {
 		return codex.New(config, bifrost.logger)
+	}
+	if providerKey == schemas.Claude {
+		return claude.New(config, bifrost.logger)
 	}
 	// Determine which provider type to create
 	targetProviderKey := providerKey

@@ -28,6 +28,7 @@ const resolveSize = (size: IconSize): number => {
 export const ProviderIcons = {
 	chatgpt: (props: IconProps) => <ProviderIcons.openai {...props} />,
 	codex: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
+	claude: ({ size = "md", className = "" }: IconProps) => <Terminal size={resolveSize(size)} className={className} />,
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return theme === "light" ? (

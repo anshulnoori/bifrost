@@ -21,6 +21,7 @@
 		header_up Content-Type application/json
 		header_up Accept {http.request.header.Accept}
 		header_up Anthropic-Version {http.request.header.Anthropic-Version}
+		header_up X-Bifrost-Claude-Session-ID {http.request.header.X-Bifrost-Claude-Session-ID}
 		header_up X-Forwarded-Proto https
 		# Default flushing supports SSE and retains cancellation propagation.
 		# Do not use flush_interval -1: that disables early disconnect cancellation.
