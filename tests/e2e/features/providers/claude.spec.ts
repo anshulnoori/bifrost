@@ -22,6 +22,8 @@ for (const width of [390, 1440]) {
     const row = page.getByTestId('claude-account-claude-account')
     const trigger = row.getByRole('button', { name: `Personal (${email}) subscription details` })
     await expect(trigger).toBeVisible()
+    const widgetClose = page.getByTestId('onboarding-widget-close')
+    if (await widgetClose.isVisible()) await widgetClose.click()
     await trigger.click()
     await expect(trigger).toHaveAttribute('aria-expanded', 'true')
     await expect(row.getByTestId('claude-account-email')).toHaveText(email)
@@ -29,6 +31,10 @@ for (const width of [390, 1440]) {
     const bounds = (await row.boundingBox())!
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
     await expect(row.getByRole('progressbar')).toHaveCount(0)
+    if (process.env.CLAUDE_SCREENSHOT_DIR) {
+      await page.screenshot({ path: `${process.env.CLAUDE_SCREENSHOT_DIR}/claude-${width}-page.png` })
+      await row.screenshot({ path: `${process.env.CLAUDE_SCREENSHOT_DIR}/claude-${width}-expanded.png` })
+    }
     await row.getByRole('button', { name: 'Edit connection' }).click()
     await expect(page.getByTestId('claude-connected')).toContainText(email)
     await expect(page.getByTestId('key-form').getByText('API Key', { exact: true })).toHaveCount(0)
@@ -82,11 +88,12 @@ test('Claude creates an account before browser login and handles manual code, er
   await page.goto('/workspace/providers')
   const setup = page.getByRole('button', { name: 'Close for now', exact: true })
   if (await setup.isVisible()) await setup.click()
-  await page.getByRole('button', { name: 'Add new account', exact: true }).click()
+  await page.getByTestId('add-key-btn').click()
   await expect(page.getByTestId('claude-onboarding')).toHaveCount(0)
   await page.getByTestId('key-save-btn').click()
   await page.getByTestId('claude-connect').click()
   await expect(page.getByRole('link', { name: 'Open Claude sign-in' })).toHaveAttribute('href', url)
+  if (process.env.CLAUDE_SCREENSHOT_DIR) await page.getByTestId('claude-onboarding').screenshot({ animations: 'disabled', path: `${process.env.CLAUDE_SCREENSHOT_DIR}/claude-sign-in.png` })
   await page.getByTestId('claude-authorization-code').fill('bad#fixture-state')
   await page.getByTestId('claude-submit-code').click()
   await expect(page.getByTestId('claude-error')).toContainText('complete code#state')
