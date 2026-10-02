@@ -111,5 +111,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if providerKey == schemas.Codex {
 		providerConfig.CodexCredential = codexCredential(baseAccount.store.ConfigStore)
 	}
+	if providerKey == schemas.ChatGPT {
+		providerConfig.ChatGPTCredential = chatgptCredential(baseAccount.store.ConfigStore)
+	}
 	return providerConfig, nil
 }

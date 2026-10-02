@@ -820,6 +820,16 @@ paths:
   /api/codex/connections/{id}:
     $ref: "./paths/management/codex.yaml#/connection"
 
+  # ChatGPT subscription OAuth connections
+  /api/chatgpt/connections:
+    $ref: "./paths/management/chatgpt.yaml#/connections"
+  /api/chatgpt/connections/current:
+    $ref: "./paths/management/chatgpt.yaml#/current"
+  /api/chatgpt/connections/{id}/complete:
+    $ref: "./paths/management/chatgpt.yaml#/complete"
+  /api/chatgpt/connections/{id}:
+    $ref: "./paths/management/chatgpt.yaml#/connection"
+
   # Plugins
   /api/plugins:
     $ref: "./paths/management/plugins.yaml#/plugins"

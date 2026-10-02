@@ -1,0 +1,105 @@
+---
+title: ChatGPT
+description: Connect ChatGPT subscription accounts to Bifrost with Sign in with ChatGPT.
+icon: comments
+---
+
+The `chatgpt` provider is separate from the `openai` API-key provider and the `codex` subscription provider. It uses [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source) and your account's plan allowance and permissions. It does not add paid API capacity.
+
+<Warning>
+Use this provider only as permitted by your ChatGPT plan and OpenAI's terms. Bifrost never displays or returns OAuth access or refresh tokens.
+</Warning>
+
+## Configure an account
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Models** > **Model Providers** and add **ChatGPT**.
+2. Add an account. No API key value is required.
+3. Select **Connect with ChatGPT** and open the generated OpenAI authorization link.
+4. Complete sign-in. On a remote VM, the browser can fail to reach the local callback listener. Copy the complete final URL from the address bar. It must start with `http://127.0.0.1:1455/auth/callback?`.
+5. Paste that URL into **Final redirected localhost URL** and select **Complete sign-in**.
+
+The account can be `disconnected`, `pending`, `exchanging`, `connected`, `refreshing`, `revoking`, `expired`, or `reconnect_required`.
+
+Disconnect revokes the renewable session and clears its tokens. Bifrost retains the account/client mapping for the next sign-in.
+
+</Tab>
+<Tab title="API">
+
+Create a provider account with the normal provider management API, then use its UUID in `x-bf-chatgpt-key`. The OAuth management routes require dashboard authentication, reject cross-site requests, and return `Cache-Control: no-store`.
+
+```bash
+curl -X POST http://localhost:8080/api/chatgpt/connections \
+  -u "$BIFROST_ADMIN_USER:$BIFROST_ADMIN_PASSWORD" \
+  -H "x-bf-chatgpt-key: $CHATGPT_ACCOUNT_ID"
+```
+
+Open the returned `authorization_url`. After OpenAI redirects the browser, paste the final loopback URL:
+
+```bash
+curl -X POST "http://localhost:8080/api/chatgpt/connections/$CONNECTION_ID/complete" \
+  -u "$BIFROST_ADMIN_USER:$BIFROST_ADMIN_PASSWORD" \
+  -H "x-bf-chatgpt-key: $CHATGPT_ACCOUNT_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"callback_url":"http://127.0.0.1:1455/auth/callback?code=REDACTED&state=REDACTED"}'
+```
+
+Use `GET /api/chatgpt/connections/current` to read status and `DELETE /api/chatgpt/connections/{id}` to disconnect. Responses contain only `id`, `state`, `email`, `expires_at`, and, when starting, `authorization_url`.
+
+</Tab>
+<Tab title="config.json">
+
+Account entries need a name and routing weight, but no API key value:
+
+```json
+{
+  "providers": {
+    "chatgpt": {
+      "keys": [
+        {
+          "name": "Personal ChatGPT",
+          "models": ["*"],
+          "weight": 1
+        }
+      ]
+    }
+  }
+}
+```
+
+The connection itself is stored in encrypted database tables created by automatic migration. Do not configure a base URL or authorization headers.
+
+</Tab>
+</Tabs>
+
+## Inference and models
+
+List the models visible to the connected account:
+
+```bash
+curl "http://localhost:8080/v1/models?provider=chatgpt" \
+  -H "Authorization: Bearer $BIFROST_VIRTUAL_KEY"
+```
+
+Bifrost gets this visibility list from OpenAI's `GET https://api.openai.com/v1/models`. Availability depends on the account's plan and permissions.
+
+The provider supports Responses and Chat Completions, including streaming. Chat Completions are converted to OpenAI Responses requests. Requests are sent to `https://api.openai.com/v1/responses` with `store: false` forced. Unsupported preview parameters are rejected instead of silently ignored.
+
+Plain function tools are adapted into a `functions` namespace inside an `additional_tools` input item. Bifrost does not apply the Codex remaining-allowance reserve guard to ChatGPT accounts.
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer $BIFROST_VIRTUAL_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"chatgpt/MODEL_FROM_CATALOG","input":"Reply with OK","stream":true}'
+```
+
+## Security and storage
+
+- OAuth credentials are encrypted in separate ChatGPT connection and authorization-attempt tables. Database migration is automatic.
+- `x-bf-chatgpt-key` is a configured account UUID, not a secret and not a substitute for dashboard authentication.
+- The loopback callback URL is pasted only to complete the PKCE exchange. Do not put it in logs or support tickets.
+- Management responses never expose access or refresh tokens and cannot be cached.
+- Inference still requires normal Bifrost gateway admission, provider-key restrictions, budgets, and routing policy.

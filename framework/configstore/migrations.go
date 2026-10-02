@@ -504,6 +504,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_warp_temperature_reasoning_columns"}, run: migrationAddWarpTemperatureReasoningColumns},
 	{IDs: []string{"add_codex_connections"}, run: migrationAddCodexConnections},
 	{IDs: []string{"add_codex_reserve_percent"}, run: migrationAddCodexReserve},
+	{IDs: []string{"add_chatgpt_connections"}, run: migrationAddChatGPTConnections},
 	{IDs: []string{"add_dashboard_oidc"}, run: migrationAddDashboardOIDC},
 }
 

@@ -1273,6 +1273,13 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 			return err
 		}
 	}
+	if provider == schemas.ChatGPT {
+		for _, table := range []string{"chatgpt_connections", "chatgpt_oauth_attempts"} {
+			if err := txDB.WithContext(ctx).Table(table).Where("owner LIKE ?", "provider:chatgpt:%").Delete(nil).Error; err != nil {
+				return err
+			}
+		}
+	}
 
 	// Store the budget and rate limit IDs before deleting
 	budgetID := dbProvider.BudgetID
@@ -1532,6 +1539,13 @@ func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas
 	if provider == schemas.Codex {
 		if err := txDB.WithContext(ctx).Where("owner = ?", "provider:codex:"+keyID).Delete(&codex.Connection{}).Error; err != nil {
 			return err
+		}
+	}
+	if provider == schemas.ChatGPT {
+		for _, table := range []string{"chatgpt_connections", "chatgpt_oauth_attempts"} {
+			if err := txDB.WithContext(ctx).Table(table).Where("owner = ?", "provider:chatgpt:"+keyID).Delete(nil).Error; err != nil {
+				return err
+			}
 		}
 	}
 	if err := txDB.WithContext(ctx).

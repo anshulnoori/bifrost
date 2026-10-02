@@ -571,6 +571,8 @@ type ProviderConfig struct {
 	// CodexCredential resolves an owner-bound subscription after gateway admission.
 	// It is installed by the host, never deserialized from provider configuration.
 	CodexCredential func(*BifrostContext, Key) (accessToken, accountID string, err error) `json:"-"`
+	// ChatGPTCredential resolves a separate Sign in with ChatGPT registration.
+	ChatGPTCredential func(*BifrostContext, Key) (accessToken string, err error) `json:"-"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for

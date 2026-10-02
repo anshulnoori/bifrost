@@ -16,7 +16,7 @@ function AccountLimit({ account, canUpdate }: { account: ModelProviderKey; canUp
 	useEffect(() => {
 		setValue(String(account.codex_reserve_percent ?? ""));
 	}, [account.codex_reserve_percent]);
-	async function save() {
+	async function save(removeLimit = false) {
 		setError("");
 		setSaved(false);
 		const parsed = z
@@ -24,13 +24,18 @@ function AccountLimit({ account, canUpdate }: { account: ModelProviderKey; canUp
 			.min(0)
 			.max(100)
 			.nullable()
-			.safeParse(value.trim() === "" ? null : Number(value));
+			.safeParse(removeLimit || value.trim() === "" ? null : Number(value));
 		if (!parsed.success) {
 			setError("Enter a percentage from 0 to 100, or leave blank for no reserve.");
 			return;
 		}
 		try {
-			await update({ provider: "codex", keyId: account.id, key: { ...account, codex_reserve_percent: parsed.data } }).unwrap();
+			await update({
+				provider: "codex",
+				keyId: account.id,
+				key: { ...account, codex_reserve_percent: parsed.data },
+			}).unwrap();
+			setValue(String(parsed.data ?? ""));
 			setSaved(true);
 		} catch (error) {
 			setError(getErrorMessage(error));
@@ -65,9 +70,20 @@ function AccountLimit({ account, canUpdate }: { account: ModelProviderKey; canUp
 				)}
 			</TableCell>
 			<TableCell>
-				<Button variant="outline" disabled={!canUpdate || isLoading} onClick={save}>
+				<Button variant="outline" disabled={!canUpdate || isLoading} onClick={() => save()}>
 					{isLoading ? "Saving…" : "Save"}
 				</Button>
+				{account.codex_reserve_percent != null && (
+					<Button
+						variant="outline"
+						className="ml-2"
+						data-testid={`subscription-limit-remove-${account.id}`}
+						disabled={!canUpdate || isLoading}
+						onClick={() => save(true)}
+					>
+						Remove limit
+					</Button>
+				)}
 				{saved && (
 					<span role="status" className="text-muted-foreground ml-3 text-sm">
 						Saved
@@ -81,7 +97,9 @@ function AccountLimit({ account, canUpdate }: { account: ModelProviderKey; canUp
 export default function SubscriptionLimits() {
 	const canView = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const canUpdate = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
-	const { data, isLoading, error } = useGetProvidersQuery(undefined, { skip: !canView });
+	const { data, isLoading, error } = useGetProvidersQuery(undefined, {
+		skip: !canView,
+	});
 	const hasCodex = data?.some((provider) => provider.name === "codex") ?? false;
 	const { data: keys, isLoading: loadingKeys, error: keysError } = useGetProviderKeysQuery("codex", { skip: !canView || !hasCodex });
 	if (!canView) return <p className="p-4 text-sm">You do not have permission to view provider accounts.</p>;
@@ -99,7 +117,7 @@ export default function SubscriptionLimits() {
 				<h2 className="text-lg font-medium">Subscription Limits</h2>
 				<p className="text-muted-foreground mt-1 text-sm">
 					Pause each Codex account at its weekly allowance reserve. A 25% reserve leaves 25% remaining. The five-hour window does not affect
-					this setting. Leave blank for no reserve.
+					this setting. Remove the limit or save a blank field for no reserve. OpenAI still controls account limits and credit use.
 				</p>
 			</div>
 			{accounts.length ? (

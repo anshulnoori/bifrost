@@ -46,6 +46,7 @@ type ModelProvider string
 const (
 	OpenAI        ModelProvider = "openai"
 	Codex         ModelProvider = "codex"
+	ChatGPT       ModelProvider = "chatgpt"
 	Azure         ModelProvider = "azure"
 	Anthropic     ModelProvider = "anthropic"
 	Bedrock       ModelProvider = "bedrock"
@@ -98,6 +99,7 @@ var StandardProviders = []ModelProvider{
 	Bedrock,
 	BedrockMantle,
 	Cerebras,
+	ChatGPT,
 	Codex,
 	Cohere,
 	DeepSeek,

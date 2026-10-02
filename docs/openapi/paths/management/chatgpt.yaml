@@ -1,0 +1,133 @@
+connections:
+  parameters: &accountParameters
+    - name: x-bf-chatgpt-key
+      in: header
+      required: true
+      description: Configured ChatGPT account UUID. This identifier is not a credential.
+      schema: { type: string, format: uuid }
+  post:
+    operationId: startChatGPTConnection
+    summary: Start Sign in with ChatGPT
+    description: "Creates a short-lived OpenAI PKCE authorization attempt. Replaces any unfinished attempt for this account and never returns OAuth tokens. Responses use `Cache-Control: no-store`."
+    tags: [Providers]
+    security: &security
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Authorization started.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - &connectionSchema
+                  type: object
+                  required: [state]
+                  properties:
+                    id: { type: string, format: uuid }
+                    state:
+                      type: string
+                      enum: [disconnected, pending, exchanging, connected, refreshing, revoking, expired, reconnect_required]
+                    email:
+                      type: string
+                      format: email
+                      description: OAuth display metadata only. It is not an authorization identity.
+                    expires_at: { type: string, format: date-time }
+                - type: object
+                  required: [id, authorization_url]
+                  properties:
+                    authorization_url:
+                      type: string
+                      format: uri
+                      description: Generated `https://auth.openai.com/api/accounts/authorize` URL with PKCE parameters.
+      '401': &unauthorized
+        description: Dashboard authentication is required, including when dashboard authentication is disabled for other management routes.
+      '403': &forbidden
+        description: Cross-site requests are not permitted.
+      '503': &unavailable
+        description: Encrypted database storage is not configured.
+      '502': &upstream
+        description: Authorization could not complete. Upstream credentials and error bodies are not returned.
+
+current:
+  parameters: *accountParameters
+  get:
+    operationId: getCurrentChatGPTConnection
+    summary: Get the ChatGPT connection status
+    description: "Returns connection metadata only. OAuth tokens are never returned. Response uses `Cache-Control: no-store`."
+    tags: [Providers]
+    security: *security
+    responses:
+      '200':
+        description: Current connection state, including `disconnected` when the configured account has no connection.
+        content:
+          application/json:
+            schema: *connectionSchema
+      '401': *unauthorized
+      '403': *forbidden
+      '503': *unavailable
+
+complete:
+  parameters:
+    - name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    - *accountParameters
+  post:
+    operationId: completeChatGPTConnection
+    summary: Complete Sign in with ChatGPT
+    description: "Exchanges the code from the pasted final loopback callback URL. The URL must be `http://127.0.0.1:1455/auth/callback?...`. Responses use `Cache-Control: no-store` and never expose OAuth tokens."
+    tags: [Providers]
+    security: *security
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [callback_url]
+            additionalProperties: false
+            properties:
+              callback_url:
+                type: string
+                format: uri
+                example: http://127.0.0.1:1455/auth/callback?code=REDACTED&state=REDACTED
+    responses:
+      '200':
+        description: Connection completed.
+        content:
+          application/json:
+            schema: *connectionSchema
+      '400':
+        description: Callback URL is invalid, expired, or does not match the authorization attempt.
+      '401': *unauthorized
+      '403': *forbidden
+      '404': &missing
+        description: Connection not found for this configured account.
+      '503': *unavailable
+      '502': *upstream
+
+connection:
+  parameters:
+    - name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    - *accountParameters
+  delete:
+    operationId: disconnectChatGPTConnection
+    summary: Disconnect or cancel a ChatGPT connection
+    description: "Revokes the renewable session and clears local tokens or cancels a pending attempt. Retains the account/client mapping for the next sign-in. Responses use `Cache-Control: no-store`."
+    tags: [Providers]
+    security: *security
+    responses:
+      '200':
+        description: Disconnected.
+        content:
+          application/json:
+            schema: *connectionSchema
+      '401': *unauthorized
+      '403': *forbidden
+      '404': *missing
+      '503': *unavailable

@@ -29,7 +29,7 @@ import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, RefreshC
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
-import CodexUsage from "./codexUsage";
+import SubscriptionAccount from "./subscriptionAccount";
 
 interface Props {
 	className?: string;
@@ -93,8 +93,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const providerName = provider.name?.toLowerCase() ?? "";
 	const isVLLM = providerName === "vllm";
 	const isOllamaOrSGL = providerName === "ollama" || providerName === "sgl";
-	const entityLabel = providerName === "codex" ? "account" : isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
-	const entityLabelPlural = providerName === "codex" ? "accounts" : isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
+	const isSubscriptionProvider = providerName === "codex" || providerName === "chatgpt";
+	const entityLabel = isSubscriptionProvider ? "account" : isVLLM ? "model" : isOllamaOrSGL ? "server" : "key";
+	const entityLabelPlural = isSubscriptionProvider ? "accounts" : isVLLM ? "models" : isOllamaOrSGL ? "servers" : "keys";
 	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
@@ -259,9 +260,9 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							<col className="w-[12%]" />
 							<col className="w-[12%]" />
 						</colgroup>
-						<TableHeader className={providerName === "codex" ? "sr-only" : "w-full"}>
+						<TableHeader className={isSubscriptionProvider ? "sr-only" : "w-full"}>
 							<TableRow>
-								<TableHead>{providerName === "codex" ? "Account" : isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
+								<TableHead>{isSubscriptionProvider ? "Account" : isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>
@@ -277,10 +278,11 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							)}
 							{keys.map((key) => {
 								const isKeyEnabled = key.enabled ?? true;
-								if (providerName === "codex")
+								if (providerName === "codex" || providerName === "chatgpt")
 									return (
-										<CodexUsage
+										<SubscriptionAccount
 											key={key.id}
+											provider={providerName}
 											account={key}
 											revision={usageRevision}
 											canUpdate={hasUpdateProviderAccess}
