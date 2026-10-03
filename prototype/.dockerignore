@@ -1,5 +1,0 @@
-*
-!container/
-!container/*.py
-!container/serve.json
-!Dockerfile

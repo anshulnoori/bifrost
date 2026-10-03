@@ -4,7 +4,8 @@ let
   evaluate = public: semantic: flake.inputs.nixpkgs.lib.nixosSystem {
     system = "aarch64-linux";
     modules = [
-      flake.nixosModules.deployment
+      flake.nixosModules.bifrost
+      ./module.nix
       ({ pkgs, lib, ... }: {
         nixpkgs.hostPlatform = "aarch64-linux";
         # Evaluate topology without building a binary on this architecture.
@@ -72,7 +73,6 @@ assert !(builtins.elemAt public.services.bifrost.settings.plugins 1).config ? en
 assert !(builtins.elemAt public.services.bifrost.settings.plugins 1).config ? token_env;
 assert (builtins.elemAt semanticOnly.services.bifrost.settings.plugins 1).config.modal_app == "bifrost-headroom";
 assert !(builtins.all (a: a.assertion) mismatched.assertions);
-assert private.systemd.services.bifrost-migrate.wantedBy == [];
 assert private.services.bifrost.settings.client.enforce_auth_on_inference;
 assert private.services.bifrost.settings.client.allowed_origins == [
   "https://ai.mongoose-silverside.ts.net"

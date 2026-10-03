@@ -1,4 +1,4 @@
-// BIFROST_PACKAGE=$(nix build .#bifrost-stack --no-link --print-out-paths) node --test deploy/nixos/package.test.mjs
+// BIFROST_PACKAGE=/nix/store/<buck-package-output> node --test deploy/nixos/package.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';

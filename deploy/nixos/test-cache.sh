@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Disposable local services only. Never point this suite at a shared cache.
 set -euo pipefail
-: "${BIFROST_PACKAGE:?Build nix .#bifrost-stack and set BIFROST_PACKAGE to its output}"
+: "${BIFROST_PACKAGE:?Set BIFROST_PACKAGE to the Buck package output}"
 case "$(uname -m)" in
   x86_64) digest=203692cbb7d59887cd7723f88cefa0c470d74037e3f82024b17cfac31345d4f5 ;;
   aarch64) digest=cc16e0c672ffdfdbee4581e146d41086f408468489e21b8625f877a332b998ba ;;

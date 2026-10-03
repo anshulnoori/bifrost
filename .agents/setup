@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
-# Orb-only Nix tooling. The deployment shell pins Caddy and Node through flake.lock.
+# Orb-only Nix tooling.
 if [[ ! -x "$HOME/.nix-profile/bin/nix" ]]; then
   nix_scratch=$(mktemp -d)
   curl -fsSL https://releases.nixos.org/nix/nix-2.28.5/nix-2.28.5-x86_64-linux.tar.xz -o "$nix_scratch/nix.tar.xz"
@@ -10,7 +10,7 @@ if [[ ! -x "$HOME/.nix-profile/bin/nix" ]]; then
   NIX_INSTALLER_NO_CHANNEL_ADD=1 "$nix_scratch/install" --no-daemon --no-modify-profile
   rm -rf "$nix_scratch"
 fi
-# Keep activation explicit (nix develop .#deployment), without nesting Amp in a shell.
+# Keep activation explicit, without nesting Amp in a shell.
 sudo ln -sf "$HOME/.nix-profile/bin/nix" /usr/local/bin/nix
 mkdir -p "$HOME/.config/nix"
 if ! rg -qx 'extra-experimental-features = nix-command flakes' "$HOME/.config/nix/nix.conf" 2>/dev/null; then
@@ -27,11 +27,9 @@ if ! command -v go >/dev/null || [[ $(go version) != 'go version go1.27.0 linux/
 fi
 # Do not run go work sync: it rewrites the preserved module baselines.
 if [[ ! -f "$root/go.work" ]]; then
-  go work init ./core ./framework ./transports ./integrations/headroom ./deploy/cloudflare/container
+  go work init ./core ./framework ./transports ./integrations/headroom
   for module in plugins/*; do [[ ! -f "$module/go.mod" ]] || go work use "$module"; done
 fi
-npm ci --prefix "$root/deploy/cloudflare" --ignore-scripts
-npm ci --prefix "$root/prototype" --ignore-scripts
 uv venv --allow-existing /tmp/bifrost-headroom-test --python 3.11
 uv pip install --python /tmp/bifrost-headroom-test/bin/python --require-hashes -r "$root/integrations/headroom/requirements.lock"
 echo 'Offline dependencies ready. No provider authentication or deployment performed.'

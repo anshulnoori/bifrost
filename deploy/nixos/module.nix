@@ -27,11 +27,6 @@ in {
       default = "/run/secrets/valkey-password";
       description = "Runtime file containing the Valkey password.";
     };
-    migrationEnvironmentFile = lib.mkOption {
-      type = lib.types.str;
-      default = "/run/secrets/bifrost-migration.env";
-      description = "Separate owner-only direct Neon URL for the manual migration unit.";
-    };
     publicInference = lib.mkEnableOption "public Funnel after private validation";
     headroomModalApp = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
@@ -54,7 +49,7 @@ in {
     assertions = map (path: {
       assertion = lib.hasPrefix "/" path && !(lib.hasPrefix "/nix/store/" path);
       message = "Bifrost deployment secrets must be runtime absolute paths outside /nix/store.";
-    }) [ cfg.environmentFile cfg.redisPasswordFile cfg.migrationEnvironmentFile ] ++ [ {
+    }) [ cfg.environmentFile cfg.redisPasswordFile ] ++ [ {
       assertion = cfg.headroomModalApp == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9-]*" cfg.headroomModalApp != null;
       message = "Headroom requires a valid Modal app name.";
     } {
@@ -228,24 +223,6 @@ in {
         MemoryMax = "6G";
         LimitCORE = 0;
         # Upstream errors can contain connection strings. Use DB metadata logs.
-        StandardOutput = "null";
-        StandardError = "null";
-      };
-    };
-
-    # Never runs at boot or as a dependency of the runtime service.
-    systemd.services.bifrost-migrate = {
-      description = "Owner-operated Bifrost schema migration";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${config.services.bifrost.package}/bin/bifrost-migrate --migrate";
-        EnvironmentFile = cfg.migrationEnvironmentFile;
-        DynamicUser = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        LimitCORE = 0;
-        TimeoutStartSec = 660;
         StandardOutput = "null";
         StandardError = "null";
       };
