@@ -288,6 +288,16 @@ func (h *SessionHandler) oidcCallback(ctx *fasthttp.RequestCtx) {
 		oidcError(ctx, "unavailable")
 		return
 	}
+	// Successful authentication rotates the browser's local session. Leaving the
+	// previous token valid would preserve a stolen session after reauthentication.
+	if previous := string(ctx.Request.Header.Cookie("token")); previous != "" {
+		if err := h.configStore.DeleteSession(requestCtx, previous); err != nil {
+			// Do not expose a new session when rotation could not be completed.
+			_ = h.configStore.DeleteSession(requestCtx, value)
+			oidcError(ctx, "unavailable")
+			return
+		}
+	}
 	cookie := fasthttp.AcquireCookie()
 	defer fasthttp.ReleaseCookie(cookie)
 	cookie.SetKey("token")
