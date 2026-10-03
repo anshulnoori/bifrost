@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -26,9 +27,12 @@ func ExtractAnthropicPassthroughUsage(path string, _, body []byte) *schemas.Bifr
 	return nil
 }
 
+// HasAnthropicPassthroughUsage gates which stream events are fully parsed: usage-bearing
+// events (message_delta also carries stop_reason) and client tool_use block starts.
 func HasAnthropicPassthroughUsage(event []byte) bool {
 	return providerUtils.GetJSONField(event, "usage").Exists() ||
-		providerUtils.GetJSONField(event, "message.usage").Exists()
+		providerUtils.GetJSONField(event, "message.usage").Exists() ||
+		providerUtils.GetJSONField(event, "content_block.type").String() == string(AnthropicContentBlockTypeToolUse)
 }
 
 // ExtractAnthropicMessagesUsage parses usage from a non-streaming Messages response body.
@@ -106,8 +110,10 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 // it at the top level (final output). Taking the max of each field across events combines them
 // order-independently — the same merge the native Anthropic stream does (anthropic.go).
 type AnthropicPassthroughStreamUsage struct {
-	combined AnthropicUsage
-	seen     bool
+	combined   AnthropicUsage
+	seen       bool
+	stopReason *string
+	toolNames  []string
 }
 
 // ObserveEvent merges one framed SSE data payload's usage into the running total and returns
@@ -116,6 +122,13 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 	var evt AnthropicStreamEvent
 	if err := sonic.Unmarshal(event, &evt); err != nil {
 		return a.usage()
+	}
+	if evt.ContentBlock != nil {
+		a.toolNames = appendToolName(a.toolNames, evt.ContentBlock)
+	}
+	if evt.Delta != nil && evt.Delta.StopReason != nil && *evt.Delta.StopReason != "" {
+		reason := string(*evt.Delta.StopReason)
+		a.stopReason = &reason
 	}
 	// message_delta carries usage at the top level; message_start nests it under message.usage.
 	var u *AnthropicUsage
@@ -182,7 +195,24 @@ func (a *AnthropicPassthroughStreamUsage) usage() *schemas.BifrostPassthroughUsa
 	if !a.seen {
 		return nil
 	}
-	return buildAnthropicPassthroughUsage(&a.combined)
+	u := buildAnthropicPassthroughUsage(&a.combined)
+	if u != nil {
+		u.StopReason, u.ToolCallNames = a.stopReason, a.toolNames
+	}
+	return u
+}
+
+// appendToolName records a client tool_use block's name once, keeping first-seen order.
+// Server and MCP tool blocks are not caller-defined functions, matching typed logging.
+func appendToolName(names []string, block *AnthropicContentBlock) []string {
+	if block.Type != AnthropicContentBlockTypeToolUse || block.Name == nil {
+		return names
+	}
+	name := strings.TrimSpace(*block.Name)
+	if name == "" || slices.Contains(names, name) {
+		return names
+	}
+	return append(names, name)
 }
 
 // extractAnthropicMessagesUsage parses usage from a /v1/messages response body. Streaming usage
@@ -196,7 +226,18 @@ func extractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage
 	if err := sonic.Unmarshal(body, &resp); err != nil || resp.Usage == nil {
 		return nil
 	}
-	return buildAnthropicPassthroughUsage(resp.Usage)
+	u := buildAnthropicPassthroughUsage(resp.Usage)
+	if u == nil {
+		return nil
+	}
+	if resp.StopReason != "" {
+		reason := string(resp.StopReason)
+		u.StopReason = &reason
+	}
+	for i := range resp.Content {
+		u.ToolCallNames = appendToolName(u.ToolCallNames, &resp.Content[i])
+	}
+	return u
 }
 
 // extractAnthropicCompleteUsage handles the legacy /v1/complete endpoint.

@@ -959,7 +959,6 @@ func TestRecalculateCostsBackfillsRecoveredUsageSoSecondRunSkipsObjectStore(t *t
 // calculateBatchAggregateCost reprices per model_breakdown entry instead, the
 // same way settlement originally priced each result item.
 
-
 // repriceAggregate drives the production seam: RepriceLog asks whichever job kind
 // owns the row to recompute it. Returns the cost and the kind's re-serialized
 // debug blob, matching the shape the old plugin-local helper returned.
@@ -1620,4 +1619,23 @@ func TestCalculateCostForLogMatchesLiveForClaudePassthrough(t *testing.T) {
 	got, err := plugin.calculateCostForLog(entry)
 	require.NoError(t, err)
 	assertCostsEqual(t, "claude passthrough request", got, want)
+}
+
+// Stop reason and tool names from a passthrough response are metadata: they must land on
+// the row even when content logging is off, as they do for typed responses.
+func TestPassthroughMetadataIsLoggedWithoutContent(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	entry := &logstore.Log{ID: "req-passthrough-metadata", ParamsParsed: &schemas.PassthroughLogParams{}}
+	reason := "tool_use"
+	plugin.applyNonStreamingOutputToEntry(entry, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		StatusCode: 200,
+		PassthroughUsage: &schemas.BifrostPassthroughUsage{
+			LLMUsage:   &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			StopReason: &reason, ToolCallNames: []string{"Read", "Bash"},
+		},
+	}}, false, false)
+	require.NotNil(t, entry.StopReason)
+	assert.Equal(t, "tool_use", *entry.StopReason)
+	assert.Equal(t, []string{"Read", "Bash"}, entry.ToolCallNames)
+	assert.Nil(t, entry.ToolCallsParsed)
 }

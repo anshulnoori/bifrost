@@ -565,6 +565,21 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 		result.PassthroughResponse.StatusCode >= 400
 }
 
+// applyPassthroughMetadataToEntry records the stop reason and tool names a provider read
+// from a passthrough response. Both are metadata, persisted regardless of content policy,
+// the same as for typed responses.
+func applyPassthroughMetadataToEntry(entry *logstore.Log, usage *schemas.BifrostPassthroughUsage) {
+	if entry == nil || usage == nil {
+		return
+	}
+	if entry.StopReason == nil && usage.StopReason != nil {
+		entry.StopReason = usage.StopReason
+	}
+	if len(entry.ToolCallNames) == 0 && len(usage.ToolCallNames) > 0 {
+		entry.ToolCallNames = usage.ToolCallNames
+	}
+}
+
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
@@ -702,6 +717,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
 			params.StatusCode = result.PassthroughResponse.StatusCode
 		}
+		applyPassthroughMetadataToEntry(entry, result.PassthroughResponse.PassthroughUsage)
 	}
 
 	// Tool calls - names are always persisted, the full payload follows content policy

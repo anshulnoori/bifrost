@@ -2300,6 +2300,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if contentLoggingEnabled && len(result.PassthroughResponse.Body) > 0 {
 				entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
 			}
+			applyPassthroughMetadataToEntry(entry, result.PassthroughResponse.PassthroughUsage)
 			// Flip status for passthrough error responses (4xx/5xx from provider)
 			if isPassthroughErrorResponse(result) {
 				entry.Status = logStatusError

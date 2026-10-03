@@ -21,6 +21,11 @@ type BifrostPassthroughUsage struct {
 	Speed        *string             // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	InferenceGeo *string             // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
 
+	// Response metadata read alongside usage, for logs only: the native stop reason and
+	// the distinct client tool names the response called. Neither changes the body.
+	StopReason    *string
+	ToolCallNames []string
+
 	// Image generation / edit / variation
 	ImageUsage   *ImageUsage
 	ImageSize    string // e.g. "1024x1024"

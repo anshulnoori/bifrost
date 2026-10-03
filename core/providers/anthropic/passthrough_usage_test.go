@@ -5,6 +5,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtractAnthropicPassthroughUsage(t *testing.T) {
@@ -132,6 +134,41 @@ func TestAnthropicPassthroughStreamUsage(t *testing.T) {
 			*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 3 {
 			t.Fatalf("web search requests = %+v, want 3", u)
 		}
+	})
+}
+
+// Passthrough logs record the native stop reason and the client tool names the response
+// called, as typed requests do, without retaining or rewriting the body.
+func TestAnthropicPassthroughResponseMetadata(t *testing.T) {
+	t.Run("stream", func(t *testing.T) {
+		acc := &anthropic.AnthropicPassthroughStreamUsage{}
+		for _, event := range []string{
+			`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"s1","name":"web_search","input":{}}}`,
+			`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"Read","input":{}}}`,
+			`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`,
+			`{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"t2","name":"Bash","input":{}}}`,
+			`{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"t3","name":"Read","input":{}}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":40}}`,
+		} {
+			// StreamPassthrough only observes events that pass the cheap gate.
+			if anthropic.HasAnthropicPassthroughUsage([]byte(event)) {
+				acc.ObserveEvent([]byte(event))
+			}
+		}
+		u := acc.ObserveEvent([]byte(`{"type":"ping"}`))
+		require.NotNil(t, u)
+		require.NotNil(t, u.StopReason)
+		assert.Equal(t, "tool_use", *u.StopReason)
+		assert.Equal(t, []string{"Read", "Bash"}, u.ToolCallNames)
+	})
+
+	t.Run("unary", func(t *testing.T) {
+		u := anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"type":"message","stop_reason":"max_tokens","content":[{"type":"text","text":"x"},{"type":"tool_use","id":"t1","name":"Edit","input":{}}],"usage":{"input_tokens":3,"output_tokens":2}}`))
+		require.NotNil(t, u)
+		require.NotNil(t, u.StopReason)
+		assert.Equal(t, "max_tokens", *u.StopReason)
+		assert.Equal(t, []string{"Edit"}, u.ToolCallNames)
 	})
 }
 
