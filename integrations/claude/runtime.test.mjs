@@ -72,6 +72,11 @@ test("usage read bypasses essential-traffic mode for that request only", { timeo
   // Plain-HTTP proxy: the native client sends the absolute HTTPS URL, so no TLS is needed.
   const proxy = createServer((req, res) => {
     requests.push({ url: req.url, authorization: req.headers.authorization, beta: req.headers["anthropic-beta"] });
+    if (requests.length === 1) {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "1" }).end(JSON.stringify({
+        error: { type: "rate_limit_error", message: "Rate limited. Please try again later." } }));
+      return;
+    }
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
       five_hour: { utilization: 71, resets_at: "2026-10-03T01:30:00.226479+00:00" },
       seven_day: { utilization: 12, resets_at: "2026-10-03T16:00:00.2265+00:00" },
@@ -88,14 +93,22 @@ test("usage read bypasses essential-traffic mode for that request only", { timeo
   });
   t.after(async () => { if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "exit"); } });
   const [line] = await once(createInterface({ input: child.stdout }), "line");
-  const usage = await fetch(`http://127.0.0.1:${JSON.parse(line).port}/accounts/account-a/usage`,
+  const read = () => fetch(`http://127.0.0.1:${JSON.parse(line).port}/accounts/account-a/usage`,
     { headers: { "x-claude-bridge-token": token }, signal: AbortSignal.timeout(15000) });
+  // Rate limited: report unavailable once, then back off instead of re-asking upstream.
+  assert.equal((await read()).status, 502);
+  assert.equal((await read()).status, 502);
+  assert.equal(requests.length, 1, "no upstream retry during the Retry-After backoff");
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const usage = await read();
   assert.equal(usage.status, 200, await usage.clone().text());
   assert.deepEqual((await usage.json()).five_hour.utilization, 71);
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "https://api.anthropic.com/api/oauth/usage");
-  assert.equal(requests[0].authorization, "Bearer synthetic-usage-access-token");
-  assert.match(requests[0].beta, /oauth-2025-04-20/);
+  // A good reading is cached, so dashboard polling does not reach upstream.
+  assert.equal((await read()).status, 200);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, "https://api.anthropic.com/api/oauth/usage");
+  assert.equal(requests[1].authorization, "Bearer synthetic-usage-access-token");
+  assert.match(requests[1].beta, /oauth-2025-04-20/);
 });
 
 for (const authentication of ["api-key", "oauth-token"]) {

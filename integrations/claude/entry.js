@@ -41,6 +41,7 @@ let flow;
 let expiry;
 let starting;
 let usageCache;
+let usageRetry = 0;
 async function status() {
   if (login && login.state !== "connected") return login;
   await initialize();
@@ -56,9 +57,18 @@ async function manage(method, path, body) {
   if (method === "GET" && route[1] === "/usage") {
     // Native subscription allowance reader: same credentials and refresh path.
     if ((await status()).state !== "connected") return Response.json({ error: "not connected" }, { status: 409 });
-    // Cache briefly: several dashboard tabs/rows must not multiply upstream reads.
-    if (!usageCache || Date.now() - usageCache.at > 30000)
-      usageCache = { at: Date.now(), value: await native.usage() };
+    // Anthropic rate-limits this endpoint. Refresh at most every 5 minutes, back
+    // off after a failure (honoring Retry-After), and keep the last good reading.
+    const now = Date.now();
+    if ((!usageCache || now - usageCache.at > 300000) && now >= usageRetry) {
+      try {
+        usageCache = { at: now, value: await native.usage() };
+      } catch (error) {
+        const after = Number(error?.response?.headers?.["retry-after"]) * 1000;
+        usageRetry = now + (error?.response?.status === 429 ? Math.min(after > 0 ? after : 300000, 3600000) : 60000);
+      }
+    }
+    if (!usageCache) throw new Error("usage unavailable");
     return Response.json(usageCache.value);
   }
   if (method !== "POST") return Response.json({ error: "not found" }, { status: 404 });
@@ -81,6 +91,7 @@ async function manage(method, path, body) {
   if (starting) return Response.json(await starting);
   if (login && ["pending", "connecting"].includes(login.state)) return Response.json(login);
   usageCache = undefined;
+  usageRetry = 0;
   flow?.cleanup();
   clearTimeout(expiry);
   const attempt = new native.GL();
