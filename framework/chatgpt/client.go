@@ -57,9 +57,19 @@ func (c *client) getJSON(ctx context.Context, endpoint string, out any) error {
 		}
 		return errors.New("ChatGPT OAuth service unavailable")
 	}
+	return readResponse(resp, out)
+}
+
+// readResponse requires a 2xx status and decodes at most 1 MiB into out.
+// A nil out discards the body.
+func readResponse(resp *http.Response, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("ChatGPT OAuth service returned HTTP %d", resp.StatusCode)
+	}
+	if out == nil {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return nil
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 || json.Unmarshal(data, out) != nil {
@@ -90,19 +100,7 @@ func (c *client) postForm(ctx context.Context, endpoint string, form url.Values,
 		}
 		return errors.New("ChatGPT OAuth service unavailable")
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("ChatGPT OAuth service returned HTTP %d", resp.StatusCode)
-	}
-	if out == nil {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		return nil
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-	if err != nil || len(data) > 1<<20 || json.Unmarshal(data, out) != nil {
-		return errors.New("invalid ChatGPT OAuth response")
-	}
-	return nil
+	return readResponse(resp, out)
 }
 
 func (c *client) exchange(ctx context.Context, form url.Values) (tokenSet, error) {

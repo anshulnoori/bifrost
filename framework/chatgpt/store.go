@@ -24,8 +24,21 @@ var (
 	ErrBusy            = errors.New("ChatGPT credential operation in progress")
 	ErrReconnect       = errors.New("ChatGPT authorization requires reconnect")
 	ErrInvalidCallback = errors.New("invalid ChatGPT OAuth callback")
+
+	errUnavailable = errors.New("ChatGPT credential store unavailable")
 )
 
+const (
+	attemptLifetime  = 15 * time.Minute
+	operationLease   = 30 * time.Second
+	operationTimeout = 20 * time.Second
+	refreshMargin    = time.Minute
+	dynamicClientID  = "dynamic_agent_client"
+	requestedScopes  = "openid profile email offline_access chatgpt.tokens.use.direct resource.invoke"
+)
+
+// Connection states: connected, refreshing, revoking, reconnect_required,
+// disconnected. Pending and expired are reported from attempts only.
 type Connection struct {
 	ID             string    `gorm:"primaryKey;size:36" json:"id"`
 	Owner          string    `gorm:"uniqueIndex;not null" json:"-"`
@@ -50,6 +63,8 @@ type ConnectionMetadata struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// attempt is one in-progress authorization. State holds the OAuth state
+// parameter, not a lifecycle state.
 type attempt struct {
 	ID             string `gorm:"primaryKey;size:36"`
 	Owner          string `gorm:"uniqueIndex;not null"`
@@ -64,6 +79,7 @@ type attempt struct {
 
 func (attempt) TableName() string { return "chatgpt_oauth_attempts" }
 
+// host holds the deployment's single stable agent host identifier.
 type host struct {
 	ID     uint   `gorm:"primaryKey"`
 	HostID string `gorm:"not null"`
@@ -74,6 +90,8 @@ func (host) TableName() string { return "chatgpt_oauth_hosts" }
 // MigrationModels returns all private persistence models owned by this package.
 func MigrationModels() []any { return []any{&Connection{}, &attempt{}, &host{}} }
 
+// Sealed payloads repeat their row ID and owner so ciphertext copied to another
+// row does not decrypt into valid credentials there.
 type attemptSecret struct{ ID, Owner, State, Nonce, Verifier, ClientID, Subject string }
 type credentialSecret struct {
 	ID, Owner    string
@@ -88,6 +106,18 @@ type Store struct {
 	client *client
 }
 
+func NewStore(db func() *gorm.DB) (*Store, error) {
+	if db == nil || db() == nil {
+		return nil, errors.New("ChatGPT credential database unavailable")
+	}
+	if !encrypt.IsEnabled() {
+		return nil, encrypt.ErrEncryptionKeyNotInitialized
+	}
+	return &Store{db: db, client: newClient()}, nil
+}
+
+// lockOwner locks a provider-owned key row in the same order as config-store
+// deletion, so an authorization cannot outlive deletion of its account.
 func lockOwner(tx *gorm.DB, owner string) error {
 	keyID, ok := strings.CutPrefix(owner, "provider:chatgpt:")
 	if !ok {
@@ -98,17 +128,26 @@ func lockOwner(tx *gorm.DB, owner string) error {
 		return err
 	}
 	var key tables.TableKey
-	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("provider_id = ? AND key_id = ?", provider.ID, keyID).First(&key).Error
+	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("provider_id = ? AND key_id = ?", provider.ID, keyID).First(&key).Error
 }
 
-func NewStore(db func() *gorm.DB) (*Store, error) {
-	if db == nil || db() == nil {
-		return nil, errors.New("ChatGPT credential database unavailable")
-	}
-	if !encrypt.IsEnabled() {
-		return nil, encrypt.ErrEncryptionKeyNotInitialized
-	}
-	return &Store{db: db, client: newClient()}, nil
+// transition is the durable compare-and-swap behind every connection state
+// change. It succeeds only for the caller that observed version and state.
+func transition(db *gorm.DB, row Connection, version uint64, state string, values map[string]any) (bool, error) {
+	values["version"] = version + 1
+	result := db.Model(&Connection{}).
+		Where("id = ? AND owner = ? AND version = ? AND state = ?", row.ID, row.Owner, version, state).
+		Updates(values)
+	return result.RowsAffected == 1, result.Error
+}
+
+// failOperation abandons a claimed refresh or revocation. The caller must
+// reconnect because the upstream token may already have rotated.
+func (s *Store) failOperation(ctx context.Context, row Connection, state string) error {
+	_, err := transition(s.db().WithContext(context.WithoutCancel(ctx)), row, row.Version+1, state,
+		map[string]any{"state": "reconnect_required", "operation_until": nil})
+	return err
 }
 
 func seal(v any) (string, error) {
@@ -122,6 +161,7 @@ func seal(v any) (string, error) {
 	}
 	return s, nil
 }
+
 func open(raw string, out any) error {
 	s, err := encrypt.Decrypt(raw)
 	if err != nil || json.Unmarshal([]byte(s), out) != nil {
@@ -129,6 +169,7 @@ func open(raw string, out any) error {
 	}
 	return nil
 }
+
 func randomValue(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -142,57 +183,45 @@ type Login struct {
 	AuthorizationURL string `json:"authorization_url"`
 }
 
+// Start records a PKCE authorization attempt. A previous registration keeps
+// its dynamic client ID and subject so reauthorization cannot switch identity.
 func (s *Store) Start(ctx context.Context, owner string) (*Login, error) {
 	if owner == "" {
 		return nil, ErrNotFound
 	}
-	state, err := randomValue(32)
-	if err != nil {
+	state, stateErr := randomValue(32)
+	nonce, nonceErr := randomValue(32)
+	verifier, verifierErr := randomValue(64)
+	if errors.Join(stateErr, nonceErr, verifierErr) != nil {
 		return nil, errors.New("could not start ChatGPT authorization")
 	}
-	nonce, err := randomValue(32)
-	if err != nil {
-		return nil, errors.New("could not start ChatGPT authorization")
-	}
-	verifier, err := randomValue(64)
-	if err != nil {
-		return nil, errors.New("could not start ChatGPT authorization")
-	}
-	now := time.Now().UTC()
-	a := attempt{ID: uuid.NewString(), Owner: owner, State: state, ExpiresAt: now.Add(15 * time.Minute)}
-	authorization := attemptSecret{ID: a.ID, Owner: owner, State: state, Nonce: nonce, Verifier: verifier}
+	a := attempt{ID: uuid.NewString(), Owner: owner, State: state, ExpiresAt: time.Now().UTC().Add(attemptLifetime)}
+	secret := attemptSecret{ID: a.ID, Owner: owner, State: state, Nonce: nonce, Verifier: verifier}
 	var hostID, loginHint, idTokenHint string
-	err = s.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockOwner(tx, owner); err != nil {
 			return err
 		}
 		var registration Connection
-		if err := tx.Select("id", "client_id", "subject", "email", "secret").Where("owner = ?", owner).First(&registration).Error; err == nil {
-			authorization.ClientID, authorization.Subject = registration.ClientID, registration.Subject
+		err := tx.Select("id", "client_id", "subject", "email", "secret").Where("owner = ?", owner).First(&registration).Error
+		switch {
+		case err == nil:
+			secret.ClientID, secret.Subject = registration.ClientID, registration.Subject
 			loginHint = registration.Email
-			if registration.Secret != "" {
-				var credentials credentialSecret
-				if open(registration.Secret, &credentials) == nil && credentials.ID == registration.ID && credentials.Owner == owner {
-					idTokenHint = credentials.IDToken
-				}
+			var credentials credentialSecret
+			if registration.Secret != "" && open(registration.Secret, &credentials) == nil &&
+				credentials.ID == registration.ID && credentials.Owner == owner {
+				idTokenHint = credentials.IDToken
 			}
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		case !errors.Is(err, gorm.ErrRecordNotFound):
 			return err
 		}
-		a.Secret, err = seal(authorization)
-		if err != nil {
+		if a.Secret, err = seal(secret); err != nil {
 			return err
 		}
-		var h host
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&h, 1).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-			h = host{ID: 1, HostID: "urn:uuid:" + uuid.NewString()}
-			if err = tx.Create(&h).Error; err != nil {
-				return err
-			}
-		} else if err != nil {
+		if hostID, err = loadHostID(tx); err != nil {
 			return err
 		}
-		hostID = h.HostID
 		if err := tx.Where("owner = ?", owner).Delete(&attempt{}).Error; err != nil {
 			return err
 		}
@@ -201,58 +230,101 @@ func (s *Store) Start(ctx context.Context, owner string) (*Login, error) {
 	if err != nil {
 		return nil, errors.New("could not persist ChatGPT authorization")
 	}
-	challenge := sha256.Sum256([]byte(verifier))
-	q := url.Values{"client_id": {"dynamic_agent_client"}, "agent_name_hint": {"Bifrost"}, "ext_agent_host_id": {hostID}, "response_type": {"code"}, "redirect_uri": {redirectURI}, "resource": {resource}, "scope": {"openid profile email offline_access chatgpt.tokens.use.direct resource.invoke"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}, "state": {state}, "nonce": {nonce}}
-	if authorization.ClientID != "" {
-		q.Set("client_id", authorization.ClientID)
-		q.Del("agent_name_hint")
-		if loginHint != "" {
-			q.Set("login_hint", loginHint)
-		}
-		if idTokenHint != "" {
-			q.Set("id_token_hint", idTokenHint)
-		}
-	}
-	return &Login{Connection: Connection{ID: a.ID, State: "pending", ExpiresAt: a.ExpiresAt}, AuthorizationURL: s.client.issuer + "/api/accounts/authorize?" + q.Encode()}, nil
+	return &Login{
+		Connection:       Connection{ID: a.ID, State: "pending", ExpiresAt: a.ExpiresAt},
+		AuthorizationURL: s.client.issuer + "/api/accounts/authorize?" + authorizationQuery(secret, hostID, loginHint, idTokenHint).Encode(),
+	}, nil
 }
 
-func (s *Store) Current(ctx context.Context, owner string) (Connection, error) {
-	var row Connection
-	err := s.db().WithContext(ctx).Select("id", "owner", "state", "email", "expires_at", "subject", "client_id", "version").Where("owner = ?", owner).First(&row).Error
+// loadHostID returns the deployment's agent host ID, creating it once.
+func loadHostID(tx *gorm.DB) (string, error) {
+	var h host
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&h, 1).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		var a attempt
-		if attemptErr := s.db().WithContext(ctx).Select("id", "owner", "expires_at").Where("owner = ?", owner).First(&a).Error; attemptErr == nil {
-			state := "pending"
-			if !a.ExpiresAt.After(time.Now()) {
-				state = "expired"
-			}
-			return Connection{ID: a.ID, Owner: a.Owner, State: state, ExpiresAt: a.ExpiresAt}, nil
-		} else if !errors.Is(attemptErr, gorm.ErrRecordNotFound) {
-			return row, errors.New("ChatGPT credential store unavailable")
-		}
+		h = host{ID: 1, HostID: "urn:uuid:" + uuid.NewString()}
+		err = tx.Create(&h).Error
+	}
+	return h.HostID, err
+}
+
+// authorizationQuery requests dynamic client registration on first sign-in
+// and reuses the registered client afterwards.
+func authorizationQuery(secret attemptSecret, hostID, loginHint, idTokenHint string) url.Values {
+	challenge := sha256.Sum256([]byte(secret.Verifier))
+	q := url.Values{
+		"client_id":             {dynamicClientID},
+		"agent_name_hint":       {"Bifrost"},
+		"ext_agent_host_id":     {hostID},
+		"response_type":         {"code"},
+		"redirect_uri":          {redirectURI},
+		"resource":              {resource},
+		"scope":                 {requestedScopes},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
+		"code_challenge_method": {"S256"},
+		"state":                 {secret.State},
+		"nonce":                 {secret.Nonce},
+	}
+	if secret.ClientID == "" {
+		return q
+	}
+	q.Set("client_id", secret.ClientID)
+	q.Del("agent_name_hint")
+	if loginHint != "" {
+		q.Set("login_hint", loginHint)
+	}
+	if idTokenHint != "" {
+		q.Set("id_token_hint", idTokenHint)
+	}
+	return q
+}
+
+// Current returns the owner's connection, or its pending attempt when no
+// connection exists yet.
+func (s *Store) Current(ctx context.Context, owner string) (Connection, error) {
+	db := s.db().WithContext(ctx)
+	var row Connection
+	err := db.Select("id", "owner", "state", "email", "expires_at", "subject", "client_id", "version").
+		Where("owner = ?", owner).First(&row).Error
+	if err == nil {
+		return row, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return row, errUnavailable
+	}
+	var a attempt
+	err = db.Select("id", "owner", "expires_at").Where("owner = ?", owner).First(&a).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return row, ErrNotFound
 	}
 	if err != nil {
-		return row, errors.New("ChatGPT credential store unavailable")
+		return row, errUnavailable
 	}
-	return row, nil
+	state := "pending"
+	if !a.ExpiresAt.After(time.Now()) {
+		state = "expired"
+	}
+	return Connection{ID: a.ID, Owner: a.Owner, State: state, ExpiresAt: a.ExpiresAt}, nil
 }
+
 func (s *Store) CurrentMetadata(ctx context.Context, owner string) (ConnectionMetadata, error) {
 	var m ConnectionMetadata
-	err := s.db().WithContext(ctx).Model(&Connection{}).Select("id", "state", "email", "expires_at").Where("owner = ?", owner).Take(&m).Error
+	err := s.db().WithContext(ctx).Model(&Connection{}).Select("id", "state", "email", "expires_at").
+		Where("owner = ?", owner).Take(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		current, currentErr := s.Current(ctx, owner)
-		if currentErr != nil {
-			return m, currentErr
+		current, err := s.Current(ctx, owner)
+		if err != nil {
+			return m, err
 		}
 		return ConnectionMetadata{ID: current.ID, State: current.State, Email: current.Email, ExpiresAt: current.ExpiresAt}, nil
 	}
 	if err != nil {
-		return m, errors.New("ChatGPT credential store unavailable")
+		return m, errUnavailable
 	}
 	return m, nil
 }
 
+// callbackValues accepts only the registered loopback redirect with
+// single-valued parameters.
 func callbackValues(raw string) (url.Values, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "http" || u.Host != "127.0.0.1:1455" || u.Path != "/auth/callback" || u.Fragment != "" || u.User != nil {
@@ -267,21 +339,24 @@ func callbackValues(raw string) (url.Values, error) {
 	return q, nil
 }
 
+// Complete exchanges the pasted callback URL for tokens. One caller claims the
+// attempt; a failed exchange discards it so the code cannot be retried.
 func (s *Store) Complete(ctx context.Context, owner, id, callbackURL string) (Connection, error) {
 	q, err := callbackValues(callbackURL)
 	if err != nil {
 		return Connection{}, err
 	}
+	db := s.db().WithContext(ctx)
 	var a attempt
-	err = s.db().WithContext(ctx).Where("id = ? AND owner = ?", id, owner).First(&a).Error
+	err = db.Where("id = ? AND owner = ?", id, owner).First(&a).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Connection{}, ErrNotFound
 	}
 	if err != nil {
-		return Connection{}, errors.New("ChatGPT credential store unavailable")
+		return Connection{}, errUnavailable
 	}
 	if !a.ExpiresAt.After(time.Now()) {
-		_ = s.db().WithContext(ctx).Where("id = ? AND owner = ?", id, owner).Delete(&attempt{}).Error
+		_ = db.Where("id = ? AND owner = ?", id, owner).Delete(&attempt{}).Error
 		return Connection{}, ErrReconnect
 	}
 	var as attemptSecret
@@ -301,41 +376,61 @@ func (s *Store) Complete(ctx context.Context, owner, id, callbackURL string) (Co
 		}
 		clientID = as.ClientID
 	}
-	if code == "" || clientID == "" || clientID == "dynamic_agent_client" {
+	if code == "" || clientID == "" || clientID == dynamicClientID {
 		return Connection{}, ErrInvalidCallback
 	}
 	if a.Version != 0 {
 		return Connection{}, ErrReconnect
 	}
-	leaseUntil := time.Now().UTC().Add(30 * time.Second)
-	claimed := s.db().WithContext(ctx).Model(&attempt{}).Where("id = ? AND owner = ? AND state = ? AND version = ? AND operation_until < ?", id, owner, a.State, a.Version, time.Now().UTC()).Updates(map[string]any{"version": a.Version + 1, "operation_until": leaseUntil})
+
+	claimed := db.Model(&attempt{}).
+		Where("id = ? AND owner = ? AND state = ? AND version = ? AND operation_until < ?", id, owner, a.State, a.Version, time.Now().UTC()).
+		Updates(map[string]any{"version": a.Version + 1, "operation_until": time.Now().UTC().Add(operationLease)})
 	if claimed.Error != nil {
-		return Connection{}, errors.New("ChatGPT credential store unavailable")
+		return Connection{}, errUnavailable
 	}
 	if claimed.RowsAffected != 1 {
 		return Connection{}, ErrBusy
 	}
-	opctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	discard := func() {
+		_ = s.db().WithContext(context.WithoutCancel(ctx)).
+			Where("id = ? AND owner = ? AND version = ?", id, owner, a.Version+1).Delete(&attempt{}).Error
+	}
+
+	opctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
-	t, err := s.client.exchange(opctx, url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code}, "code_verifier": {as.Verifier}, "redirect_uri": {redirectURI}, "resource": {resource}})
+	t, err := s.client.exchange(opctx, url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {clientID},
+		"code":          {code},
+		"code_verifier": {as.Verifier},
+		"redirect_uri":  {redirectURI},
+		"resource":      {resource},
+	})
 	if err != nil {
-		_ = s.db().WithContext(context.WithoutCancel(ctx)).Where("id = ? AND owner = ? AND version = ?", id, owner, a.Version+1).Delete(&attempt{}).Error
+		discard()
 		return Connection{}, err
 	}
 	if !hasRequiredScopes(t.Scope) {
-		_ = s.db().WithContext(context.WithoutCancel(ctx)).Where("id = ? AND owner = ? AND version = ?", id, owner, a.Version+1).Delete(&attempt{}).Error
+		discard()
 		return Connection{}, ErrReconnect
 	}
 	ident, err := s.client.verifyIDToken(opctx, t.IDToken, clientID, as.Nonce, as.Subject)
 	if err != nil {
-		_ = s.db().WithContext(context.WithoutCancel(ctx)).Where("id = ? AND owner = ? AND version = ?", id, owner, a.Version+1).Delete(&attempt{}).Error
+		discard()
 		return Connection{}, err
 	}
 	secret, err := seal(credentialSecret{ID: id, Owner: owner, AccessToken: t.AccessToken, RefreshToken: t.RefreshToken, IDToken: t.IDToken, Scope: t.Scope})
 	if err != nil {
 		return Connection{}, err
 	}
-	row := Connection{ID: id, Owner: owner, State: "connected", Email: ident.Email, ExpiresAt: time.Now().Add(time.Duration(t.ExpiresIn) * time.Second), Subject: ident.Subject, ClientID: clientID, Secret: secret}
+	row := Connection{
+		ID: id, Owner: owner, State: "connected", Email: ident.Email,
+		ExpiresAt: time.Now().Add(time.Duration(t.ExpiresIn) * time.Second),
+		Subject:   ident.Subject, ClientID: clientID, Secret: secret,
+	}
+	// The connection replaces any previous one only while this caller still
+	// holds the claimed attempt and no revocation is running.
 	err = s.db().WithContext(context.WithoutCancel(ctx)).Transaction(func(tx *gorm.DB) error {
 		if err := lockOwner(tx, owner); err != nil {
 			return err
@@ -368,6 +463,8 @@ func (s *Store) Complete(ctx context.Context, owner, id, callbackURL string) (Co
 	return row, nil
 }
 
+// Credential returns a current access token, refreshing it when close to
+// expiry. Callers wait while another replica holds the refresh lease.
 func (s *Store) Credential(ctx context.Context, owner, id string) (string, error) {
 	for {
 		access, err := s.credential(ctx, owner, id)
@@ -381,24 +478,27 @@ func (s *Store) Credential(ctx context.Context, owner, id string) (string, error
 		}
 	}
 }
+
 func (s *Store) credential(ctx context.Context, owner, id string) (string, error) {
+	db := s.db().WithContext(ctx)
 	var row Connection
-	err := s.db().WithContext(ctx).Where("id = ? AND owner = ?", id, owner).First(&row).Error
+	err := db.Where("id = ? AND owner = ?", id, owner).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", ErrNotFound
 	}
 	if err != nil {
-		return "", errors.New("ChatGPT credential store unavailable")
+		return "", errUnavailable
 	}
 	if row.State == "refreshing" || row.State == "revoking" {
 		if row.OperationUntil.After(time.Now()) {
 			return "", ErrBusy
 		}
-		res := s.db().WithContext(ctx).Model(&Connection{}).Where("id = ? AND owner = ? AND version = ? AND state = ?", id, owner, row.Version, row.State).Updates(map[string]any{"state": "reconnect_required", "version": row.Version + 1, "operation_until": nil})
-		if res.Error != nil {
-			return "", errors.New("ChatGPT credential store unavailable")
+		// The lease holder died mid-operation; its refresh token may have rotated.
+		won, err := transition(db, row, row.Version, row.State, map[string]any{"state": "reconnect_required", "operation_until": nil})
+		if err != nil {
+			return "", errUnavailable
 		}
-		if res.RowsAffected == 0 {
+		if !won {
 			return "", ErrBusy
 		}
 		return "", ErrReconnect
@@ -410,25 +510,26 @@ func (s *Store) credential(ctx context.Context, owner, id string) (string, error
 	if open(row.Secret, &old) != nil || old.ID != id || old.Owner != owner {
 		return "", ErrReconnect
 	}
-	if row.ExpiresAt.After(time.Now().Add(time.Minute)) {
+	if row.ExpiresAt.After(time.Now().Add(refreshMargin)) {
 		return old.AccessToken, nil
 	}
-	leaseUntil := time.Now().UTC().Add(30 * time.Second)
-	res := s.db().WithContext(ctx).Model(&Connection{}).Where("id = ? AND owner = ? AND version = ? AND state = ?", id, owner, row.Version, "connected").Updates(map[string]any{"state": "refreshing", "version": row.Version + 1, "operation_until": leaseUntil})
-	if res.Error != nil {
-		return "", errors.New("ChatGPT credential store unavailable")
+
+	won, err := transition(db, row, row.Version, "connected", map[string]any{"state": "refreshing", "operation_until": time.Now().UTC().Add(operationLease)})
+	if err != nil {
+		return "", errUnavailable
 	}
-	if res.RowsAffected != 1 {
+	if !won {
 		return "", ErrBusy
 	}
-	opctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	opctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
-	t, err := s.client.exchange(opctx, url.Values{"grant_type": {"refresh_token"}, "client_id": {row.ClientID}, "refresh_token": {old.RefreshToken}, "resource": {resource}})
-	if err != nil {
-		_ = s.failOperation(ctx, row, "refreshing")
-		return "", ErrReconnect
-	}
-	if !hasRequiredScopes(t.Scope) {
+	t, err := s.client.exchange(opctx, url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {row.ClientID},
+		"refresh_token": {old.RefreshToken},
+		"resource":      {resource},
+	})
+	if err != nil || !hasRequiredScopes(t.Scope) {
 		_ = s.failOperation(ctx, row, "refreshing")
 		return "", ErrReconnect
 	}
@@ -442,21 +543,27 @@ func (s *Store) credential(ctx context.Context, owner, id string) (string, error
 		_ = s.failOperation(ctx, row, "refreshing")
 		return "", err
 	}
-	save := s.db().WithContext(context.WithoutCancel(ctx)).Model(&Connection{}).Where("id = ? AND owner = ? AND version = ? AND state = ?", id, owner, row.Version+1, "refreshing").Updates(map[string]any{"state": "connected", "version": row.Version + 2, "operation_until": nil, "secret": secret, "email": ident.Email, "expires_at": time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)})
-	if save.Error != nil || save.RowsAffected != 1 {
+	won, err = transition(s.db().WithContext(context.WithoutCancel(ctx)), row, row.Version+1, "refreshing", map[string]any{
+		"state":           "connected",
+		"operation_until": nil,
+		"secret":          secret,
+		"email":           ident.Email,
+		"expires_at":      time.Now().Add(time.Duration(t.ExpiresIn) * time.Second),
+	})
+	if err != nil || !won {
 		return "", ErrBusy
 	}
 	return t.AccessToken, nil
 }
-func (s *Store) failOperation(ctx context.Context, row Connection, state string) error {
-	return s.db().WithContext(context.WithoutCancel(ctx)).Model(&Connection{}).Where("id = ? AND owner = ? AND version = ? AND state = ?", row.ID, row.Owner, row.Version+1, state).Updates(map[string]any{"state": "reconnect_required", "version": row.Version + 2, "operation_until": nil}).Error
-}
 
+// Disconnect cancels a pending attempt, or revokes the refresh token upstream
+// and clears stored tokens. The registration is kept for the next sign-in.
 func (s *Store) Disconnect(ctx context.Context, owner, id string) error {
+	db := s.db().WithContext(ctx)
 	var row Connection
-	err := s.db().WithContext(ctx).Where("id = ? AND owner = ?", id, owner).First(&row).Error
+	err := db.Where("id = ? AND owner = ?", id, owner).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		result := s.db().WithContext(ctx).Where("id = ? AND owner = ?", id, owner).Delete(&attempt{})
+		result := db.Where("id = ? AND owner = ?", id, owner).Delete(&attempt{})
 		if result.Error != nil {
 			return errors.New("could not disconnect ChatGPT")
 		}
@@ -466,7 +573,7 @@ func (s *Store) Disconnect(ctx context.Context, owner, id string) error {
 		return nil
 	}
 	if err != nil {
-		return errors.New("ChatGPT credential store unavailable")
+		return errUnavailable
 	}
 	if row.State != "connected" && row.State != "reconnect_required" {
 		return ErrBusy
@@ -475,27 +582,24 @@ func (s *Store) Disconnect(ctx context.Context, owner, id string) error {
 	if open(row.Secret, &secret) != nil {
 		return ErrReconnect
 	}
-	leaseUntil := time.Now().UTC().Add(30 * time.Second)
-	err = s.db().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = db.Transaction(func(tx *gorm.DB) error {
 		if err := lockOwner(tx, owner); err != nil {
 			return err
 		}
-		claim := tx.Model(&Connection{}).Where("id = ? AND owner = ? AND version = ? AND state = ?", id, owner, row.Version, row.State).Updates(map[string]any{"state": "revoking", "version": row.Version + 1, "operation_until": leaseUntil})
-		if claim.Error != nil {
-			return claim.Error
+		won, err := transition(tx, row, row.Version, row.State, map[string]any{"state": "revoking", "operation_until": time.Now().UTC().Add(operationLease)})
+		if err == nil && !won {
+			err = ErrBusy
 		}
-		if claim.RowsAffected != 1 {
-			return ErrBusy
-		}
-		return nil
+		return err
 	})
-	if err != nil {
-		if errors.Is(err, ErrBusy) {
-			return err
-		}
-		return errors.New("ChatGPT credential store unavailable")
+	if errors.Is(err, ErrBusy) {
+		return err
 	}
-	opctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	if err != nil {
+		return errUnavailable
+	}
+
+	opctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	if err = s.client.revoke(opctx, secret.RefreshToken, row.ClientID); err != nil {
 		_ = s.failOperation(ctx, row, "revoking")
@@ -505,19 +609,19 @@ func (s *Store) Disconnect(ctx context.Context, owner, id string) error {
 		if err := lockOwner(tx, owner); err != nil {
 			return err
 		}
-		res := tx.Model(&Connection{}).Where("id = ? AND owner = ? AND version = ? AND state = ?", id, owner, row.Version+1, "revoking").Updates(map[string]any{"state": "disconnected", "secret": "", "version": row.Version + 2, "operation_until": nil})
-		if res.Error != nil {
-			return res.Error
+		won, err := transition(tx, row, row.Version+1, "revoking", map[string]any{"state": "disconnected", "secret": "", "operation_until": nil})
+		if err != nil {
+			return err
 		}
-		if res.RowsAffected != 1 {
+		if !won {
 			return ErrBusy
 		}
 		return tx.Where("owner = ?", owner).Delete(&attempt{}).Error
 	})
+	if errors.Is(err, ErrBusy) {
+		return err
+	}
 	if err != nil {
-		if errors.Is(err, ErrBusy) {
-			return err
-		}
 		return errors.New("could not disconnect ChatGPT")
 	}
 	return nil
