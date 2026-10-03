@@ -24,6 +24,7 @@ func TestUsageIsAccountScopedAndSanitized(t *testing.T) {
 				"seven_day_opus":null,
 				"seven_day_sonnet":{"utilization":"bad"},
 				"extra_usage":{"spend":"$12.34","organization_uuid":"private-org"},
+				"checked_at":"2026-10-02T19:55:00.000Z",
 				"limits":[
 					{"kind":"weekly_scoped","percent":40,"resets_at":"2026-10-05T00:00:00Z","scope":{"model":{"display_name":"Fable"}}},
 					{"kind":"spend","percent":99,"scope":{"model":{"display_name":"private-spend"}}}
@@ -46,6 +47,9 @@ func TestUsageIsAccountScopedAndSanitized(t *testing.T) {
 	}
 	if *usage.FiveHour.Utilization != 6 || *usage.FiveHour.ResetsAt != "2026-10-02T20:00:00Z" {
 		t.Fatalf("five-hour window: %+v", usage.FiveHour)
+	}
+	if usage.CheckedAt == nil || *usage.CheckedAt != "2026-10-02T19:55:00.000Z" {
+		t.Fatal("bridge reading time not preserved")
 	}
 	if *usage.SevenDay.Utilization != 1.5 || usage.SevenDay.ResetsAt != nil {
 		t.Fatalf("weekly window must keep percent and drop an invalid reset: %+v", usage.SevenDay)

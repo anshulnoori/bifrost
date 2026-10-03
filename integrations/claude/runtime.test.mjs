@@ -100,9 +100,13 @@ test("usage read bypasses essential-traffic mode for that request only", { timeo
   assert.equal((await read()).status, 502);
   assert.equal(requests.length, 1, "no upstream retry during the Retry-After backoff");
   await new Promise((resolve) => setTimeout(resolve, 1100));
-  const usage = await read();
+  // Concurrent dashboard reads after the backoff share one upstream request.
+  const [usage, other] = await Promise.all([read(), read()]);
   assert.equal(usage.status, 200, await usage.clone().text());
-  assert.deepEqual((await usage.json()).five_hour.utilization, 71);
+  assert.equal(other.status, 200);
+  const reading = await usage.json();
+  assert.deepEqual(reading.five_hour.utilization, 71);
+  assert.ok(Date.now() - Date.parse(reading.checked_at) < 15000, "reading time reported");
   // A good reading is cached, so dashboard polling does not reach upstream.
   assert.equal((await read()).status, 200);
   assert.equal(requests.length, 2);

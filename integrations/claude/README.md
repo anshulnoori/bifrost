@@ -94,9 +94,13 @@ with the account's credentials and native refresh. Workers run with
 reader. This one request sets `bypassEssentialTrafficOnly`; the worker-wide mode
 stays on for every other request.
 Anthropic rate-limits this endpoint, so each worker refreshes it at most every
-5 minutes and keeps serving the last good reading. After a 429 the worker waits
-for `Retry-After` (5 minutes when absent, at most 1 hour) before asking again;
-other failures wait 1 minute. The dashboard polls every 60 seconds.
+5 minutes, shares one upstream request between concurrent readers, and keeps
+serving the last good reading for up to 1 hour. After a 429 the worker waits for
+`Retry-After` (5 minutes when absent, at most 1 hour) before asking again; other
+failures wait 1 minute. Each reading carries `checked_at`, shown as "Updated …".
+The dashboard polls every 5 minutes with jitter, and only while the tab is
+visible. Codex usage follows the same rules on the gateway, where routing
+reserves also read it; a reading older than 1 hour fails closed for routing.
 Bifrost returns only window percentages and reset times, never spend, identity,
 or token data. Missing or malformed windows are omitted rather than invented, and a
 failed read shows "Usage unavailable". This endpoint is undocumented; its shape

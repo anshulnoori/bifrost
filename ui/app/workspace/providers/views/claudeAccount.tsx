@@ -5,9 +5,10 @@ import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { claudeAction, claudeUsage, type ClaudeConnection as Connection, type ClaudeUsage } from "@/lib/store/apis/claudeApi";
 import { ModelProviderKey } from "@/lib/types/config";
+import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useState } from "react";
 import { codexAccountLabel } from "./codexAccountLabel";
 
 function usageWindows(usage?: ClaudeUsage) {
@@ -42,12 +43,11 @@ export default function ClaudeAccount({
 	const [usageError, setUsageError] = useState(false);
 	const [error, setError] = useState("");
 	const [refresh, setRefresh] = useState(0);
-	useEffect(() => {
-		const controller = new AbortController();
-		const load = async () => {
+	useVisiblePolling(
+		async (signal) => {
 			try {
-				const result = await claudeAction(account.id, "status", controller.signal);
-				if (controller.signal.aborted) return;
+				const result = await claudeAction(account.id, "status", signal);
+				if (signal.aborted) return;
 				setConnection(result);
 				setError("");
 				if (result.state !== "connected") {
@@ -56,32 +56,26 @@ export default function ClaudeAccount({
 					return;
 				}
 				try {
-					const value = await claudeUsage(account.id, controller.signal);
-					if (!controller.signal.aborted) {
+					const value = await claudeUsage(account.id, signal);
+					if (!signal.aborted) {
 						setUsage(value);
 						setUsageError(false);
 					}
 				} catch {
 					// Never show a stale or fabricated allowance when the read fails.
-					if (!controller.signal.aborted) {
+					if (!signal.aborted) {
 						setUsage(undefined);
 						setUsageError(true);
 					}
 				}
 			} catch {
-				if (!controller.signal.aborted) setError("Status unavailable");
+				if (!signal.aborted) setError("Status unavailable");
 			}
-		};
-		void load();
-		const timer = setInterval(() => {
-			void load();
-		}, 60000);
-		return () => {
-			clearInterval(timer);
-			controller.abort();
-		};
-	}, [account.id, revision, refresh]);
+		},
+		[account.id, revision, refresh],
+	);
 	const label = codexAccountLabel(account.name, connection?.email, "claude");
+	const checkedAt = usage?.checked_at ? new Date(usage.checked_at) : undefined;
 	const status = account.enabled === false ? "Inactive" : error || connection?.state.replaceAll("_", " ") || "Loading…";
 	const windows = usageWindows(usage);
 	// The tighter of the session and weekly windows determines what is usable now.
@@ -134,7 +128,9 @@ export default function ClaudeAccount({
 											? "Usage unavailable"
 											: connection?.state === "connected"
 												? usage
-													? "Subscription allowance"
+													? checkedAt
+														? `Updated ${formatDistanceToNow(checkedAt, { addSuffix: true })}`
+														: "Subscription allowance"
 													: "Loading…"
 												: "Connect to view usage"}
 									</span>

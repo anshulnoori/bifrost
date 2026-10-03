@@ -23,6 +23,7 @@ const usageSchema = z.object({
 	seven_day_opus: usageWindow.optional(),
 	seven_day_sonnet: usageWindow.optional(),
 	models: z.array(usageWindow.extend({ name: z.string() })).optional(),
+	checked_at: z.string().optional(),
 });
 export type ClaudeUsage = z.infer<typeof usageSchema>;
 

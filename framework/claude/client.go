@@ -45,6 +45,8 @@ type Usage struct {
 	SevenDayOpus   *UsageWindow       `json:"seven_day_opus,omitempty"`
 	SevenDaySonnet *UsageWindow       `json:"seven_day_sonnet,omitempty"`
 	Models         []ModelUsageWindow `json:"models,omitempty"`
+	// CheckedAt is when the bridge last read Anthropic, which may predate this request.
+	CheckedAt *string `json:"checked_at,omitempty"`
 }
 
 var accountHTTP = &http.Client{
@@ -110,12 +112,16 @@ func (c *Client) Usage(ctx context.Context, account string) (*Usage, int, error)
 		SevenDayOpus   json.RawMessage   `json:"seven_day_opus"`
 		SevenDaySonnet json.RawMessage   `json:"seven_day_sonnet"`
 		Limits         []json.RawMessage `json:"limits"`
+		CheckedAt      string            `json:"checked_at"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 65536)).Decode(&raw); err != nil {
 		return nil, 502, errors.New("invalid Claude usage response")
 	}
 	result := &Usage{FiveHour: parseWindow(raw.FiveHour), SevenDay: parseWindow(raw.SevenDay),
 		SevenDayOpus: parseWindow(raw.SevenDayOpus), SevenDaySonnet: parseWindow(raw.SevenDaySonnet)}
+	if _, err := time.Parse(time.RFC3339, raw.CheckedAt); err == nil {
+		result.CheckedAt = &raw.CheckedAt
+	}
 	for _, item := range raw.Limits {
 		var limit struct {
 			Kind    string   `json:"kind"`
