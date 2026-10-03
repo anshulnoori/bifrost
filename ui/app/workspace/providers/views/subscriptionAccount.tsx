@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -41,7 +42,7 @@ export default function SubscriptionAccount({
 	const [status, setStatus] = useState("Loading…");
 	const [email, setEmail] = useState<string>();
 	const [refresh, setRefresh] = useState(0);
-	useVisiblePolling(
+	const loading = useVisiblePolling(
 		async (signal) => {
 			try {
 				const connection =
@@ -177,10 +178,11 @@ export default function SubscriptionAccount({
 										variant="ghost"
 										size="icon"
 										className="size-6"
-										aria-label="Refresh usage"
+										aria-label={loading ? "Refreshing usage" : "Refresh usage"}
+										disabled={loading}
 										onClick={() => setRefresh((value) => value + 1)}
 									>
-										<RefreshCw className="size-3.5" />
+										<RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
 									</Button>
 									<Button variant="outline" size="sm" asChild>
 										<a

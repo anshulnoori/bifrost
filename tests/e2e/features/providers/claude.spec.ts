@@ -209,3 +209,50 @@ test('Claude account shows Reserve reached when the weekly window is at its rese
   await expect(row).not.toContainText('Reserve reached')
   await expect(row).toContainText('connected')
 })
+
+test('Claude refresh buttons spin until the reload finishes', async ({ page }) => {
+  const account = { id: 'claude-spin', name: 'Personal', models: ['*'], weight: 1, enabled: true }
+  const provider = { name: 'claude', keys: [account], network_config: { max_retries: 0 }, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  // While holding, usage reads wait until the test releases them.
+  let holding = false
+  const waiting: Array<() => void> = []
+  const releaseAll = () => waiting.splice(0).forEach(open => open())
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/claude', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/claude/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+  await page.route('**/api/claude/connections/current', route => route.fulfill({ json: { state: 'connected', email: 'spin@example.test' } }))
+  await page.route('**/api/claude/connections/usage', async route => {
+    if (holding) await new Promise<void>(resolve => waiting.push(resolve))
+    return route.fulfill({ json: { five_hour: { utilization: 6 }, seven_day: { utilization: 1 }, checked_at: new Date().toISOString() } })
+  })
+  await page.goto('/workspace/providers')
+  const setup = page.getByRole('button', { name: 'Close for now', exact: true })
+  if (await setup.isVisible()) await setup.click()
+  const row = page.getByTestId('claude-account-claude-spin')
+  await expect(row.getByRole('progressbar', { name: 'Remaining allowance' })).toBeVisible()
+  await row.getByRole('button', { name: /subscription details/ }).click()
+
+  // Row-level "Refresh usage": spins and is disabled while the read is in flight.
+  holding = true
+  await row.getByRole('button', { name: 'Refresh usage' }).click()
+  const rowSpinning = row.getByRole('button', { name: 'Refreshing usage' })
+  await expect(rowSpinning).toBeDisabled()
+  await expect(rowSpinning.locator('svg')).toHaveClass(/animate-spin/)
+  await expect.poll(() => waiting.length).toBeGreaterThan(0)
+  holding = false
+  releaseAll()
+  await expect(row.getByRole('button', { name: 'Refresh usage' })).toBeEnabled()
+  await expect(row.getByRole('button', { name: 'Refresh usage' }).locator('svg')).not.toHaveClass(/animate-spin/)
+
+  // Header "Refresh account status": spins until every account row has reloaded.
+  holding = true
+  const header = page.getByTestId('provider-refresh-models')
+  await header.click()
+  await expect(header).toBeDisabled()
+  await expect(header.locator('svg')).toHaveClass(/animate-spin/)
+  await expect.poll(() => waiting.length).toBeGreaterThan(0)
+  holding = false
+  releaseAll()
+  await expect(header).toBeEnabled()
+  await expect(header.locator('svg')).not.toHaveClass(/animate-spin/)
+})

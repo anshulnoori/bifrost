@@ -26,7 +26,7 @@ import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, RefreshCwIcon, TrashIcon } from "lucide-react";
-import { ReactNode, useState } from "react";
+import { ReactNode, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
 import ClaudeAccount from "./claudeAccount";
@@ -109,6 +109,23 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const [togglingKeyIds, setTogglingKeyIds] = useState<Set<string>>(new Set());
 	const [refreshingKeyIds, setRefreshingKeyIds] = useState<Set<string>>(new Set());
 	const [usageRevision, setUsageRevision] = useState(0);
+	// Claude rows report in-flight reloads so "Refresh account status" can spin.
+	const [loadingAccounts, setLoadingAccounts] = useState<Set<string>>(new Set());
+	const [statusRefreshPending, setStatusRefreshPending] = useState(false);
+	const onAccountLoading = useCallback((id: string, loading: boolean) => {
+		setLoadingAccounts((prev) => {
+			if (prev.has(id) === loading) return prev;
+			const next = new Set(prev);
+			if (loading) next.add(id);
+			else next.delete(id);
+			return next;
+		});
+	}, []);
+	const isRefreshingStatus = statusRefreshPending || loadingAccounts.size > 0;
+	useEffect(() => {
+		// The click is acknowledged until the rows pick it up and start reloading.
+		if (statusRefreshPending && loadingAccounts.size > 0) setStatusRefreshPending(false);
+	}, [statusRefreshPending, loadingAccounts]);
 	const [showAddNewKeyDialog, setShowAddNewKeyDialog] = useState<{ show: boolean; keyId: string | null } | undefined>(undefined);
 	const [showDeleteKeyDialog, setShowDeleteKeyDialog] = useState<{ show: boolean; keyId: string } | undefined>(undefined);
 
@@ -123,6 +140,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 
 	async function handleRefreshProviderModels() {
 		if (providerName === "claude") {
+			if (keys.length > 0) setStatusRefreshPending(true);
 			setUsageRevision((value) => value + 1);
 			return;
 		}
@@ -224,20 +242,33 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									<Button
 										variant="outline"
 										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
-										disabled={isRefreshing}
+										disabled={isRefreshing || (providerName === "claude" && isRefreshingStatus)}
 										data-testid="provider-refresh-models"
 										aria-label={
 											providerName === "claude"
-												? "Refresh account status"
+												? isRefreshingStatus
+													? "Refreshing account status"
+													: "Refresh account status"
 												: isRefreshingProvider
 													? "Refreshing model list"
 													: "Refresh model list"
 										}
 										onClick={handleRefreshProviderModels}
 									>
-										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
+										<RefreshCwIcon
+											className={cn(
+												"h-4 w-4",
+												(isRefreshingProvider || (providerName === "claude" && isRefreshingStatus)) && "animate-spin",
+											)}
+										/>
 										<span className="hidden xl:inline">
-											{providerName === "claude" ? "Refresh account status" : isRefreshingProvider ? "Refreshing..." : "Refresh model list"}
+											{providerName === "claude"
+												? isRefreshingStatus
+													? "Refreshing..."
+													: "Refresh account status"
+												: isRefreshingProvider
+													? "Refreshing..."
+													: "Refresh model list"}
 										</span>
 									</Button>
 								</TooltipTrigger>
@@ -319,7 +350,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										),
 									};
 									return providerName === "claude" ? (
-										<ClaudeAccount key={key.id} {...accountProps} />
+										<ClaudeAccount key={key.id} {...accountProps} onLoading={onAccountLoading} />
 									) : (
 										<SubscriptionAccount
 											key={key.id}

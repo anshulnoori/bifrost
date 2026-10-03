@@ -204,3 +204,35 @@ test('Codex accounts use provider table, isolated usage bars and dashboard onboa
   await expect(work.getByRole('progressbar')).toHaveCount(0)
   await expect(personal.getByRole('progressbar', { name: '5h remaining', exact: true })).toHaveAttribute('aria-valuenow', '0')
 })
+
+test('Codex refresh usage button spins until the reload finishes', async ({ page }) => {
+  const account = { id: 'spin', name: 'Personal', models: ['*'], weight: 1, enabled: true }
+  const provider = { name: 'codex', keys: [account], network_config: {}, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  let holding = false
+  const waiting: Array<() => void> = []
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/codex', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/codex/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+  await page.route('**/api/codex/connections**', async route => {
+    if (!route.request().url().includes('/usage')) return route.fulfill({ json: { state: 'connected', email: 'spin@example.test' } })
+    if (holding) await new Promise<void>(resolve => waiting.push(resolve))
+    return route.fulfill({ json: { plan_type: 'pro', rate_limit: { allowed: true, limit_reached: false,
+      primary_window: { used_percent: 10, limit_window_seconds: 18000, reset_at: 0 } }, checked_at: new Date().toISOString() } })
+  })
+  await page.goto('/workspace/providers')
+  const setup = page.getByRole('button', { name: 'Close for now', exact: true })
+  if (await setup.isVisible()) await setup.click()
+  const trigger = page.getByRole('button', { name: /subscription details/ }).first()
+  await expect(trigger).toBeVisible()
+  await trigger.click()
+  holding = true
+  await page.getByRole('button', { name: 'Refresh usage' }).click()
+  const spinning = page.getByRole('button', { name: 'Refreshing usage' })
+  await expect(spinning).toBeDisabled()
+  await expect(spinning.locator('svg')).toHaveClass(/animate-spin/)
+  await expect.poll(() => waiting.length).toBeGreaterThan(0)
+  holding = false
+  waiting.splice(0).forEach(open => open())
+  await expect(page.getByRole('button', { name: 'Refresh usage' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Refresh usage' }).locator('svg')).not.toHaveClass(/animate-spin/)
+})

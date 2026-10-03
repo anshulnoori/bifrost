@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
@@ -8,7 +9,7 @@ import { ModelProviderKey } from "@/lib/types/config";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { subscriptionAccountLabel } from "./subscriptionAccountLabel";
 
 function usageWindows(usage?: ClaudeUsage) {
@@ -30,12 +31,14 @@ export default function ClaudeAccount({
 	canUpdate,
 	onEdit,
 	menu,
+	onLoading,
 }: {
 	account: ModelProviderKey;
 	revision: number;
 	canUpdate: boolean;
 	onEdit: () => void;
 	menu: ReactNode;
+	onLoading?: (id: string, loading: boolean) => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const [connection, setConnection] = useState<Connection>();
@@ -43,7 +46,7 @@ export default function ClaudeAccount({
 	const [usageError, setUsageError] = useState(false);
 	const [error, setError] = useState("");
 	const [refresh, setRefresh] = useState(0);
-	useVisiblePolling(
+	const loading = useVisiblePolling(
 		async (signal) => {
 			try {
 				const result = await claudeAction(account.id, "status", signal);
@@ -74,6 +77,10 @@ export default function ClaudeAccount({
 		},
 		[account.id, revision, refresh],
 	);
+	useEffect(() => {
+		onLoading?.(account.id, loading);
+	}, [account.id, loading, onLoading]);
+	useEffect(() => () => onLoading?.(account.id, false), [account.id, onLoading]);
 	const label = subscriptionAccountLabel(account.name, connection?.email, "claude");
 	const checkedAt = usage?.checked_at ? new Date(usage.checked_at) : undefined;
 	const status = account.enabled === false ? "Inactive" : error || connection?.state.replaceAll("_", " ") || "Loading…";
@@ -150,10 +157,11 @@ export default function ClaudeAccount({
 										variant="ghost"
 										size="icon"
 										className="size-6"
-										aria-label="Refresh usage"
+										aria-label={loading ? "Refreshing usage" : "Refresh usage"}
+										disabled={loading}
 										onClick={() => setRefresh((value) => value + 1)}
 									>
-										<RefreshCw className="size-3.5" />
+										<RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
 									</Button>
 									<Button variant="outline" size="sm" asChild>
 										<a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer">
