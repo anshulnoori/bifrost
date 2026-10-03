@@ -58,11 +58,11 @@ async function manage(method, path, body) {
   if (method === "GET" && route[1] === "/usage") {
     // Native subscription allowance reader: same credentials and refresh path.
     if ((await status()).state !== "connected") return Response.json({ error: "not connected" }, { status: 409 });
-    // Anthropic rate-limits this endpoint. Refresh at most every 5 minutes, back
+    // Anthropic rate-limits this endpoint. Refresh at most every minute, back
     // off after a failure (honoring Retry-After), and keep the last good reading
     // for up to an hour. Concurrent readers share one upstream request.
     const now = Date.now();
-    if ((!usageCache || now - usageCache.at > 300000) && now >= usageRetry)
+    if ((!usageCache || now - usageCache.at > 60000) && now >= usageRetry)
       await (usageReading ??= native.usage().then((value) => { usageCache = { at: Date.now(), value }; }, (error) => {
         const after = Number(error?.response?.headers?.["retry-after"]) * 1000;
         usageRetry = Date.now() + (error?.response?.status === 429 ? Math.min(after > 0 ? after : 300000, 3600000) : 60000);

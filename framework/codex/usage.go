@@ -109,7 +109,7 @@ func (s *Store) Usage(ctx context.Context, owner string) (*Usage, error) {
 }
 
 const (
-	usageFresh            = 5 * time.Minute
+	usageFresh            = time.Minute
 	usageMaxStale         = time.Hour
 	usageErrorBackoff     = time.Minute
 	usageRateLimitBackoff = 5 * time.Minute

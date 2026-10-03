@@ -46,17 +46,22 @@ for (const width of [390, 1440]) {
       // Manual refresh resets the polling interval after the clock is installed.
       await Promise.all([
         page.waitForResponse(response => response.url().endsWith('/api/claude/connections/current')),
+        // The next poll is scheduled only after the usage read completes.
+        page.waitForResponse(response => response.url().endsWith('/api/claude/connections/usage')),
         page.getByRole('button', { name: 'Refresh account status' }).click(),
       ])
       state = 'reconnect_required'
-      // Polling is every 5 minutes (±10% jitter, so at most 330s), not 30 or 60 seconds.
-      await page.clock.runFor(60000)
+      // Polling is every minute (±10% jitter, so 54-66s), never sooner.
+      await page.clock.runFor(50000)
       await expect(row.getByText('connected', { exact: true })).toBeVisible()
-      await page.clock.runFor(330000)
-      await expect(row.getByText('reconnect required', { exact: true })).toBeVisible()
+      // The next timer starts after the previous load settles, so step the clock.
+      const advanceUntil = async (text: string) => {
+        for (let i = 0; i < 30 && !(await row.getByText(text, { exact: true }).isVisible()); i++) await page.clock.runFor(2000)
+        await expect(row.getByText(text, { exact: true })).toBeVisible()
+      }
+      await advanceUntil('reconnect required')
       unavailable = true
-      await page.clock.runFor(330000)
-      await expect(row.getByText('Status unavailable', { exact: true })).toBeVisible()
+      await advanceUntil('Status unavailable')
     }
   })
 }
@@ -91,8 +96,8 @@ test('subscription usage polling pauses while the dashboard tab is hidden', asyn
     document.dispatchEvent(new Event('visibilitychange'))
   })
   await expect.poll(() => usageReads, { message: 'one refresh on return to a stale page' }).toBe(initial + 1)
-  await page.clock.runFor(4 * 60000)
-  expect(usageReads, 'no reads before the 5-minute cadence').toBe(initial + 1)
+  await page.clock.runFor(50000)
+  expect(usageReads, 'no reads before the 1-minute cadence').toBe(initial + 1)
 })
 
 test('Claude subscription usage shows 5h and weekly allowance without inventing missing data', async ({ page }) => {

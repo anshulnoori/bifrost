@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 
 // Subscription usage endpoints are rate-limited upstream. The gateway caches
-// readings for 5 minutes, so the dashboard polls at that cadence, with jitter so
+// readings for 1 minute, so the dashboard polls at that cadence, with jitter so
 // several rows and tabs do not ask together, and only while the page is visible.
-export const SUBSCRIPTION_POLL_MS = 5 * 60 * 1000;
+export const SUBSCRIPTION_POLL_MS = 60 * 1000;
 
 export function useVisiblePolling(
 	load: (signal: AbortSignal) => Promise<void>,
