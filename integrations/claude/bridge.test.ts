@@ -136,30 +136,41 @@ test("SSE bytes reach caller before upstream completion", async (t) => {
   assert.equal(new TextDecoder().decode((await reader.read()).value), suffix);
   assert.equal((await reader.read()).done, true);
 });
-test("concurrency is bounded and slot released after completion", async (t) => {
-  let release!: () => void, started!: () => void;
+test("concurrent requests all run at once: no local cap, rejection or queue", async (t) => {
+  const burst = 32;
+  let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const entered = new Promise<void>((resolve) => {
-    started = resolve;
-  });
   t.after(release);
-  const send = await fixture(
-    t,
-    async () => {
-      started();
-      await gate;
-      return Response.json({ ok: true });
-    },
-    { maxConcurrent: 1 },
-  );
-  const pending = send();
-  await entered;
-  assert.equal((await send()).status, 429);
+  let running = 0;
+  let allIn!: () => void;
+  const allRunning = new Promise<void>((resolve) => {
+    allIn = resolve;
+  });
+  const send = await fixture(t, async () => {
+    // Every request must be inside inference at the same time before any finishes.
+    if (++running === burst) allIn();
+    await gate;
+    return Response.json({ ok: true });
+  });
+  const responses = Array.from({ length: burst }, () => send());
+  await Promise.race([
+    allRunning,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`only ${running} of ${burst} ran concurrently`)), 5000)),
+  ]);
   release();
-  await (await pending).text();
-  assert.equal((await send()).status, 200);
+  const statuses = await Promise.all(responses.map(async (response) => (await response).status));
+  assert.deepEqual(statuses, Array(burst).fill(200));
+});
+test("each request releases its resources and a later one still runs", async (t) => {
+  let calls = 0;
+  const send = await fixture(t, async () => {
+    calls++;
+    return Response.json({ ok: true });
+  });
+  for (let i = 0; i < 3; i++) assert.equal((await send()).status, 200);
+  assert.equal(calls, 3);
 });
 test("deadline aborts inference and redacts internal failures", async (t) => {
   let aborted = false;

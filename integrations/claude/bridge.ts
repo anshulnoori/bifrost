@@ -60,14 +60,13 @@ function sendError(res: ServerResponse, status: number, message: string) {
 }
 
 export function createBridge(
-  config: { token: string; maxConcurrent?: number; timeoutMs?: number; manage?: Manage; requireAccount?: boolean },
+  config: { token: string; timeoutMs?: number; manage?: Manage; requireAccount?: boolean },
   run: Run,
 ) {
   if (config.token.length < 32)
     throw new Error("CLAUDE_BRIDGE_TOKEN must contain at least 32 characters");
   const digest = (s: string) => createHash("sha256").update(s).digest();
   const expected = digest(config.token);
-  let active = 0;
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const presented = req.headers["x-claude-bridge-token"];
     if (typeof presented !== "string" || !timingSafeEqual(digest(presented), expected)) {
@@ -106,11 +105,8 @@ export function createBridge(
       sendError(res, 404, "not found");
       return;
     }
-    if (active >= (config.maxConcurrent ?? 4)) {
-      sendError(res, 429, "Claude concurrency limit reached");
-      return;
-    }
-    active++;
+    // No local admission cap: each request runs as soon as it arrives. Anthropic
+    // enforces the account's real limits and those errors pass through unchanged.
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -182,7 +178,6 @@ export function createBridge(
     } finally {
       clearTimeout(timer);
       res.off("close", cancel);
-      active--;
     }
   });
   return server;
