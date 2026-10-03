@@ -423,6 +423,10 @@ func normalizeProvider(p string) string {
 		// Budgets use the equivalent API reference cost, not a claim about
 		// subscription billing. Never treat subscription inference as free.
 		return string(schemas.OpenAI)
+	case p == string(schemas.Claude):
+		// Same rule as Codex: price subscription traffic at the Anthropic API
+		// reference rate so budgets and dashboards never see it as free.
+		return string(schemas.Anthropic)
 	case strings.Contains(p, "together"):
 		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":

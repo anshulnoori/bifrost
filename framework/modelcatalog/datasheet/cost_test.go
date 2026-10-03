@@ -22,6 +22,18 @@ func TestCodexUsesOpenAIReferenceCostForGovernance(t *testing.T) {
 	assert.InDelta(t, 0.000399, s.CalculateCost(response, nil), 1e-12)
 }
 
+func TestClaudeUsesAnthropicReferenceCostForGovernance(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{Model: "claude-opus-5-5", Provider: "anthropic", Mode: "chat", InputCostPerToken: bifrost.Ptr(0.000004), OutputCostPerToken: bifrost.Ptr(0.00002)}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing})
+	response := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		PassthroughUsage: &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}},
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughStreamRequest, PassthroughPath: "/v1/messages",
+			RoutingInfo: routingInfoFor(schemas.Claude, "claude-opus-5-5")},
+	}}
+	// Reference API cost for budgets and dashboards, not the subscriber's actual invoice.
+	assert.InDelta(t, 0.006, s.CalculateCost(response, nil), 1e-12)
+}
+
 func TestCalculateCost_RealtimeTranscriptionPricingOverride(t *testing.T) {
 	pricing := configstoreTables.TableModelPricing{
 		Model:                  "gpt-4o-transcribe",
