@@ -64,6 +64,11 @@ type bridge struct {
 	modalMu     sync.Mutex
 	modalMethod *modal.Function // protected by modalMu during initialization
 	cache       *decisionCache
+
+	// lifecycle is read-held by each request using this bridge; retire takes it
+	// exclusively before close so replacement never closes a client in use.
+	lifecycle sync.RWMutex
+	retired   bool
 }
 
 func (b *bridge) close() {

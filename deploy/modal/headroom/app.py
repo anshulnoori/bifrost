@@ -8,7 +8,6 @@ import modal
 
 ROOT = Path(__file__).resolve().parents[3] if modal.is_local() else Path("/root")
 ACCELERATOR = "L4"
-HTTP_BENCHMARK = os.environ.get("HEADROOM_HTTP_BENCHMARK") == "1"
 ATTENTION = os.environ.get("HEADROOM_ATTENTION", "sdpa")
 PRECISION = os.environ.get("HEADROOM_PRECISION", "float16")
 if ATTENTION not in {"eager", "sdpa"} or PRECISION not in {"default", "float16", "bfloat16"}:
@@ -25,7 +24,6 @@ image = (
     base_image
     .env({"HEADROOM_OFFLINE": "1", "HEADROOM_BEACON": "off", "HEADROOM_TELEMETRY": "off",
           "HEADROOM_LOG_PAYLOAD_PREVIEW": "0", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
-          "HEADROOM_HTTP_BENCHMARK": "1" if HTTP_BENCHMARK else "0",
           "HEADROOM_ATTENTION": ATTENTION, "HEADROOM_PRECISION": PRECISION,
           "HEADROOM_ACCELERATOR": ACCELERATOR, "HEADROOM_KOMPRESS_BACKEND": "pytorch"})
     .add_local_file(Path(__file__).with_name("service.py"), "/root/service.py")
@@ -119,16 +117,3 @@ class Headroom:
     @modal.method()
     async def request(self, path: str, body: str, scope: str, deadline_ms: int) -> str:
         return await self.transport.request(path, body, scope, deadline_ms)
-
-    if HTTP_BENCHMARK:
-        @modal.asgi_app(requires_proxy_auth=True)
-        def http(self):
-            # Modal authenticates at the edge before admitting any GPU work.
-            # Reuse the exact bounded service; replace only its internal token.
-            async def authenticated(scope, receive, send):
-                if scope["type"] == "http":
-                    headers = [(k, v) for k, v in scope["headers"] if k.lower() != b"x-headroom-proxy-token"]
-                    headers.append((b"x-headroom-proxy-token", os.environ["HEADROOM_PROXY_TOKEN"].encode()))
-                    scope = {**scope, "headers": headers}
-                await self.transport.service(scope, receive, send)
-            return authenticated

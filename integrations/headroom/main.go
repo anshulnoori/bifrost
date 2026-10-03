@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,8 +22,40 @@ const threadKey contextKey = "headroom-thread"
 
 var current atomic.Pointer[bridge]
 
+// initMu serializes configuration changes. Requests never take it.
+var initMu sync.Mutex
+
+// acquireBridge returns the published bridge and its release function. Init
+// retires a replaced bridge only after every request holding it has released it.
+func acquireBridge() (*bridge, func()) {
+	for {
+		b := current.Load()
+		if b == nil {
+			return nil, func() {}
+		}
+		b.lifecycle.RLock()
+		if !b.retired {
+			return b, b.lifecycle.RUnlock
+		}
+		// Init already published the replacement; load it.
+		b.lifecycle.RUnlock()
+	}
+}
+
+// retire waits for in-flight requests and then closes the bridge. Requests that
+// start after the swap use the replacement and do not wait.
+func (b *bridge) retire() {
+	b.lifecycle.Lock()
+	b.retired = true
+	b.lifecycle.Unlock()
+	b.close()
+}
+
 func GetName() string { return "headroom" }
 func Init(raw any) error {
+	initMu.Lock()
+	defer initMu.Unlock()
+
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return err
@@ -52,9 +85,8 @@ func Init(raw any) error {
 		b.close()
 		return err
 	}
-	old := current.Swap(b)
-	if old != nil {
-		old.close()
+	if old := current.Swap(b); old != nil {
+		go old.retire()
 	}
 	return nil
 }
@@ -91,7 +123,8 @@ func HTTPTransportStreamChunkHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequ
 func PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error { return nil }
 
 func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	b := current.Load()
+	b, release := acquireBridge()
+	defer release()
 	if b == nil {
 		return req, nil, nil
 	}

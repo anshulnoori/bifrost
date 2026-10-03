@@ -138,7 +138,8 @@ func retrieveOriginal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed request", http.StatusBadRequest)
 		return
 	}
-	b := current.Load()
+	b, release := acquireBridge()
+	defer release()
 	if b == nil || !b.config.CCR || b.cache == nil {
 		http.NotFound(w, r)
 		return
@@ -158,7 +159,8 @@ func retrieveOriginal(w http.ResponseWriter, r *http.Request) {
 // The cache provider uses a loopback bearer credential. Modal secrets never enter
 // provider headers persisted in config storage, nor caller-controlled requests.
 func proxyEmbedding(w http.ResponseWriter, r *http.Request) {
-	b := current.Load()
+	b, releaseBridge := acquireBridge()
+	defer releaseBridge()
 	if b == nil || (!b.config.Enabled && !b.config.EmbeddingProxyEnabled) || (b.client == nil && b.modal == nil) {
 		http.Error(w, "embedding unavailable", http.StatusServiceUnavailable)
 		return

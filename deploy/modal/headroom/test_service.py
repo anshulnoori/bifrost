@@ -381,25 +381,6 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(modal.App.return_value.cls.call_args.kwargs["gpu"], "L4")
             self.assertAlmostEqual(namespace["COST_PER_SECOND"], 0.000295642)
 
-    async def test_http_benchmark_requires_edge_auth_and_reuses_service(self):
-        modal = MagicMock()
-        modal.App.return_value.cls.side_effect = lambda **kwargs: lambda cls: cls
-        modal.concurrent.side_effect = lambda **kwargs: lambda cls: cls
-        modal.asgi_app.side_effect = lambda **kwargs: lambda fn: fn
-        path = Path(__file__).with_name("app.py")
-        namespace = {"__file__": str(path), "__name__": "app"}
-        with patch.dict(sys.modules, modal=modal), patch.dict(os.environ, HEADROOM_HTTP_BENCHMARK="1", HEADROOM_PROXY_TOKEN="internal-test"):
-            exec(compile(path.read_text(), str(path), "exec"), namespace)
-            modal.asgi_app.assert_called_once_with(requires_proxy_auth=True)
-            worker = namespace["Headroom"]()
-            service = AsyncMock()
-            worker.transport = SimpleNamespace(service=service)
-            scope = {"type": "http", "headers": [(b"x-headroom-proxy-token", b"external"), (b"x-headroom-deadline-ms", b"1")]}
-            await worker.http()(scope, None, None)
-            forwarded = service.call_args.args[0]
-            self.assertEqual(forwarded["headers"], [(b"x-headroom-deadline-ms", b"1"), (b"x-headroom-proxy-token", b"internal-test")])
-            self.assertEqual(scope["headers"][0][1], b"external")
-
     async def test_cancel_waits_for_database_thread(self):
         from features import state_call
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()

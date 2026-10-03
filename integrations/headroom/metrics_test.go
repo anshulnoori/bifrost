@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,67 @@ func TestEmbeddingProxyBoundary(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("unexpected upstream calls: %d", calls)
+	}
+}
+
+func TestBridgeReplacementDrainsWithoutBlockingNewRequests(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer slow.Close()
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock() // runs before slow.Close so a failed assertion cannot hang
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer fast.Close()
+	embed := func() int {
+		recorder := httptest.NewRecorder()
+		proxyEmbedding(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"headroom-minilm-v1","input":"hello"}`)))
+		return recorder.Code
+	}
+
+	old := &bridge{config: Config{EmbeddingProxyEnabled: true, Endpoint: slow.URL, MaxBodyBytes: 1024}, client: slow.Client()}
+	previous := current.Swap(old)
+	defer current.Store(previous)
+	done := make(chan int)
+	go func() { done <- embed() }()
+	<-entered
+
+	current.Store(&bridge{config: Config{EmbeddingProxyEnabled: true, Endpoint: fast.URL, MaxBodyBytes: 1024}, client: fast.Client()})
+	retired := make(chan struct{})
+	go func() {
+		old.retire()
+		close(retired)
+	}()
+	select {
+	case <-retired:
+		t.Fatal("replaced bridge closed during an active request")
+	case <-time.After(20 * time.Millisecond):
+	}
+	// The replacement serves new requests while the old bridge drains.
+	if code := embed(); code != http.StatusOK {
+		t.Fatalf("request on replacement: status %d", code)
+	}
+
+	unblock()
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("in-flight request on replaced bridge: status %d", code)
+	}
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("replaced bridge did not close after its request finished")
+	}
+	if b, release := acquireBridge(); b == old {
+		release()
+		t.Fatal("retired bridge was acquired")
+	} else {
+		release()
 	}
 }
 

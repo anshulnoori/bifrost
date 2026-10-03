@@ -10,7 +10,6 @@ import (
 	"errors"
 	"io"
 	"math/rand"
-	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -147,95 +146,6 @@ func TestLiveModalPipeline(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Log("quality corpus added 3 calls; compare output file against the reference variant")
-	}
-}
-
-// Ten requests total: one rejected edge-auth probe, one startup, four paired samples.
-func TestLiveHTTPComparison(t *testing.T) {
-	endpoint, credentials := os.Getenv("HEADROOM_HTTP_BENCH_URL"), os.Getenv("HEADROOM_HTTP_TOKEN_FILE")
-	if os.Getenv("HEADROOM_MODAL_LIVE") != "1" || endpoint == "" || credentials == "" {
-		t.Skip("requires explicit HTTP benchmark opt-in and temporary proxy token file")
-	}
-	data, err := os.ReadFile(credentials)
-	if err != nil {
-		t.Fatal("proxy credentials unavailable")
-	}
-	var token map[string]string
-	if json.Unmarshal(data, &token) != nil || token["Modal-Key"] == "" || token["Modal-Secret"] == "" {
-		t.Fatal("invalid proxy credential file")
-	}
-	httpClient := &http.Client{Timeout: 120 * time.Second}
-	defer httpClient.CloseIdleConnections()
-	response, err := httpClient.Get(endpoint + "/v1/compress")
-	if err != nil {
-		t.Fatal("edge probe failed")
-	}
-	response.Body.Close()
-	if response.StatusCode != 401 {
-		t.Fatalf("edge auth status=%d, expected 401", response.StatusCode)
-	}
-	client, err := modal.NewClient()
-	if err != nil {
-		t.Fatal("Modal client unavailable")
-	}
-	b := &bridge{modal: client, config: Config{ModalApp: "bifrost-headroom", ModalEnvironment: "main", MaxBodyBytes: 4 << 20, TimeoutMS: 120000}}
-	defer b.close()
-	text := strings.Repeat("2026-09-22 INFO request completed successfully\n", 400) + "FATAL transaction=TX-731 amount=1949.37 failed integrity check\n"
-	out, _, err := b.compress(context.Background(), "gpt-4.1", strings.Repeat("a", 64), []string{text})
-	if err != nil || len(out) != 1 || !strings.Contains(out[0], "TX-731") || !strings.Contains(out[0], "1949.37") {
-		t.Fatal("startup fixture failed")
-	}
-	body, _ := json.Marshal(map[string]any{
-		"model": "gpt-4.1", "messages": []map[string]string{{"role": "tool", "tool_call_id": "slot-0", "content": text}},
-		"config":  map[string]any{"protect_recent": 0, "compress_user_messages": false},
-		"gateway": map[string]any{"can_redrive": false, "can_relay_response": false, "session_affinity": false, "plugin_version": "bifrost-headroom/1"},
-	})
-	for sample := range 4 {
-		for _, useHTTP := range []bool{true, false} {
-			started := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			deadline, _ := ctx.Deadline()
-			var raw []byte
-			if useHTTP {
-				request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/v1/compress", bytes.NewReader(body))
-				request.Header.Set("Content-Type", "application/json")
-				request.Header.Set("Modal-Key", token["Modal-Key"])
-				request.Header.Set("Modal-Secret", token["Modal-Secret"])
-				request.Header.Set("X-Headroom-Project", strings.Repeat("a", 64))
-				request.Header.Set("X-Headroom-Deadline-Ms", strconv.FormatInt(deadline.UnixMilli(), 10))
-				response, callErr := httpClient.Do(request)
-				if callErr != nil {
-					cancel()
-					t.Fatal("HTTP benchmark failed")
-				}
-				raw, err = io.ReadAll(io.LimitReader(response.Body, (4<<20)+1))
-				response.Body.Close()
-				if response.StatusCode != 200 {
-					cancel()
-					t.Fatalf("HTTP status=%d", response.StatusCode)
-				}
-			} else {
-				var result any
-				result, err = b.modalMethod.Remote(ctx, []any{"/v1/compress", encodeModalBody(body), strings.Repeat("a", 64), deadline.UnixMilli()}, nil)
-				if err == nil {
-					raw, err = decodeModalReply(result, 4<<20)
-				}
-			}
-			elapsed := time.Since(started)
-			cancel()
-			if err != nil {
-				t.Fatal("transport benchmark failed")
-			}
-			var reply struct {
-				Messages []struct {
-					Content string `json:"content"`
-				} `json:"messages"`
-			}
-			if json.Unmarshal(raw, &reply) != nil || len(reply.Messages) != 1 || reply.Messages[0].Content != out[0] {
-				t.Fatal("transport changed output")
-			}
-			t.Logf("paired sample=%d http=%t elapsed=%s", sample, useHTTP, elapsed)
-		}
 	}
 }
 
