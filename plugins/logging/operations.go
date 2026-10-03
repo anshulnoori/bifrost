@@ -2142,6 +2142,20 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				ExtraFields: extra,
 			},
 		}
+	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
+		// Live pricing infers the mode from passthrough usage; a chat-shaped stub
+		// carrying a passthrough request type matches no pricing mode.
+		return &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				PassthroughUsage: &schemas.BifrostPassthroughUsage{
+					LLMUsage:     usage,
+					ServiceTier:  tier.serviceTier,
+					Speed:        tier.speed,
+					InferenceGeo: tier.inferenceGeo,
+				},
+				ExtraFields: extra,
+			},
+		}
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		// Convert BifrostLLMUsage back to ResponsesResponseUsage, preserving token
 		// detail breakdowns so CalculateCost can apply cache and search-query pricing.

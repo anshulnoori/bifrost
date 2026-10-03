@@ -1591,3 +1591,33 @@ func TestPricingScopesForLogNilEntry(t *testing.T) {
 		t.Fatalf("BilledAt = %v, want zero", got.BilledAt)
 	}
 }
+
+// Claude subscription traffic is logged as passthrough_stream. Recalculation must
+// rebuild the passthrough shape live pricing used; a chat-shaped stub carrying the
+// passthrough request type matches no pricing mode and reprices to zero.
+func TestCalculateCostForLogMatchesLiveForClaudePassthrough(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 100_000, CompletionTokens: 500, TotalTokens: 100_500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 90_000, CachedWriteTokens: 5_000},
+	}
+	want := liveCost(t, plugin, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		PassthroughUsage: &schemas.BifrostPassthroughUsage{LLMUsage: usage},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.PassthroughStreamRequest, PassthroughPath: "/v1/messages",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.Claude, Model: "claude-sonnet-4-20250514"},
+		},
+	}}, string(schemas.Claude))
+	require.Positive(t, want)
+
+	entry := &logstore.Log{
+		ID: "req-claude-passthrough", Timestamp: time.Now().UTC(),
+		Object: string(schemas.PassthroughStreamRequest), Provider: string(schemas.Claude),
+		Model: "claude-sonnet-4-20250514", Status: "success",
+		PromptTokens: 100_000, CompletionTokens: 500, TotalTokens: 100_500, CachedReadTokens: 90_000,
+		TokenUsageParsed: usage,
+	}
+	got, err := plugin.calculateCostForLog(entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "claude passthrough request", got, want)
+}
