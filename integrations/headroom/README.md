@@ -31,6 +31,11 @@ The app requires the Modal secrets `headroom-dockerhub` (read-only image import)
 and `bifrost-headroom` (service state). The runtime image is pinned by digest.
 Weights are mounted read-only from `bifrost-headroom-models-v1`.
 
+The L4 class scales to zero with no buffer container and a five-second
+scale-down window. A buffer container kept a spare L4 warm during activity and
+roughly doubled GPU billing, so the first request after an idle period waits for
+a cold start. Compression waits at most 30 seconds.
+
 The gateway environment must provide the variables named by these configuration
 fields:
 

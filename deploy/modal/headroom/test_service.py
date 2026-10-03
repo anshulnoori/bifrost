@@ -299,7 +299,8 @@ class GPUWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options["timeout"], 90)
         self.assertNotIn("max_containers", options)
         self.assertEqual(options["min_containers"], 0)
-        self.assertEqual(options["buffer_containers"], 1)
+        # No spare warm GPU: a buffer container doubles L4 billing whenever one is active.
+        self.assertEqual(options["buffer_containers"], 0)
         self.assertEqual(options["scaledown_window"], 5)
         self.assertEqual(options["retries"], 0)
         self.assertTrue(options["enable_memory_snapshot"])

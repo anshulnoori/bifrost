@@ -46,17 +46,59 @@ for (const width of [390, 1440]) {
       // Manual refresh resets the polling interval after the clock is installed.
       await Promise.all([
         page.waitForResponse(response => response.url().endsWith('/api/claude/connections/current')),
+        // The next poll is scheduled only after the usage read completes.
+        page.waitForResponse(response => response.url().endsWith('/api/claude/connections/usage')),
         page.getByRole('button', { name: 'Refresh account status' }).click(),
       ])
       state = 'reconnect_required'
-      await page.clock.runFor(60000)
-      await expect(row.getByText('reconnect required', { exact: true })).toBeVisible()
+      // Polling is every minute (±10% jitter, so 54-66s), never sooner.
+      await page.clock.runFor(50000)
+      await expect(row.getByText('connected', { exact: true })).toBeVisible()
+      // The next timer starts after the previous load settles, so step the clock.
+      const advanceUntil = async (text: string) => {
+        for (let i = 0; i < 30 && !(await row.getByText(text, { exact: true }).isVisible()); i++) await page.clock.runFor(2000)
+        await expect(row.getByText(text, { exact: true })).toBeVisible()
+      }
+      await advanceUntil('reconnect required')
       unavailable = true
-      await page.clock.runFor(60000)
-      await expect(row.getByText('Status unavailable', { exact: true })).toBeVisible()
+      await advanceUntil('Status unavailable')
     }
   })
 }
+
+test('subscription usage polling pauses while the dashboard tab is hidden', async ({ page }) => {
+  const account = { id: 'claude-hidden', name: 'Personal', models: ['*'], weight: 1, enabled: true }
+  const provider = { name: 'claude', keys: [account], network_config: { max_retries: 0 }, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  let usageReads = 0
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/claude', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/claude/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+  await page.route('**/api/claude/connections/current', route => route.fulfill({ json: { state: 'connected', email: 'owner@example.test' } }))
+  await page.route('**/api/claude/connections/usage', route => {
+    usageReads++
+    return route.fulfill({ json: { five_hour: { utilization: 6 }, seven_day: { utilization: 1 }, checked_at: new Date().toISOString() } })
+  })
+  await page.clock.install()
+  await page.goto('/workspace/providers')
+  const setup = page.getByRole('button', { name: 'Close for now', exact: true })
+  if (await setup.isVisible()) await setup.click()
+  const row = page.getByTestId('claude-account-claude-hidden')
+  await expect(row.getByRole('progressbar', { name: 'Remaining allowance' })).toHaveAttribute('aria-valuenow', '94')
+  const initial = usageReads
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await page.clock.runFor(30 * 60000)
+  expect(usageReads, 'no reads while the tab is hidden').toBe(initial)
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await expect.poll(() => usageReads, { message: 'one refresh on return to a stale page' }).toBe(initial + 1)
+  await page.clock.runFor(50000)
+  expect(usageReads, 'no reads before the 1-minute cadence').toBe(initial + 1)
+})
 
 test('Claude subscription usage shows 5h and weekly allowance without inventing missing data', async ({ page }) => {
   const account = { id: 'claude-usage', name: 'Personal', models: ['*'], weight: 1, enabled: true }

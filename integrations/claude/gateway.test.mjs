@@ -221,7 +221,9 @@ test(
     assert.equal(usage.headers.get("cache-control"), "no-store");
     // The native reader calls api.anthropic.com only for tokens with the profile
     // scope; this synthetic token lacks it, so no allowance is reported or invented.
-    assert.deepEqual(JSON.parse(usageText), {});
+    const { checked_at: checkedAt, ...windows } = JSON.parse(usageText);
+    assert.deepEqual(windows, {});
+    assert.ok(Date.now() - Date.parse(checkedAt) < 60000, "reading time reported");
     assert.equal((await management("", { method: "POST", headers: { cookie, "sec-fetch-site": "cross-site" } })).status, 403);
     assert.equal((await management("/current", { headers: { cookie, "x-bf-claude-key": "unknown-account" } })).status, 404);
     const started = await management("", { method: "POST", headers: { cookie } });

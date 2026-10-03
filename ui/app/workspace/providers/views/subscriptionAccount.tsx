@@ -8,9 +8,10 @@ import { chatgptAction } from "@/lib/store/apis/chatgptApi";
 import { useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { ModelProviderKey } from "@/lib/types/config";
 import { getErrorMessage } from "@/lib/store";
+import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import { subscriptionAccountLabel } from "./subscriptionAccountLabel";
 
@@ -40,37 +41,29 @@ export default function SubscriptionAccount({
 	const [status, setStatus] = useState("Loading…");
 	const [email, setEmail] = useState<string>();
 	const [refresh, setRefresh] = useState(0);
-	useEffect(() => {
-		const controller = new AbortController();
-		let timer: ReturnType<typeof setTimeout>;
-		async function load() {
+	useVisiblePolling(
+		async (signal) => {
 			try {
 				const connection =
 					provider === "codex"
-						? await codexAction(keyId, "status", undefined, controller.signal)
-						: await chatgptAction(keyId, "status", undefined, undefined, controller.signal);
-				if (controller.signal.aborted) return;
+						? await codexAction(keyId, "status", undefined, signal)
+						: await chatgptAction(keyId, "status", undefined, undefined, signal);
+				if (signal.aborted) return;
 				setStatus(connection.state.replaceAll("_", " "));
 				setEmail(connection.email);
 				if (provider === "codex" && (connection.state === "connected" || connection.state === "refreshing")) {
-					const result = await codexUsage(keyId, controller.signal);
-					if (!controller.signal.aborted) setUsage(result);
+					const result = await codexUsage(keyId, signal);
+					if (!signal.aborted) setUsage(result);
 				} else setUsage(undefined);
 			} catch {
-				if (!controller.signal.aborted) {
+				if (!signal.aborted) {
 					setStatus("Usage unavailable");
 					setUsage(undefined);
 				}
-			} finally {
-				if (!controller.signal.aborted) timer = setTimeout(load, 60000);
 			}
-		}
-		void load();
-		return () => {
-			controller.abort();
-			clearTimeout(timer);
-		};
-	}, [provider, keyId, revision, refresh]);
+		},
+		[provider, keyId, revision, refresh],
+	);
 	const groups = usage
 		? [
 				{ name: "", limits: usage.rate_limit },
@@ -174,6 +167,11 @@ export default function SubscriptionAccount({
 							<dd className="space-y-3">
 								<div className="flex flex-wrap items-center gap-2">
 									<span className="text-muted-foreground text-xs capitalize">{status}</span>
+									{usage?.checked_at && (
+										<span className="text-muted-foreground text-xs" data-testid="usage-checked-at">
+											Updated {formatDistanceToNow(new Date(usage.checked_at), { addSuffix: true })}
+										</span>
+									)}
 									<Button
 										type="button"
 										variant="ghost"

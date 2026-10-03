@@ -42,6 +42,7 @@ let expiry;
 let starting;
 let usageCache;
 let usageRetry = 0;
+let usageReading;
 async function status() {
   if (login && login.state !== "connected") return login;
   await initialize();
@@ -57,19 +58,17 @@ async function manage(method, path, body) {
   if (method === "GET" && route[1] === "/usage") {
     // Native subscription allowance reader: same credentials and refresh path.
     if ((await status()).state !== "connected") return Response.json({ error: "not connected" }, { status: 409 });
-    // Anthropic rate-limits this endpoint. Refresh at most every 5 minutes, back
-    // off after a failure (honoring Retry-After), and keep the last good reading.
+    // Anthropic rate-limits this endpoint. Refresh at most every minute, back
+    // off after a failure (honoring Retry-After), and keep the last good reading
+    // for up to an hour. Concurrent readers share one upstream request.
     const now = Date.now();
-    if ((!usageCache || now - usageCache.at > 300000) && now >= usageRetry) {
-      try {
-        usageCache = { at: now, value: await native.usage() };
-      } catch (error) {
+    if ((!usageCache || now - usageCache.at > 60000) && now >= usageRetry)
+      await (usageReading ??= native.usage().then((value) => { usageCache = { at: Date.now(), value }; }, (error) => {
         const after = Number(error?.response?.headers?.["retry-after"]) * 1000;
-        usageRetry = now + (error?.response?.status === 429 ? Math.min(after > 0 ? after : 300000, 3600000) : 60000);
-      }
-    }
-    if (!usageCache) throw new Error("usage unavailable");
-    return Response.json(usageCache.value);
+        usageRetry = Date.now() + (error?.response?.status === 429 ? Math.min(after > 0 ? after : 300000, 3600000) : 60000);
+      }).finally(() => { usageReading = undefined; }));
+    if (!usageCache || Date.now() - usageCache.at > 3600000) throw new Error("usage unavailable");
+    return Response.json({ ...usageCache.value, checked_at: new Date(usageCache.at).toISOString() });
   }
   if (method !== "POST") return Response.json({ error: "not found" }, { status: 404 });
   await initialize();
