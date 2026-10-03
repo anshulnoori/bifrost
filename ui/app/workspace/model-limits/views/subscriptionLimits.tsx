@@ -8,7 +8,10 @@ import { ModelProviderKey } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { z } from "zod";
 
-function AccountLimit({ account, canUpdate }: { account: ModelProviderKey; canUpdate: boolean }) {
+type SubscriptionProvider = "codex" | "claude";
+const providerLabel: Record<SubscriptionProvider, string> = { codex: "Codex", claude: "Claude" };
+
+function AccountLimit({ account, provider, canUpdate }: { account: ModelProviderKey; provider: SubscriptionProvider; canUpdate: boolean }) {
 	const [value, setValue] = useState(String(account.codex_reserve_percent ?? ""));
 	const [error, setError] = useState("");
 	const [saved, setSaved] = useState(false);
@@ -31,7 +34,7 @@ function AccountLimit({ account, canUpdate }: { account: ModelProviderKey; canUp
 		}
 		try {
 			await update({
-				provider: "codex",
+				provider,
 				keyId: account.id,
 				key: { ...account, codex_reserve_percent: parsed.data },
 			}).unwrap();
@@ -45,7 +48,7 @@ function AccountLimit({ account, canUpdate }: { account: ModelProviderKey; canUp
 		<TableRow id={account.id} data-testid={`subscription-limit-${account.id}`}>
 			<TableCell className="font-medium">
 				{account.name || account.id}
-				<div className="text-muted-foreground text-xs">Codex</div>
+				<div className="text-muted-foreground text-xs">{providerLabel[provider]}</div>
 			</TableCell>
 			<TableCell>
 				<Input
@@ -101,7 +104,11 @@ export default function SubscriptionLimits() {
 		skip: !canView,
 	});
 	const hasCodex = data?.some((provider) => provider.name === "codex") ?? false;
-	const { data: keys, isLoading: loadingKeys, error: keysError } = useGetProviderKeysQuery("codex", { skip: !canView || !hasCodex });
+	const hasClaude = data?.some((provider) => provider.name === "claude") ?? false;
+	const codex = useGetProviderKeysQuery("codex", { skip: !canView || !hasCodex });
+	const claude = useGetProviderKeysQuery("claude", { skip: !canView || !hasClaude });
+	const loadingKeys = codex.isLoading || claude.isLoading;
+	const keysError = codex.error || claude.error;
 	if (!canView) return <p className="p-4 text-sm">You do not have permission to view provider accounts.</p>;
 	if (isLoading || loadingKeys) return <p className="p-4 text-sm">Loading subscription limits…</p>;
 	if (error || keysError)
@@ -110,14 +117,18 @@ export default function SubscriptionLimits() {
 				{getErrorMessage(error || keysError)}
 			</p>
 		);
-	const accounts = keys ?? [];
+	const accounts = [
+		...(hasCodex ? (codex.data ?? []) : []).map((account) => ({ account, provider: "codex" as const })),
+		...(hasClaude ? (claude.data ?? []) : []).map((account) => ({ account, provider: "claude" as const })),
+	];
 	return (
 		<div className="space-y-4 py-4">
 			<div>
 				<h2 className="text-lg font-medium">Subscription Limits</h2>
 				<p className="text-muted-foreground mt-1 text-sm">
-					Pause each Codex account at its weekly allowance reserve. A 25% reserve leaves 25% remaining. The five-hour window does not affect
-					this setting. Remove the limit or save a blank field for no reserve. OpenAI still controls account limits and credit use.
+					Pause each Codex or Claude subscription account at its weekly allowance reserve. A 25% reserve leaves 25% remaining. The five-hour
+					window does not affect this setting. Remove the limit or save a blank field for no reserve. OpenAI and Anthropic still control
+					account limits and credit use.
 				</p>
 			</div>
 			{accounts.length ? (
@@ -130,14 +141,14 @@ export default function SubscriptionLimits() {
 						</TableRow>
 					</TableHeader>
 					<TableBody>
-						{accounts.map((account) => (
-							<AccountLimit key={account.id} account={account} canUpdate={canUpdate} />
+						{accounts.map(({ account, provider }) => (
+							<AccountLimit key={`${provider}:${account.id}`} account={account} provider={provider} canUpdate={canUpdate} />
 						))}
 					</TableBody>
 				</Table>
 			) : (
 				<p className="text-muted-foreground text-sm">
-					No Codex accounts configured. Add an account in Providers to set its subscription limit.
+					No Codex or Claude accounts configured. Add an account in Providers to set its subscription limit.
 				</p>
 			)}
 		</div>

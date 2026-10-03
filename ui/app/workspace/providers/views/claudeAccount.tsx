@@ -81,6 +81,17 @@ export default function ClaudeAccount({
 	// The tighter of the session and weekly windows determines what is usable now.
 	const headlineWindows = windows.filter((window) => window.headline);
 	const headline = headlineWindows.length ? Math.min(...headlineWindows.map((window) => window.remaining)) : undefined;
+	// Mirrors the gateway rule: only the weekly all-models window governs the reserve.
+	const reserve = account.codex_reserve_percent;
+	const weekly = usage?.seven_day?.utilization;
+	const reserveStatus =
+		reserve == null || connection?.state !== "connected"
+			? undefined
+			: weekly == null || weekly < 0 || weekly > 100
+				? "Usage unavailable"
+				: 100 - weekly <= reserve
+					? "Reserve reached"
+					: undefined;
 	return (
 		<TableRow data-testid={`key-row-${account.name}`} className="hover:bg-transparent">
 			<TableCell colSpan={4} className="p-0 whitespace-normal">
@@ -100,7 +111,7 @@ export default function ClaudeAccount({
 								</span>
 							)}
 							<Badge variant="secondary" className="capitalize">
-								{status}
+								{account.enabled === false ? status : (reserveStatus ?? status)}
 							</Badge>
 							<ChevronDown
 								className={`absolute top-5 right-4 size-4 shrink-0 transition-transform sm:static ${open ? "rotate-180" : ""}`}

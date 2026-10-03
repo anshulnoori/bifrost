@@ -142,8 +142,10 @@ func (TableKey) TableName() string { return "config_keys" }
 // batch S3 config) before writing to the database. Encryption runs last to ensure it
 // operates on the final serialized values.
 func (k *TableKey) BeforeSave(tx *gorm.DB) error {
-	if p := k.CodexReservePercent; p != nil && (math.IsNaN(*p) || *p < 0 || *p > 100 || k.Provider != string(schemas.Codex)) {
-		return fmt.Errorf("codex_reserve_percent must be 0..100 and only applies to Codex")
+	// The column keeps its original name; it now holds the subscription reserve
+	// for every provider whose usage Bifrost can read (Codex and Claude).
+	if p := k.CodexReservePercent; p != nil && (math.IsNaN(*p) || *p < 0 || *p > 100 || k.Provider != string(schemas.Codex) && k.Provider != string(schemas.Claude)) {
+		return fmt.Errorf("codex_reserve_percent must be 0..100 and only applies to Codex and Claude")
 	}
 	if err := k.Models.Validate(); err != nil {
 		return err

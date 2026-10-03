@@ -115,3 +115,23 @@ func TestClaudeRejectsRemoteBridgeAndProviderOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeReserveRejectionIsDistinctAndNeverReachesTheBridge(t *testing.T) {
+	t.Setenv("CLAUDE_BRIDGE_TOKEN", "synthetic-bridge-token-for-tests-only")
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer server.Close()
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		ClaudeAccount: func(*schemas.BifrostContext, schemas.Key, string) error { return schemas.ErrCodexReserve }}, testLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &schemas.BifrostPassthroughRequest{Provider: schemas.Claude, Model: "claude-sonnet-4-6", Method: "POST", Path: "/v1/messages", Body: []byte(`{"model":"claude-sonnet-4-6","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)}
+	_, failure := p.Passthrough(newContext(), schemas.Key{ID: "account-a"}, req)
+	if failure == nil || *failure.StatusCode != 403 || !strings.Contains(failure.Error.Message, "reserve") {
+		t.Fatalf("reserve rejection: %+v", failure)
+	}
+	if called {
+		t.Fatal("a reserved account must not reach the bridge")
+	}
+}

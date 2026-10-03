@@ -186,3 +186,26 @@ test('Claude creates an account before browser login and handles manual code, er
   await expect(page.getByTestId('claude-status')).toHaveText('disconnected')
   await expect(page.getByTestId('claude-authorization-code')).toHaveCount(0)
 })
+
+test('Claude account shows Reserve reached when the weekly window is at its reserve', async ({ page }) => {
+  const account = { id: 'claude-account', name: 'Personal', models: ['*'], weight: 1, enabled: true, codex_reserve_percent: 25 }
+  const provider = { name: 'claude', keys: [account], network_config: { max_retries: 0 }, concurrency_and_buffer_size: {}, provider_status: 'active' }
+  // 25% weekly remaining with a 25% reserve: reached. The five-hour window is healthy and must not matter.
+  let weeklyUsed = 75
+  await page.route('**/api/providers', route => route.fulfill({ json: { providers: [provider], total: 1 } }))
+  await page.route('**/api/providers/claude', route => route.fulfill({ json: provider }))
+  await page.route('**/api/providers/claude/keys', route => route.fulfill({ json: { keys: [account], total: 1 } }))
+  await page.route('**/api/claude/connections**', route => route.fulfill({ json: route.request().url().endsWith('/usage')
+    ? { five_hour: { utilization: 5 }, seven_day: { utilization: weeklyUsed }, checked_at: new Date().toISOString() }
+    : { state: 'connected', email: 'reserve@example.test' } }))
+  await page.goto('/workspace/providers')
+  const setup = page.getByRole('button', { name: 'Close for now', exact: true })
+  if (await setup.isVisible()) await setup.click()
+  const row = page.getByTestId('claude-account-claude-account')
+  await expect(row).toContainText('Reserve reached')
+  weeklyUsed = 70
+  await row.getByRole('button', { name: /subscription details/ }).click()
+  await row.getByRole('button', { name: 'Refresh usage' }).click()
+  await expect(row).not.toContainText('Reserve reached')
+  await expect(row).toContainText('connected')
+})

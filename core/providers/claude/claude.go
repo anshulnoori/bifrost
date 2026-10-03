@@ -82,8 +82,18 @@ func (p *ClaudeProvider) admitted(ctx *schemas.BifrostContext, key schemas.Key, 
 		err.StatusCode = schemas.Ptr(403)
 		return nil, err
 	}
-	if key.ID == "" || p.account == nil || p.account(ctx, key, request.Model) != nil {
+	if key.ID == "" || p.account == nil {
 		err := failure("Claude account is missing, disabled or unauthorized")
+		err.StatusCode = schemas.Ptr(403)
+		return nil, err
+	}
+	if accountErr := p.account(ctx, key, request.Model); accountErr != nil {
+		// The reserve is an operator policy, not an authorization failure: say so.
+		message := "Claude account is missing, disabled or unauthorized"
+		if errors.Is(accountErr, schemas.ErrCodexReserve) {
+			message = "Claude account is at its remaining-usage reserve or usage could not be checked"
+		}
+		err := failure(message)
 		err.StatusCode = schemas.Ptr(403)
 		return nil, err
 	}

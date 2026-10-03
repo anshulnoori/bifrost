@@ -189,11 +189,21 @@ func codexCredential(store configstore.ConfigStore) func(*schemas.BifrostContext
 // that account and return a nil error. Credential resolution rechecks policy.
 func CodexKeyPoolFilter(store configstore.ConfigStore) schemas.KeyPoolFilter {
 	return func(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, keys []schemas.Key) ([]schemas.Key, error) {
-		if provider != schemas.Codex && provider != schemas.ChatGPT {
+		if provider != schemas.Codex && provider != schemas.ChatGPT && provider != schemas.Claude {
 			return keys, nil
 		}
 		eligible := make([]schemas.Key, 0, len(keys))
 		if store == nil {
+			return eligible, nil
+		}
+		if provider == schemas.Claude {
+			for _, candidate := range keys {
+				key, err := store.GetProviderKey(ctx, provider, candidate.ID)
+				if err != nil || key == nil || key.Enabled != nil && !*key.Enabled || !claudeAboveReserve(ctx, store, key) {
+					continue
+				}
+				eligible = append(eligible, candidate)
+			}
 			return eligible, nil
 		}
 		s, err := codex.NewStore(store.DB)

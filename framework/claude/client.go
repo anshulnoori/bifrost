@@ -85,6 +85,21 @@ func parseWindow(raw json.RawMessage) *UsageWindow {
 	return validWindow(&w)
 }
 
+// AboveReserve reports whether the weekly all-models window leaves more than
+// reserve percent. It fails closed when that window is missing or invalid, so a
+// routing reserve never admits an account on unknown usage. The five-hour window
+// does not govern this reserve; Anthropic still enforces its own limits.
+func (u *Usage) AboveReserve(reserve float64) bool {
+	if u == nil || u.SevenDay == nil || u.SevenDay.Utilization == nil || math.IsNaN(reserve) || reserve < 0 || reserve > 100 {
+		return false
+	}
+	used := *u.SevenDay.Utilization
+	if math.IsNaN(used) || used < 0 || used > 100 {
+		return false
+	}
+	return 100-used > reserve
+}
+
 // Usage reads one account's subscription allowance through its native worker.
 func (c *Client) Usage(ctx context.Context, account string) (*Usage, int, error) {
 	if !accountID.MatchString(account) {

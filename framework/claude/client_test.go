@@ -75,3 +75,28 @@ func TestUsageIsAccountScopedAndSanitized(t *testing.T) {
 		t.Fatal("account path traversal accepted")
 	}
 }
+
+func TestAboveReserveUsesOnlyTheWeeklyWindow(t *testing.T) {
+	window := func(used float64) *UsageWindow { return &UsageWindow{Utilization: &used} }
+	for _, tc := range []struct {
+		name    string
+		usage   *Usage
+		reserve float64
+		want    bool
+	}{
+		{"remaining above reserve", &Usage{SevenDay: window(70)}, 25, true},
+		// At the boundary the reserve is reached: 25 remaining is not above 25.
+		{"remaining equals reserve", &Usage{SevenDay: window(75)}, 25, false},
+		{"remaining below reserve", &Usage{SevenDay: window(80)}, 25, false},
+		// An exhausted five-hour window must not trip a weekly reserve.
+		{"five-hour exhausted", &Usage{FiveHour: window(100), SevenDay: window(10)}, 25, true},
+		{"weekly missing", &Usage{FiveHour: window(10)}, 25, false},
+		{"weekly out of range", &Usage{SevenDay: window(101)}, 0, false},
+		{"nil usage", nil, 25, false},
+		{"invalid reserve", &Usage{SevenDay: window(10)}, 101, false},
+	} {
+		if got := tc.usage.AboveReserve(tc.reserve); got != tc.want {
+			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
