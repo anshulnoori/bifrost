@@ -8,8 +8,8 @@
   },
   "scripts": {
     "start": "node start.mjs",
-    "test": "node --test bridge.test.ts runtime.test.mjs gateway.test.mjs",
-    "typecheck": "tsc --noEmit --strict --target es2023 --module nodenext --allowImportingTsExtensions --skipLibCheck bridge.ts accounts.ts bridge.test.ts"
+    "test": "node --test bridge.test.ts accounts.test.ts runtime.test.mjs gateway.test.mjs",
+    "typecheck": "tsc --noEmit --strict --target es2023 --module nodenext --allowImportingTsExtensions --skipLibCheck bridge.ts accounts.ts bridge.test.ts accounts.test.ts"
   },
   "optionalDependencies": {
     "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.287",

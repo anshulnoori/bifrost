@@ -24,7 +24,6 @@ export function createAccounts(root: string, executable: string) {
     if (!accountPattern.test(account) || closing) throw new Error("invalid account");
     const existing = workers.get(account);
     if (existing) return existing;
-    if (workers.size >= 32) throw new Error("Claude account worker limit reached");
     const directory = join(root, "accounts", account);
     // Reserve the slot before yielding; concurrent requests cannot spawn a
     // second worker for the same credential directory.
