@@ -8,7 +8,7 @@ import { ModelProviderKey } from "@/lib/types/config";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
-import { codexAccountLabel } from "./codexAccountLabel";
+import { subscriptionAccountLabel } from "./subscriptionAccountLabel";
 
 function usageWindows(usage?: ClaudeUsage) {
 	if (!usage) return [];
@@ -81,7 +81,7 @@ export default function ClaudeAccount({
 			controller.abort();
 		};
 	}, [account.id, revision, refresh]);
-	const label = codexAccountLabel(account.name, connection?.email, "claude");
+	const label = subscriptionAccountLabel(account.name, connection?.email, "claude");
 	const status = account.enabled === false ? "Inactive" : error || connection?.state.replaceAll("_", " ") || "Loading…";
 	const windows = usageWindows(usage);
 	// The tighter of the session and weekly windows determines what is usable now.

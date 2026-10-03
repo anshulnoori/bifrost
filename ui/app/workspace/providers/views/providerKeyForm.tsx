@@ -17,9 +17,8 @@ import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
 import CodexConnection from "./codexConnection";
 import ClaudeConnection from "./claudeConnection";
-import { codexAccountAlias } from "./codexAccountLabel";
 import ChatGPTConnection from "./chatgptConnection";
-import { chatgptAccountAlias } from "./chatgptAccountLabel";
+import { subscriptionAccountAlias } from "./subscriptionAccountLabel";
 import { stripDatabricksAuthDiscriminator } from "./providerKeyForm.utils";
 interface Props {
 	provider: ModelProvider;
@@ -32,7 +31,7 @@ type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
 
 export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: Props) {
 	const isSubscriptionProvider = ["codex", "chatgpt", "claude"].includes(provider.name);
-	const accountAlias = provider.name === "chatgpt" ? chatgptAccountAlias : (name: string) => codexAccountAlias(name, provider.name);
+	const accountAlias = (name: string) => subscriptionAccountAlias(name, provider.name as "codex" | "chatgpt" | "claude");
 	const providerKeyFormSchema = z.object({
 		key:
 			provider.name === "chatgpt"

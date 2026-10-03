@@ -12,8 +12,7 @@ import { formatDistanceToNow } from "date-fns";
 import { ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
 import { ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { codexAccountLabel } from "./codexAccountLabel";
-import { chatgptAccountLabel } from "./chatgptAccountLabel";
+import { subscriptionAccountLabel } from "./subscriptionAccountLabel";
 
 export default function SubscriptionAccount({
 	provider,
@@ -90,7 +89,7 @@ export default function SubscriptionAccount({
 		? Math.max(0, Math.min(100, ...primaryWindows.map(({ window }) => 100 - window.used_percent!)))
 		: undefined;
 	const enabled = account.enabled ?? true;
-	const label = provider === "codex" ? codexAccountLabel(account.name, email) : chatgptAccountLabel(account.name, email);
+	const label = subscriptionAccountLabel(account.name, email, provider);
 	const reserve = provider === "codex" ? account.codex_reserve_percent : undefined;
 	const weekly = [usage?.rate_limit?.primary_window, usage?.rate_limit?.secondary_window].filter(
 		(window) => window?.limit_window_seconds === 604800,
