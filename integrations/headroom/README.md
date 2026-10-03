@@ -104,8 +104,8 @@ Import these values through 1Password Desktop. Keep them outside Git, the Nix st
 The gateway does not receive the Headroom database credentials.
 Modal API tokens can have broader permissions than invocation alone. Environment restrictions depend on the workspace RBAC configuration.
 
-The L4 deployment uses PyTorch, not ONNX. It has zero minimum containers, one buffer container, and a five-second scale-down window. No application maximum is set; Modal workspace limits still apply.
-The buffer is a spare-container target during activity, not an instantaneous limit on idle containers. All containers can scale to zero when activity stops.
+The L4 deployment uses PyTorch, not ONNX. It has zero minimum containers, no buffer container, and a five-second scale-down window. No application maximum is set; Modal workspace limits still apply.
+A buffer container kept a spare L4 warm whenever Headroom was active, which roughly doubled GPU billing. It was removed on 2026-10-03, so the first request after an idle period waits for a cold start.
 Independent gateway requests run concurrently. Requests in the same compression partition serialize to preserve stable decisions. Modal can still queue calls during startup.
 Every call carries an expiry time. Expired calls do not compress.
 Compression waits at most 30 seconds, followed by up to 100 ms for best-effort cancellation. Scale-to-zero can require a fresh model load even with snapshots enabled. This bound does not guarantee every cold start succeeds.
