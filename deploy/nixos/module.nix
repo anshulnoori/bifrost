@@ -38,6 +38,18 @@ in {
       default = "";
       description = "Virtual key ID whose Amp client has authenticated Headroom MCP retrieval configured; enables CCR.";
     };
+    egressProxy = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "http://bifrost-proxy.mongoose-silverside.ts.net:3128";
+      description = ''
+        HTTP CONNECT proxy for subscription-provider egress, so providers see one
+        residential IP: Codex and ChatGPT inference, OAuth and usage (through
+        BIFROST_SUBSCRIPTION_PROXY, which overrides provider proxy settings), and
+        the Claude bridge's traffic to Anthropic. Requests fail rather than fall
+        back to direct egress if it is unreachable.
+      '';
+    };
     semanticCacheModalApp = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -58,6 +70,9 @@ in {
     } {
       assertion = cfg.headroomModalApp == null || cfg.semanticCacheModalApp == null || cfg.headroomModalApp == cfg.semanticCacheModalApp;
       message = "Headroom compression and semantic cache must use the same Modal app.";
+    } {
+      assertion = cfg.egressProxy == null || builtins.match "http://[A-Za-z0-9.-]+:[0-9]+" cfg.egressProxy != null;
+      message = "egressProxy must be http://<host>:<port> with no path or credentials.";
     } ];
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
@@ -112,7 +127,9 @@ in {
           # Codex/OpenAI cache prompts automatically. This opts the provider into
           # Bifrost's cache policy without inventing a wire boolean; caller-supplied
           # prompt_cache_key/retention/options remain authoritative.
-          codex.prompt_cache = { auto_inject = true; };
+          codex = {
+            prompt_cache = { auto_inject = true; };
+          };
         } // lib.optionalAttrs (cfg.semanticCacheModalApp != null || cfg.headroomModalApp != null) {
           headroom_embeddings = {
             keys = [ {
@@ -179,6 +196,17 @@ in {
         } ];
       };
     };
+    # The bridge reaches Anthropic directly (messages, usage, OAuth refresh); the
+    # gateway itself reaches it only on loopback, which stays unproxied.
+    systemd.services.bifrost-claude = lib.mkIf (cfg.egressProxy != null && config.services.bifrost.claude.enable) {
+      environment = {
+        HTTPS_PROXY = cfg.egressProxy;
+        https_proxy = cfg.egressProxy;
+        NO_PROXY = "127.0.0.1,localhost,::1";
+        no_proxy = "127.0.0.1,localhost,::1";
+      };
+    };
+
     systemd.services.bifrost = {
       after = [ "network-online.target" "bifrost-valkey.service" ];
       wants = [ "network-online.target" ];
@@ -187,6 +215,8 @@ in {
       # need no home directory or ambient CLI profile; credentials come from env.
       environment = lib.optionalAttrs (cfg.semanticCacheModalApp != null || cfg.headroomModalApp != null) {
         MODAL_CONFIG_PATH = "/dev/null";
+      } // lib.optionalAttrs (cfg.egressProxy != null) {
+        BIFROST_SUBSCRIPTION_PROXY = cfg.egressProxy;
       };
       preStart = lib.mkBefore (''
         for name in NEON_HOST NEON_USER NEON_PASSWORD NEON_DATABASE BIFROST_ENCRYPTION_KEY BIFROST_ADMIN_PASSWORD; do
