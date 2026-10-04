@@ -105,6 +105,30 @@ test("admission, exact request forwarding, native errors and independent request
   await (await send(next)).text();
   assert.deepEqual(calls[1].body, next);
 });
+test("body limit matches Anthropic's 32 MB Messages limit", async (t) => {
+  const sizes: number[] = [];
+  const send = await fixture(t, async (input) => {
+    sizes.push(JSON.stringify(input.body).length);
+    return Response.json({ type: "message" });
+  });
+  const sized = (bytes: number) => ({
+    model: request.model,
+    max_tokens: 1,
+    messages: [{ role: "user", content: "x".repeat(bytes) }],
+  });
+  const allowed = await send(sized(20 * 1024 * 1024));
+  assert.equal(allowed.status, 200);
+  await allowed.text();
+  assert.equal(sizes.length, 1);
+  assert.ok(sizes[0] > 20 * 1024 * 1024);
+  const rejected = await send(sized(32 * 1024 * 1024));
+  assert.equal(rejected.status, 413);
+  assert.deepEqual(await rejected.json(), {
+    type: "error",
+    error: { type: "request_too_large", message: "Messages request exceeds 32 MiB" },
+  });
+  assert.equal(sizes.length, 1);
+});
 test("SSE bytes reach caller before upstream completion", async (t) => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {

@@ -122,7 +122,7 @@ at the directory root do not automatically connect a configured account.
 The gateway also needs the shared bridge token in its environment file.
 Do not configure `ANTHROPIC_API_KEY` for subscription use.
 
-The bridge binds loopback, accepts up to 16 MiB, and applies a five-minute
+The bridge binds loopback, accepts up to 32 MiB (Anthropic's Messages API limit), and applies a five-minute
 deadline. It aborts inference on client disconnect. It has no local concurrency
 cap or queue: simultaneous requests all run at once. Anthropic enforces each
 subscription's real limits, and its errors reach the caller unchanged.

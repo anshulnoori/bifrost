@@ -132,7 +132,7 @@ export function createBridge(
       let size = 0;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 16 * 1024 * 1024) throw new RequestError("Messages request exceeds 16 MiB", 413);
+        if (size > 32 * 1024 * 1024) throw new RequestError("Messages request exceeds 32 MiB", 413);
         chunks.push(chunk);
       }
       let parsed: unknown;
