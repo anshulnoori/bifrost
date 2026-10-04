@@ -128,6 +128,17 @@ test('Funnel target is inference-only; private target retains session routes', {
     assert.equal((await request('/mcp')).status, 404);
     assert.equal((await request('/v1/headroom/mcp?session=synthetic')).status, 404);
   });
+  await t.test('maps the System One decision API onto the Typesafe route', async () => {
+    const body = '{"model":"cloudflare/clef","state":"x","questions":{"q":{"type":"noul","instructions":"Is x?"}}}';
+    const res = await request('/v1/systemone', {}, body);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { path: '/typesafe/v1/systemone', body });
+    assert.equal(serviceRequests.at(-1), '/v1/systemone', 'public decisions must traverse the Service');
+    assert.equal(seen.at(-1).headers['x-bf-vk'], 'sk-bf-synthetic');
+    assert.equal((await request('/v1/systemone', {}, body, 'GET')).status, 404);
+    assert.equal((await request('/typesafe/v1/systemone', {}, body)).status, 404);
+    assert.equal((await request('/v1/systemone', { authorization: '' }, body)).status, 401);
+  });
   await t.test('preserves body bytes, maps Anthropic, strips cookies, identity and routing overrides', async () => {
     const body = '{ "model": "synthetic", "messages": [] }';
     const res = await request('/v1/messages', {

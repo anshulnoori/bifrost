@@ -14,6 +14,9 @@
 	}
 	@messages path /v1/messages
 	rewrite @messages /anthropic/v1/messages
+	# System One decision models (Cloudflare Clef) use the native Typesafe route.
+	@systemone path /v1/systemone
+	rewrite @systemone /typesafe/v1/systemone
 	reverse_proxy 127.0.0.1:{$BIFROST_PORT:8080} {
 		# A positive header allowlist prevents provider-key and routing overrides.
 		header_up -*
@@ -30,7 +33,7 @@
 
 (inference_routes) {
 	route {
-		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/headroom/mcp"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
+		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/systemone", "/v1/headroom/mcp"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
 		respond @invalid 404
 		@encoded header Content-Encoding *
 		respond @encoded 415
@@ -68,7 +71,7 @@ http://:{$INFERENCE_PORT:8081} {
 	# The public edge must traverse the Service, not this node's Bifrost process.
 	# Reject everything except inference and its catalog before the private listener.
 	route {
-		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/headroom/mcp"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
+		@invalid expression `!(({http.request.method} == "POST" && {http.request.uri} in ["/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/systemone", "/v1/headroom/mcp"]) || ({http.request.method} == "GET" && {http.request.uri} == "/v1/models"))`
 		respond @invalid 404
 		reverse_proxy {$INFERENCE_SERVICE_URL:https://ai.mongoose-silverside.ts.net} {
 			header_up Host {upstream_hostport}
