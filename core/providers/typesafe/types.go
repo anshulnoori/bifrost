@@ -64,4 +64,9 @@ type TypesafeError struct {
 	Error   *struct {
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
+	// Errors is Cloudflare's REST error list, used by the Workers AI flavor.
+	Errors []struct {
+		Code    int    `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"errors,omitempty"`
 }

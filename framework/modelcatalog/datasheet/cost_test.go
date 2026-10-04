@@ -5699,6 +5699,30 @@ func TestCalculateCost_DecisionTokenBilling(t *testing.T) {
 	assert.InDelta(t, 50000*0.000000042, s.CalculateCost(resp, nil), 1e-12)
 }
 
+// The datasheet files Cloudflare's Clef rows under mode "evaluation" rather than
+// "decisions"; a Clef decision must still price, or budgets never see it.
+func TestCalculateCost_ClefDecisionUsesEvaluationRows(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("clef", "cloudflare", "evaluation"): {
+			Model: "clef", Provider: "cloudflare", Mode: "evaluation",
+			InputCostPerToken: bifrost.Ptr(0.00000024),
+		},
+		makeKey("clef-chat", "cloudflare", "evaluation"): {
+			Model: "clef-chat", Provider: "cloudflare", Mode: "evaluation",
+			InputCostPerToken: bifrost.Ptr(1.0),
+		},
+	})
+	resp := makeDecisionResponse(schemas.Cloudflare, "clef", &schemas.BifrostLLMUsage{PromptTokens: 10000, TotalTokens: 10000})
+	assert.InDelta(t, 10000*0.00000024, s.CalculateCost(resp, nil), 1e-12)
+
+	// Only decisions fall back; a chat request never prices from an evaluation row.
+	chat := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage:       &schemas.BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10},
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, RoutingInfo: routingInfoFor(schemas.Cloudflare, "clef-chat")},
+	}}
+	assert.Equal(t, 0.0, s.CalculateCost(chat, nil))
+}
+
 func TestCalculateCost_RerankPerTokenStillWorks(t *testing.T) {
 	// Voyage and Jina style rerankers bill per token and carry no per-query rate; the two
 	// pricing shapes must not interfere.

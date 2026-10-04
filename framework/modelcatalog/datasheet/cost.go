@@ -2240,6 +2240,14 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		return &pricing, true
 	}
 
+	// The datasheet files some System One models (Cloudflare Clef) under
+	// "evaluation" rather than "decisions".
+	if requestType == schemas.DecisionRequest {
+		if pricing, ok = s.pricingData[makeKey(model, provider, "evaluation")]; ok {
+			return &pricing, true
+		}
+	}
+
 	// Lookup in vertex if gemini not found
 	if provider == string(schemas.Gemini) {
 		s.logger.Debug("primary lookup failed, trying vertex provider for the same model")

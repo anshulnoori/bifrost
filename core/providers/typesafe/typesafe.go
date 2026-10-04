@@ -22,6 +22,9 @@ type TypesafeProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	providerKey         schemas.ModelProvider // typesafe, or cloudflare for the Workers AI flavor
+	workersAI           bool                  // Serve System One through Cloudflare Workers AI
+	models              []typesafeModel       // Static catalog for ListModels
 }
 
 // NewTypesafeProvider creates a new Typesafe provider instance.
@@ -57,12 +60,14 @@ func NewTypesafeProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+		providerKey:         schemas.Typesafe,
+		models:              typesafeModels,
 	}, nil
 }
 
 // GetProviderKey returns the provider identifier for Typesafe.
 func (provider *TypesafeProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Typesafe
+	return provider.providerKey
 }
 
 // ListModels serves the static jev catalog. Typesafe documents no model-listing
@@ -84,7 +89,7 @@ func (provider *TypesafeProvider) ListModels(ctx *schemas.BifrostContext, keys [
 // pipeline so key whitelists, blacklists, and aliases apply.
 func (provider *TypesafeProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostListModelsResponse{
-		Data: make([]schemas.Model, 0, len(typesafeModels)),
+		Data: make([]schemas.Model, 0, len(provider.models)),
 	}
 
 	pipeline := &providerUtils.ListModelsPipeline{
@@ -100,7 +105,7 @@ func (provider *TypesafeProvider) listModelsByKey(ctx *schemas.BifrostContext, k
 	}
 
 	included := make(map[string]bool)
-	for _, model := range typesafeModels {
+	for _, model := range provider.models {
 		for _, result := range pipeline.FilterModel(model.ID) {
 			name := model.Name
 			description := model.Description
@@ -108,7 +113,7 @@ func (provider *TypesafeProvider) listModelsByKey(ctx *schemas.BifrostContext, k
 				ID:          string(provider.GetProviderKey()) + "/" + result.ResolvedID,
 				Name:        &name,
 				Description: &description,
-				OwnedBy:     new("typesafe"),
+				OwnedBy:     new(string(provider.providerKey)),
 			}
 			if result.AliasValue != "" {
 				alias := result.AliasValue
@@ -138,13 +143,20 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
+	url := provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, typesafeSystemOnePath)
+	if provider.workersAI {
+		if url, bifrostErr = provider.workersAIURL(request.Model); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
+
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, typesafeSystemOnePath))
+	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -174,6 +186,10 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	if provider.workersAI {
+		respBody = unwrapWorkersAI(respBody)
 	}
 
 	var typesafeResp TypesafeDecisionResponse

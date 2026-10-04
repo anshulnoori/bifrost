@@ -72,6 +72,7 @@ export const ModelPlaceholders = {
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
+	cloudflare: "e.g. clef, clef-flash",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -111,6 +112,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	databricks: false,
 	"github-copilot": false,
 	typesafe: true,
+	cloudflare: true,
 };
 
 export const DefaultNetworkConfig = {

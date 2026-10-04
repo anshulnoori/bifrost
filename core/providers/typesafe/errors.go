@@ -22,6 +22,9 @@ func parseTypesafeError(resp *fasthttp.Response) *schemas.BifrostError {
 			message = detail
 		}
 	}
+	if message == "" && len(errorResp.Errors) > 0 {
+		message = errorResp.Errors[0].Message
+	}
 
 	if bifrostErr.Error == nil {
 		bifrostErr.Error = &schemas.ErrorField{}
