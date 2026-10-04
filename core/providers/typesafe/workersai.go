@@ -1,7 +1,6 @@
 package typesafe
 
 import (
-	"errors"
 	"regexp"
 	"strings"
 
@@ -20,6 +19,9 @@ import (
 //	https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway>/workers-ai
 const workersAIModelPrefix = "/@cf/cloudflare/"
 
+// cloudflareBaseURLMissing tells the operator exactly what to configure.
+const cloudflareBaseURLMissing = "cloudflare base URL is not configured: set Network Configuration > Base URL to https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/run"
+
 // workersAIModelName bounds the model segment of the upstream path.
 var workersAIModelName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
@@ -30,14 +32,20 @@ var cloudflareModels = []typesafeModel{
 }
 
 // NewCloudflareProvider serves Clef decisions from a Workers AI account. The key
-// value is a Cloudflare API token with Workers AI permission.
+// value is a Cloudflare API token with Workers AI permission; the account is part
+// of network_config.base_url, set in the dashboard under Network Configuration.
+// The provider loads without a base URL, because the dashboard creates it before
+// the URL is entered, and refuses decisions until the URL is set.
 func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*TypesafeProvider, error) {
-	if strings.TrimSpace(config.NetworkConfig.BaseURL) == "" {
-		return nil, errors.New("cloudflare requires network_config.base_url, e.g. https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/run")
-	}
+	configured := strings.TrimSpace(config.NetworkConfig.BaseURL) != ""
 	provider, err := NewTypesafeProvider(config, logger)
 	if err != nil {
 		return nil, err
+	}
+	if !configured {
+		// Never inherit the Typesafe default host: it would receive the Cloudflare token.
+		provider.networkConfig.BaseURL = ""
+		config.NetworkConfig.BaseURL = ""
 	}
 	provider.providerKey = schemas.Cloudflare
 	provider.workersAI = true
@@ -48,6 +56,9 @@ func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger
 // workersAIURL builds the per-model run URL. The model is a path segment, so it
 // is restricted to a plain model name.
 func (provider *TypesafeProvider) workersAIURL(model string) (string, *schemas.BifrostError) {
+	if provider.networkConfig.BaseURL == "" {
+		return "", providerUtils.NewBifrostOperationError(cloudflareBaseURLMissing, nil)
+	}
 	if !workersAIModelName.MatchString(model) {
 		return "", providerUtils.NewBifrostBadRequestError("cloudflare decision model must be a plain model name such as clef or clef-flash")
 	}

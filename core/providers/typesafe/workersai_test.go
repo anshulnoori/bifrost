@@ -133,10 +133,25 @@ func TestCloudflareRejectsPathLikeModels(t *testing.T) {
 	}
 }
 
-func TestCloudflareProviderIdentityAndCatalog(t *testing.T) {
-	if _, err := NewCloudflareProvider(&schemas.ProviderConfig{}, noopLogger{}); err == nil {
-		t.Fatal("cloudflare provider must require its account base URL")
+// The dashboard creates the provider before its Base URL is entered. It must load,
+// refuse decisions with a fix-it message, and never fall back to another host
+// (the Typesafe default) with the Cloudflare token.
+func TestCloudflareWithoutBaseURL(t *testing.T) {
+	provider, err := NewCloudflareProvider(&schemas.ProviderConfig{}, noopLogger{})
+	if err != nil {
+		t.Fatalf("unconfigured provider must still load: %v", err)
 	}
+	_, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{Value: *schemas.NewSecretVar("cf-token")}, clefRequest("clef"))
+	if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "/accounts/<account_id>/ai/run") {
+		t.Fatalf("error = %+v", bifrostErr)
+	}
+	if strings.Contains(provider.networkConfig.BaseURL, "typesafe") {
+		t.Fatalf("fell back to %s", provider.networkConfig.BaseURL)
+	}
+}
+
+func TestCloudflareProviderIdentityAndCatalog(t *testing.T) {
 	provider := newWorkersAIProvider(t, "https://api.cloudflare.com/client/v4/accounts/acct-1/ai/run")
 	if provider.GetProviderKey() != schemas.Cloudflare {
 		t.Fatalf("provider key = %s", provider.GetProviderKey())

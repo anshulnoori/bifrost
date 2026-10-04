@@ -28,10 +28,22 @@ const resolveSize = (size: IconSize): number => {
 export const ProviderIcons = {
 	chatgpt: (props: IconProps) => <ProviderIcons.openai {...props} />,
 	codex: ({ size = "md", className = "" }: IconProps) => (
-		<img src="/images/harness/codex.svg" alt="Codex" width={resolveSize(size)} height={resolveSize(size)} className={cn("object-contain", className)} />
+		<img
+			src="/images/harness/codex.svg"
+			alt="Codex"
+			width={resolveSize(size)}
+			height={resolveSize(size)}
+			className={cn("object-contain", className)}
+		/>
 	),
 	claude: ({ size = "md", className = "" }: IconProps) => (
-		<img src="/images/claude-desktop.png" alt="Claude" width={resolveSize(size)} height={resolveSize(size)} className={cn("object-contain", className)} />
+		<img
+			src="/images/claude-desktop.png"
+			alt="Claude"
+			width={resolveSize(size)}
+			height={resolveSize(size)}
+			className={cn("object-contain", className)}
+		/>
 	),
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
@@ -925,7 +937,10 @@ export const ProviderIcons = {
 					fill="#F38020"
 					d="M44.6 42.5H13.1a1.1 1.1 0 0 1-1.1-1.2 9.7 9.7 0 0 1 9.4-8.8 13.3 13.3 0 0 1 25.4-4.9 8.6 8.6 0 0 1 9.9 8.5c0 .5 0 .9-.1 1.4a5.2 5.2 0 0 1 3.9 5h-16Z"
 				/>
-				<path fill="#FAAE40" d="M48.6 34.3a6.6 6.6 0 0 1 6.5 6.6c0 .5 0 1-.1 1.6h-9.8l1.2-4.1a5.4 5.4 0 0 0-.1-2.4c.7-1.1 1.4-1.7 2.3-1.7Z" />
+				<path
+					fill="#FAAE40"
+					d="M48.6 34.3a6.6 6.6 0 0 1 6.5 6.6c0 .5 0 1-.1 1.6h-9.8l1.2-4.1a5.4 5.4 0 0 0-.1-2.4c.7-1.1 1.4-1.7 2.3-1.7Z"
+				/>
 			</svg>
 		);
 	},

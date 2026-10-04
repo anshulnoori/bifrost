@@ -101,7 +101,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	}, [form.formState.isDirty, dispatch]);
 
 	const onSubmit = (data: NetworkOnlyFormSchema) => {
-		const requiresBaseUrl = isCustomProvider;
+		const requiresBaseUrl = isCustomProvider || provider.name === "cloudflare";
 		if (requiresBaseUrl && (data.network_config?.base_url ?? "").trim() === "") {
 			if ((provider.network_config?.base_url ?? "").trim() !== "") {
 				toast.error("You can't remove network configuration for this provider.");
@@ -176,7 +176,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	// HTTP/2 PING keepalives only apply when HTTP/2 is enforced
 	const enforceHTTP2 = form.watch("network_config.enforce_http2");
 
-	const baseURLRequired = isCustomProvider;
+	// Cloudflare's base URL carries the account ID, so it has no default.
+	const baseURLRequired = isCustomProvider || provider.name === "cloudflare";
 	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
 
 	return (
@@ -194,7 +195,13 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										<FormLabel>Base URL {baseURLRequired ? "(Required)" : "(Optional)"}</FormLabel>
 										<FormControl>
 											<Input
-												placeholder={isCustomProvider ? "https://api.your-provider.com" : "https://api.example.com"}
+												placeholder={
+													provider.name === "cloudflare"
+														? "https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/run"
+														: isCustomProvider
+															? "https://api.your-provider.com"
+															: "https://api.example.com"
+												}
 												{...field}
 												value={field.value || ""}
 												disabled={!hasUpdateProviderAccess}
