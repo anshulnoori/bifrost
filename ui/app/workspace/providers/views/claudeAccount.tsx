@@ -131,7 +131,7 @@ export default function ClaudeAccount({
 							<dd data-testid="claude-account-email">{connection?.email || "Email unavailable"}</dd>
 							<dt className="text-muted-foreground">Models</dt>
 							<dd>
-								{!account.models?.length || account.models.includes("*") ? "All models" : account.models.join(", ")}
+								{!account.models?.length || account.models.includes("*") ? "All available Claude models" : account.models.join(", ")}
 								{!!account.blacklisted_models?.length && (
 									<span className="text-muted-foreground"> · Excluded: {account.blacklisted_models.join(", ")}</span>
 								)}

@@ -59,7 +59,7 @@ func New(config *schemas.ProviderConfig, logger schemas.Logger) (*ClaudeProvider
 	config.CustomProviderConfig = &schemas.CustomProviderConfig{
 		CustomProviderKey: string(schemas.Claude), BaseProviderType: schemas.Anthropic,
 		IsKeyLess:       false,
-		AllowedRequests: &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true},
+		AllowedRequests: &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true, ListModels: true},
 	}
 	return &ClaudeProvider{AnthropicProvider: anthropic.NewAnthropicProvider(config, logger), token: token, account: config.ClaudeAccount}, nil
 }
