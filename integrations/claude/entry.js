@@ -22,15 +22,17 @@ async function initialize() {
     const { el, In, h$, JU, Wt, ft, Gp } = await import("/$bunfs/root/chunk-k985080f.js");
     if (![tD, NDr, GL, LHe, el, In, h$, JU, Wt?.get, ft, Gp].every((f) => typeof f === "function"))
       throw new Error("native interface mismatch");
-    // Same request as the native allowance reader, but exempt from the
-    // worker-wide essential-traffic mode for this one read only.
+    // Read through the inference client: its fetch tunnels via HTTPS_PROXY,
+    // whereas the native reader sends absolute-form requests a proxy refuses.
     const usage = async () => {
       if (!ft() || !Gp()) return {};
-      const response = await Wt.get("/api/oauth/usage", { timeout: 5000, refreshOAuth: true,
-        bypassEssentialTrafficOnly: true, headers: { "Content-Type": "application/json" },
-        validateStatus: (status) => status >= 200 && status < 300 });
-      if (!response.ok) throw new Error("usage unavailable");
-      return response.data;
+      const client = await tD({ maxRetries: 0, model: "claude-haiku-4-5", source: "bifrost",
+        agentContext: { agentType: "main", isBackgroundAgent: false } });
+      try {
+        return await client.get("/api/oauth/usage", { timeout: 5000, headers: { "anthropic-beta": "oauth-2025-04-20" } });
+      } catch (error) {
+        throw { response: { status: error.status, headers: { "retry-after": error.headers?.get?.("retry-after") } } };
+      }
     };
     native = { tD, NDr, usage, cp, GL, LHe, el, In, policy: h$, subscriptionScopes: JU };
   })();

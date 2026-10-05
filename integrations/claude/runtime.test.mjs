@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createServer as createTLSServer } from "node:https";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -59,7 +61,7 @@ test("native browser login isolates accounts, binds manual state, and cancels wi
   assert.equal((await (await action("account-b")).json()).id, other.id, "cancel must not affect the other account");
 });
 
-test("usage read bypasses essential-traffic mode for that request only", { timeout: 30000 }, async (t) => {
+test("usage read tunnels through a CONNECT-only proxy despite essential-traffic mode", { timeout: 30000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "claude-usage-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const patched = join(dir, "claude-raw");
@@ -69,8 +71,13 @@ test("usage read bypasses essential-traffic mode for that request only", { timeo
     expiresAt: Date.now() + 3600000, scopes: ["user:inference", "user:profile"], subscriptionType: "pro",
   } }), { mode: 0o600 });
   const requests = [];
-  // Plain-HTTP proxy: the native client sends the absolute HTTPS URL, so no TLS is needed.
-  const proxy = createServer((req, res) => {
+  const tunnels = [];
+  // Production runs behind a CONNECT-only proxy (Squid), so the read must tunnel to
+  // a TLS origin. A test CA stands in for api.anthropic.com's certificate.
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=api.anthropic.com",
+    "-addext", "subjectAltName=DNS:api.anthropic.com", "-keyout", join(dir, "origin.key"), "-out", join(dir, "origin.pem")],
+    { stdio: "ignore" });
+  const origin = createTLSServer({ key: readFileSync(join(dir, "origin.key")), cert: readFileSync(join(dir, "origin.pem")) }, (req, res) => {
     requests.push({ url: req.url, authorization: req.headers.authorization, beta: req.headers["anthropic-beta"] });
     if (requests.length === 1) {
       res.writeHead(429, { "content-type": "application/json", "retry-after": "1" }).end(JSON.stringify({
@@ -82,6 +89,19 @@ test("usage read bypasses essential-traffic mode for that request only", { timeo
       seven_day: { utilization: 12, resets_at: "2026-10-03T16:00:00.2265+00:00" },
     }));
   });
+  origin.listen(0, "127.0.0.1");
+  await once(origin, "listening");
+  t.after(() => origin.close());
+  // Like Squid: tunnel CONNECT, refuse absolute-form requests.
+  const proxy = createServer((req, res) => res.writeHead(403).end());
+  proxy.on("connect", (req, socket) => {
+    tunnels.push(req.url);
+    const upstream = connect(origin.address().port, "127.0.0.1", () => {
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      upstream.pipe(socket).pipe(upstream);
+    });
+    for (const end of [socket, upstream]) end.on("error", () => { socket.destroy(); upstream.destroy(); });
+  });
   proxy.listen(0, "127.0.0.1");
   await once(proxy, "listening");
   t.after(() => proxy.close());
@@ -89,7 +109,8 @@ test("usage read bypasses essential-traffic mode for that request only", { timeo
   const child = spawn(process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/bifrost-claude") : patched, [], {
     env: { PATH: process.env.PATH, HOME: dir, CLAUDE_CONFIG_DIR: dir, CLAUDE_BRIDGE_WORKER: "1", CLAUDE_BRIDGE_PORT: "0",
       CLAUDE_BRIDGE_TOKEN: token, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}`, NO_PROXY: "127.0.0.1,localhost" },
+      HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}`, NO_PROXY: "127.0.0.1,localhost",
+      NODE_EXTRA_CA_CERTS: join(dir, "origin.pem") },
   });
   t.after(async () => { if (child.exitCode === null) { child.kill("SIGTERM"); await once(child, "exit"); } });
   const [line] = await once(createInterface({ input: child.stdout }), "line");
@@ -110,7 +131,8 @@ test("usage read bypasses essential-traffic mode for that request only", { timeo
   // A good reading is cached, so dashboard polling does not reach upstream.
   assert.equal((await read()).status, 200);
   assert.equal(requests.length, 2);
-  assert.equal(requests[1].url, "https://api.anthropic.com/api/oauth/usage");
+  assert.ok(tunnels.length >= 1 && tunnels.every((target) => target === "api.anthropic.com:443"), tunnels.join());
+  assert.equal(requests[1].url, "/api/oauth/usage");
   assert.equal(requests[1].authorization, "Bearer synthetic-usage-access-token");
   assert.match(requests[1].beta, /oauth-2025-04-20/);
 });
