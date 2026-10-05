@@ -13,7 +13,6 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/golang-jwt/jwt/v5"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 const (
@@ -43,7 +42,7 @@ type discovery struct {
 }
 
 func newClient() *client {
-	return &client{http: &http.Client{Timeout: 20 * time.Second, Transport: providerUtils.SubscriptionTransport(), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, issuer: issuer}
+	return &client{http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, issuer: issuer}
 }
 
 func (c *client) getJSON(ctx context.Context, endpoint string, out any) error {

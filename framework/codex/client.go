@@ -14,8 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 const (
@@ -39,7 +37,7 @@ type Client struct {
 }
 
 func NewClient() *Client {
-	return &Client{http: &http.Client{Timeout: 20 * time.Second, Transport: providerUtils.SubscriptionTransport(), CheckRedirect: func(*http.Request, []*http.Request) error {
+	return &Client{http: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}, issuer: Issuer}
 }

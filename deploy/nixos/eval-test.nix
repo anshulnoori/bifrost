@@ -28,27 +28,11 @@ let
     modules = [{ services.bifrostDeployment.headroomAmpVirtualKeyID = "fixture-amp-owner"; }];
   }).config;
   semanticOnly = (evaluate false true).config;
-  proxied = ((evaluate false false).extendModules {
-    modules = [{
-      services.bifrostDeployment.egressProxy = "http://bifrost-proxy.mongoose-silverside.ts.net:3128";
-      services.bifrost.claude.enable = true;
-    }];
-  }).config;
-  proxiedWithoutClaude = ((evaluate false false).extendModules {
-    modules = [{ services.bifrostDeployment.egressProxy = "http://bifrost-proxy.mongoose-silverside.ts.net:3128"; }];
-  }).config;
   mismatched = ((evaluate true true).extendModules {
     modules = [{ services.bifrostDeployment.semanticCacheModalApp = flake.inputs.nixpkgs.lib.mkForce "other-app"; }];
   }).config;
 in
 assert private.services.bifrost.host == "127.0.0.1";
-assert !(private.systemd.services.bifrost.environment ? BIFROST_SUBSCRIPTION_PROXY);
-assert proxied.systemd.services.bifrost.environment.BIFROST_SUBSCRIPTION_PROXY == "http://bifrost-proxy.mongoose-silverside.ts.net:3128";
-assert !(proxied.services.bifrost.settings.providers.codex ? proxy_config);
-assert proxied.services.bifrost.settings.providers.codex.prompt_cache.auto_inject;
-assert proxied.systemd.services.bifrost-claude.environment.HTTPS_PROXY == "http://bifrost-proxy.mongoose-silverside.ts.net:3128";
-assert proxied.systemd.services.bifrost-claude.environment.NO_PROXY == "127.0.0.1,localhost,::1";
-assert !(proxiedWithoutClaude.systemd.services ? bifrost-claude);
 assert !private.virtualisation.podman.enable;
 assert private.virtualisation.oci-containers.containers == {};
 assert private.systemd.services.bifrost-valkey.serviceConfig.DynamicUser;

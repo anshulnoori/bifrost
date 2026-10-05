@@ -45,7 +45,6 @@ func New(config *schemas.ProviderConfig, logger schemas.Logger) (*Provider, erro
 	c.CustomProviderConfig = &schemas.CustomProviderConfig{CustomProviderKey: string(schemas.Codex), BaseProviderType: schemas.OpenAI,
 		AllowedRequests: &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true}}
 	c.SendBackRawRequest, c.SendBackRawResponse = false, false
-	c.ProxyConfig = utils.SubscriptionProxyConfig(c.ProxyConfig)
 	client := &fasthttp.Client{MaxConnsPerHost: c.NetworkConfig.MaxConnsPerHost, MaxIdleConnDuration: 30 * time.Second}
 	client = utils.ConfigureProxy(client, c.ProxyConfig, logger)
 	client = utils.ConfigureDialer(client, c.NetworkConfig.AllowPrivateNetwork)
