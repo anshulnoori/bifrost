@@ -45,11 +45,12 @@ async function fixture(t: { after: (fn: () => void) => void }, run: Run, config 
     server.close();
   });
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1/messages`;
-  return (body: unknown = request, headers: Record<string, string> = {}) =>
+  return (body: unknown = request, headers: Record<string, string> = {}, signal?: AbortSignal) =>
     fetch(url, {
       method: "POST",
       headers: { "x-claude-bridge-token": token, "x-claude-bridge-owner": "owner-a", ...headers },
       body: JSON.stringify(body),
+      signal,
     });
 }
 test("native history, system blocks and caller tools are unchanged", () => {
@@ -196,19 +197,34 @@ test("each request releases its resources and a later one still runs", async (t)
   for (let i = 0; i < 3; i++) assert.equal((await send()).status, 200);
   assert.equal(calls, 3);
 });
-test("deadline aborts inference and redacts internal failures", async (t) => {
-  let aborted = false;
-  const send = await fixture(
-    t,
-    async ({ signal }) => {
-      await once(signal, "abort");
-      aborted = true;
-      throw new Error("private diagnostics");
-    },
-    { timeoutMs: 25 },
-  );
+test("no bridge deadline: inference runs until the client disconnects", async (t) => {
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => { started = resolve; });
+  let aborted!: () => void;
+  const abortedUpstream = new Promise<void>((resolve) => { aborted = resolve; });
+  const send = await fixture(t, async ({ signal }) => {
+    started();
+    await once(signal, "abort");
+    aborted();
+    throw new Error("aborted");
+  });
+  const client = new AbortController();
+  const pending = send(request, {}, client.signal).catch(() => undefined);
+  await running;
+  // The run is never aborted by a bridge timer, only by the caller going away.
+  const early = await Promise.race([abortedUpstream.then(() => "aborted"), new Promise((r) => setTimeout(() => r("running"), 300))]);
+  assert.equal(early, "running");
+  client.abort();
+  await abortedUpstream;
+  await pending;
+});
+test("internal inference failures are redacted", async (t) => {
+  const send = await fixture(t, async () => { throw new Error("private diagnostics"); });
   const response = await send();
-  assert.equal(response.status, 504);
-  assert.equal(aborted, true);
+  assert.equal(response.status, 502);
   assert.doesNotMatch(await response.text(), /private diagnostics/);
+});
+test("createBridge has no deadline option", () => {
+  // @ts-expect-error timeoutMs was removed; a typecheck failure here means a cap came back.
+  createBridge({ token, timeoutMs: 1 }, async () => Response.json({})).close();
 });

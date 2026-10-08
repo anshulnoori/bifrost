@@ -61,7 +61,10 @@ func New(config *schemas.ProviderConfig, logger schemas.Logger) (*ClaudeProvider
 		IsKeyLess:       false,
 		AllowedRequests: &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true, ListModels: true},
 	}
-	return &ClaudeProvider{AnthropicProvider: anthropic.NewAnthropicProvider(config, logger), token: token, account: config.ClaudeAccount}, nil
+	// Subscription generations can run far longer than the request timeout. The
+	// caller's cancellation and the stream idle timeout still end abandoned work.
+	inner := anthropic.NewAnthropicProvider(config, logger).WithoutResponseDeadline()
+	return &ClaudeProvider{AnthropicProvider: inner, token: token, account: config.ClaudeAccount}, nil
 }
 
 func failure(message string) *schemas.BifrostError {

@@ -122,6 +122,19 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	}
 }
 
+// WithoutResponseDeadline removes the default_request_timeout_in_seconds read and
+// write deadlines from both clients, so a request ends only when the caller
+// cancels, the upstream finishes, or a stream goes idle for the stream idle
+// timeout. Call it before the provider serves requests: fasthttp reads these
+// fields when it creates a host client.
+func (provider *AnthropicProvider) WithoutResponseDeadline() *AnthropicProvider {
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.ReadTimeout = 0
+		client.WriteTimeout = 0
+	}
+	return provider
+}
+
 // GetProviderKey returns the provider identifier for Anthropic.
 func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Anthropic, provider.customProviderConfig)

@@ -47,8 +47,7 @@ is provided. API-key Anthropic remains a separate existing provider.
       "keys": [],
       "network_config": {
         "base_url": "http://127.0.0.1:8091",
-        "max_retries": 0,
-        "default_request_timeout_in_seconds": 300
+        "max_retries": 0
       }
     }
   }
@@ -80,8 +79,8 @@ an account or provider also disconnects its accounts before removing configurati
 Each configured account gets a separate native worker and private directory at
 `$CLAUDE_CONFIG_DIR/accounts/<account-ID>`. Process isolation prevents native
 credential caches from mixing accounts. Workers do not inherit deployment
-Anthropic API keys or Claude OAuth tokens. There is a limit of 32 resident workers
-and no idle eviction; restart the bridge to release idle workers.
+Anthropic API keys or Claude OAuth tokens. There is no local worker limit and no
+idle eviction; restart the bridge to release idle workers.
 
 ## Subscription usage
 
@@ -122,8 +121,14 @@ at the directory root do not automatically connect a configured account.
 The gateway also needs the shared bridge token in its environment file.
 Do not configure `ANTHROPIC_API_KEY` for subscription use.
 
-The bridge binds loopback, accepts up to 32 MiB (Anthropic's Messages API limit), and applies a five-minute
-deadline. It aborts inference on client disconnect. It has no local concurrency
+The bridge binds loopback and accepts up to 32 MiB (Anthropic's Messages API limit).
+No hop imposes a total request deadline: the gateway ignores
+`default_request_timeout_in_seconds` for Claude, the bridge has no timer, and
+workers start with `API_TIMEOUT_MS=2147483647` and `API_FORCE_IDLE_TIMEOUT=0`,
+which lift the native client's 10-minute deadline and Bun's fetch timeout.
+A request ends when Anthropic finishes or the caller disconnects; disconnect
+aborts inference. The gateway's stream idle timeout (120 seconds by default)
+still ends a stream that sends no bytes. It has no local concurrency
 cap or queue: simultaneous requests all run at once. Anthropic enforces each
 subscription's real limits, and its errors reach the caller unchanged.
 There are no bridge retries or stored conversations. The old
