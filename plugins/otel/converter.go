@@ -118,6 +118,11 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		traceID = sessionTraceID(sessionID)
 	}
 
+	// A virtual key that turned content logging off marks the root span; it tightens this profile's
+	// own flag for this trace only and, like the flag, covers content attributes and raw payloads.
+	// The mark is never written as false, so it cannot loosen a profile that disables content.
+	traceDisableContent := disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
+
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		if !p.pluginSpanFilter.ShouldExportSpanWithOverhead(span, p.exportOverheadSpans) {
@@ -125,7 +130,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		}
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
 		// input/output onto it for trace-level display); child spans keep their full content.
-		spanDisableContent := disableContentLogging || (disableRootSpanContent && span == trace.RootSpan)
+		spanDisableContent := traceDisableContent || (disableRootSpanContent && span == trace.RootSpan)
 		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent, exportRawPayloads)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
@@ -183,13 +188,14 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
 	}
 
-	// Raw lives on span.LLM, never in Attributes, so non-opted connectors cannot see it.
-	if exportRawPayloads && !disableContentLogging && span.LLM != nil {
-		if span.LLM.RawRequest != "" {
-			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, span.LLM.RawRequest))
+	// Raw bodies never live in Attributes, so export always requires an opt-in.
+	if exportRawPayloads && !disableContentLogging {
+		request, response := span.RawPayloads()
+		if request != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, request))
 		}
-		if span.LLM.RawResponse != "" {
-			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, span.LLM.RawResponse))
+		if response != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, response))
 		}
 	}
 
@@ -364,6 +370,10 @@ func convertSpanKind(kind schemas.SpanKind) tracepb.Span_SpanKind {
 	case schemas.SpanKindMCPTool:
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindMCPClient:
+		return tracepb.Span_SPAN_KIND_CLIENT
+	case schemas.SpanKindA2AOperation:
+		return tracepb.Span_SPAN_KIND_CLIENT
+	case schemas.SpanKindRelay:
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindEmbedding:
 		return tracepb.Span_SPAN_KIND_CLIENT

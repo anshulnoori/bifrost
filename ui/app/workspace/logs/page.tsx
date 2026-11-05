@@ -27,6 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
+import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -92,12 +93,15 @@ export default function LogsPage() {
 			user_agents: parseAsSafeArrayOf.withDefault([]),
 			complexity_tiers: parseAsSafeArrayOf.withDefault([]),
 			complexity_mechanisms: parseAsSafeArrayOf.withDefault([]),
+			agent_names: parseAsSafeArrayOf.withDefault([]),
 			session_id: parseAsSafeString.withDefault(""),
+			agent_correlation_id: parseAsSafeString.withDefault(""),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
 			project_ids: parseAsSafeArrayOf.withDefault([]),
+			topic_ids: parseAsSafeArrayOf.withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
 			request_id: parseAsSafeString.withDefault(""),
 			// No default: these are genuinely unset most of the time, and 0 is a
@@ -156,12 +160,15 @@ export default function LogsPage() {
 			user_agents: urlState.user_agents,
 			complexity_tiers: urlState.complexity_tiers,
 			complexity_mechanisms: urlState.complexity_mechanisms,
+			agent_names: urlState.agent_names,
 			session_id: urlState.session_id,
+			agent_correlation_id: urlState.agent_correlation_id,
 			user_ids: urlState.user_ids,
 			team_ids: urlState.team_ids,
 			customer_ids: urlState.customer_ids,
 			business_unit_ids: urlState.business_unit_ids,
 			project_ids: urlState.project_ids,
+			topic_ids: urlState.topic_ids,
 			content_search: urlState.content_search,
 			request_id: urlState.request_id,
 			min_latency: urlState.min_latency ?? undefined,
@@ -206,12 +213,15 @@ export default function LogsPage() {
 			urlState.user_agents,
 			urlState.complexity_tiers,
 			urlState.complexity_mechanisms,
+			urlState.agent_names,
 			urlState.session_id,
+			urlState.agent_correlation_id,
 			urlState.user_ids,
 			urlState.team_ids,
 			urlState.customer_ids,
 			urlState.business_unit_ids,
 			urlState.project_ids,
+			urlState.topic_ids,
 			urlState.content_search,
 			urlState.request_id,
 			urlState.parent_request_id,
@@ -277,12 +287,15 @@ export default function LogsPage() {
 				user_agents: newFilters.user_agents || [],
 				complexity_tiers: newFilters.complexity_tiers || [],
 				complexity_mechanisms: newFilters.complexity_mechanisms || [],
+				agent_names: newFilters.agent_names || [],
 				session_id: newFilters.session_id || "",
+				agent_correlation_id: newFilters.agent_correlation_id || "",
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
 				project_ids: newFilters.project_ids || [],
+				topic_ids: newFilters.topic_ids || [],
 				content_search: newFilters.content_search || "",
 				request_id: newFilters.request_id || "",
 				min_latency: newFilters.min_latency ?? null,
@@ -642,12 +655,14 @@ export default function LogsPage() {
 
 	const handlePollToggle = useCallback(
 		(enabled: boolean) => {
-			setUrlState({ polling: enabled });
-			if (enabled) {
+			const next = getLiveToggleState(enabled, urlState.period);
+			setUrlState(next);
+			// A period change alters the query args, which fetches on its own.
+			if (enabled && !next.period) {
 				refreshAll();
 			}
 		},
-		[setUrlState, refreshAll],
+		[setUrlState, refreshAll, urlState.period],
 	);
 
 	// Period selection: store relative period + fresh timestamps in URL (bypasses setFilters
@@ -761,21 +776,43 @@ export default function LogsPage() {
 	const displayLogs: DisplayLogEntry[] = useMemo(() => {
 		if (!grouped || (expandedChainIds.size === 0 && expandedSessionIds.size === 0)) return logs;
 		const out: DisplayLogEntry[] = [];
-		const pushChain = (log: LogEntry, depth: 1 | 2) => {
-			for (const child of chainChildren[log.id] ?? []) {
-				out.push({ ...child, __chainChild: true, __rowKind: "chain-child", __depth: depth });
-			}
+		// __isLast marks the final sibling at its depth so the expander column can
+		// close the tree branch (└ rather than ├).
+		// __parentIsLast tells a row under a session member whether the session's
+		// outer branch has already closed above it.
+		const pushChain = (log: LogEntry, depth: 1 | 2, closesBranch: boolean, parentIsLast?: boolean) => {
+			const children = chainChildren[log.id] ?? [];
+			children.forEach((child, index) => {
+				out.push({
+					...child,
+					__chainChild: true,
+					__rowKind: "chain-child",
+					__depth: depth,
+					__isLast: closesBranch && index === children.length - 1,
+					__parentIsLast: parentIsLast,
+				});
+			});
 		};
 		for (const log of logs) {
 			out.push(log);
 			if (expandedSessionIds.has(log.id)) {
-				pushChain(log, 1);
-				for (const member of sessionMembers[log.id] ?? []) {
-					out.push({ ...member, __chainChild: true, __rowKind: "session-member", __depth: 1 });
-					if (expandedChainIds.has(member.id)) pushChain(member, 2);
-				}
+				const members = sessionMembers[log.id] ?? [];
+				pushChain(log, 1, members.length === 0);
+				// Members arrive oldest first and the root is the session's earliest
+				// request, so the root is turn 1 and members count on from 2.
+				members.forEach((member, index) => {
+					out.push({
+						...member,
+						__chainChild: true,
+						__rowKind: "session-member",
+						__depth: 1,
+						__turn: index + 2,
+						__isLast: index === members.length - 1,
+					});
+					if (expandedChainIds.has(member.id)) pushChain(member, 2, true, index === members.length - 1);
+				});
 			} else if (expandedChainIds.has(log.id)) {
-				pushChain(log, 1);
+				pushChain(log, 1, true);
 			}
 		}
 		return out;
@@ -913,7 +950,7 @@ export default function LogsPage() {
 
 					{/* Main Content */}
 					<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 rounded-md border p-4 pb-2 lg:overflow-hidden">
-						<div className="shrink-0">
+						<div className="@container/logs-header shrink-0">
 							<LogsHeaderView
 								filters={filters}
 								onFiltersChange={setFilters}
@@ -938,6 +975,9 @@ export default function LogsPage() {
 								columnLabels={COLUMN_LABELS}
 								onToggleColumnVisibility={toggleColumnVisibility}
 								onResetColumns={resetColumns}
+								currentPageLogs={logs}
+								sortBy={urlState.sort_by}
+								order={urlState.order}
 							/>
 						</div>
 						{/* The four queries resolve independently, so `data` can hold the
@@ -1032,6 +1072,7 @@ export default function LogsPage() {
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 						onFilterByParentRequestId={handleFilterByParentRequestId}
 						onFilterBySessionId={handleFilterBySessionId}
+						onOpenLog={(logId) => setUrlState({ selected_log: logId })}
 						onViewSession={(sessionId, logId) => {
 							setUrlState({ selected_log: "" }, { history: "replace" });
 							setSessionHighlightedLogId(logId);

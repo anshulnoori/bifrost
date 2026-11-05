@@ -57,8 +57,8 @@ function ProviderKeyActionsMenu({
 	return (
 		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
 			<DropdownMenuTrigger asChild>
-				<Button onClick={(e) => e.stopPropagation()} variant="ghost">
-					<EllipsisIcon className="h-5 w-5" />
+				<Button onClick={(e) => e.stopPropagation()} variant="ghost" aria-label="Key actions" data-testid="key-actions-trigger">
+					<EllipsisIcon className="h-5 w-5" aria-hidden="true" />
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
@@ -241,7 +241,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								<TooltipTrigger asChild>
 									<Button
 										variant="outline"
-										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+										className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
 										disabled={isRefreshing || (providerName === "claude" && isRefreshingStatus)}
 										data-testid="provider-refresh-models"
 										aria-label={
@@ -261,7 +261,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												(isRefreshingProvider || (providerName === "claude" && isRefreshingStatus)) && "animate-spin",
 											)}
 										/>
-										<span className="hidden xl:inline">
+										<span className="hidden @3xl/card-header:inline">
 											{providerName === "claude"
 												? isRefreshingStatus
 													? "Refreshing..."
@@ -286,16 +286,16 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										disabled={!hasUpdateProviderAccess}
 										data-testid="add-key-btn"
 										aria-label={`Add ${EntityLabel}`}
-										className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+										className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
 										onClick={() => {
 											handleAddKey();
 										}}
 									>
 										<PlusIcon className="h-4 w-4" />
-										<span className="hidden xl:inline">Add {EntityLabel}</span>
+										<span className="hidden @3xl/card-header:inline">Add {EntityLabel}</span>
 									</Button>
 								</TooltipTrigger>
-								<TooltipContent className="xl:hidden">Add {EntityLabel}</TooltipContent>
+								<TooltipContent>Add {EntityLabel}</TooltipContent>
 							</Tooltip>
 						) : null}
 					</div>
@@ -308,7 +308,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				</div>
 			) : (
 				<div className="flex w-full flex-col gap-2 rounded-sm border">
-					<Table className="w-full table-fixed" data-testid="keys-table">
+					<Table className="w-full min-w-[560px] table-fixed" data-testid="keys-table">
 						<colgroup>
 							<col className="w-[64%]" />
 							<col className="w-[12%]" />
@@ -394,6 +394,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															(key.vertex_key_config?.region?.type && key.vertex_key_config.region.type !== "plain_text") ||
 															(key.bedrock_key_config?.region?.type && key.bedrock_key_config.region.type !== "plain_text") ||
 															(key.bedrock_mantle_key_config?.region?.type && key.bedrock_mantle_key_config.region.type !== "plain_text") ||
+															(key.sagemaker_key_config?.region?.type && key.sagemaker_key_config.region.type !== "plain_text") ||
 															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
 															(key.value?.type && key.value.type !== "plain_text");
 														const isEnvResolutionError =
@@ -443,6 +444,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										</TableCell>
 										<TableCell>
 											<Switch
+												aria-label={`Enable key ${key.name}`}
 												data-testid="key-enabled-switch"
 												checked={isKeyEnabled}
 												size="md"

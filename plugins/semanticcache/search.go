@@ -77,14 +77,7 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, state *
 		plugin.logger.Warn("Failed to store semantic cache metadata on request context")
 	}
 
-	cacheThreshold := plugin.config.Threshold
-	if v := ctx.Value(CacheThresholdKey); v != nil {
-		if threshold, ok := v.(float64); ok {
-			cacheThreshold = threshold
-		} else {
-			plugin.logger.Warn("Threshold is not a float64, using default threshold")
-		}
-	}
+	cacheThreshold := plugin.resolveCacheThreshold(ctx)
 
 	provider, model, _ := req.GetRequestFields()
 	strictFilters := []vectorstore.Query{
@@ -157,8 +150,8 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: plugin.config.Provider,
 		Model:    plugin.config.EmbeddingModel,
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
 		},
 	}
 
@@ -194,7 +187,12 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 	switch {
 	case embedding.EmbeddingStr != nil:
 		var vals []float32
-		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err != nil {
+		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err == nil {
+			return vals, inputTokens, nil
+		}
+		// encoding_format=base64 packs little-endian float32s rather than a JSON array.
+		vals, err := decodeBase64Embedding(*embedding.EmbeddingStr)
+		if err != nil {
 			return nil, 0, fmt.Errorf("failed to parse string embedding: %w", err)
 		}
 		return vals, inputTokens, nil
@@ -355,6 +353,7 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 	}
 
 	plugin.stampCacheMetadataForHit(state, cachedResponse.GetExtraFields(), result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
+	plugin.recordCacheLookupHit(ctx, state, result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	state.ShortCircuited = true
 	return &schemas.LLMPluginShortCircuit{Response: &cachedResponse}, nil
 }
@@ -365,6 +364,7 @@ func (plugin *Plugin) buildNonStreamingResponseFromResult(ctx *schemas.BifrostCo
 // process.
 func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, state *cacheState, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamArray []string, cacheType CacheType, threshold *float64, similarity *float64, inputTokens *int) (*schemas.LLMPluginShortCircuit, error) {
 	requestedProvider, requestedModel, _ := req.GetRequestFields()
+	plugin.recordCacheLookupHit(ctx, state, result.ID, requestedProvider, requestedModel, cacheType, threshold, similarity, inputTokens)
 	streamChan := make(chan *schemas.BifrostStreamChunk)
 	done := ctx.Done()
 

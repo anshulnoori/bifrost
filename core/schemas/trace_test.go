@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/base64"
+	"maps"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,40 @@ func TestTraceGetSpanNilSafe(t *testing.T) {
 	}
 	if span := trace.GetSpan("target"); span == nil || span.SpanID != "target" {
 		t.Fatalf("target span = %v, want target", span)
+	}
+}
+
+// ContentLoggingDisabledForTrace is the one place connectors learn that a virtual key turned
+// content off, so it has to read exactly the root-span bool and nothing else: no trace, no root
+// span, an absent attribute or a non-bool value all mean "not disabled".
+func TestContentLoggingDisabledForTrace(t *testing.T) {
+	if ContentLoggingDisabledForTrace(nil) {
+		t.Fatal("nil trace must not read as disabled")
+	}
+	if ContentLoggingDisabledForTrace(&Trace{}) {
+		t.Fatal("trace without a root span must not read as disabled")
+	}
+	root := &Span{SpanID: "root"}
+	trace := &Trace{RootSpan: root, Spans: []*Span{root}}
+	if ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("absent attribute must not read as disabled")
+	}
+	root.Attributes = map[string]any{AttrBifrostContentLoggingDisabled: "true"}
+	if ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("a non-bool value must not read as disabled")
+	}
+	root.Attributes[AttrBifrostContentLoggingDisabled] = false
+	if ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("false must not read as disabled")
+	}
+	root.Attributes[AttrBifrostContentLoggingDisabled] = true
+	if !ContentLoggingDisabledForTrace(trace) {
+		t.Fatal("true on the root span must read as disabled")
+	}
+	// The attribute lives on the root span only; a child span carrying it says nothing.
+	child := &Span{SpanID: "child", Attributes: map[string]any{AttrBifrostContentLoggingDisabled: true}}
+	if ContentLoggingDisabledForTrace(&Trace{RootSpan: &Span{SpanID: "root"}, Spans: []*Span{child}}) {
+		t.Fatal("a child span attribute must not read as disabled")
 	}
 }
 
@@ -226,5 +261,44 @@ func TestTraceDimensionsAccessor(t *testing.T) {
 	// Wrong type must not panic.
 	if got := TraceDimensions(map[string]any{TraceAttrDimensions: "nope"}); got != nil {
 		t.Errorf("TraceDimensions(string) = %v, want nil", got)
+	}
+}
+
+// MergeDimensions adds names and overwrites existing ones in a new map, leaving the map an
+// exporter may already hold unchanged.
+func TestTraceMergeDimensions(t *testing.T) {
+	headers := map[string]string{"team": "header", "region": "eu"}
+	trace := &Trace{Attributes: map[string]any{TraceAttrDimensions: headers}}
+	trace.MergeDimensions(map[string]string{"team": "vk", "cost_center": "cc-42"})
+
+	got := TraceDimensions(trace.Attributes)
+	want := map[string]string{"team": "vk", "region": "eu", "cost_center": "cc-42"}
+	if !maps.Equal(got, want) {
+		t.Errorf("dimensions = %v, want %v", got, want)
+	}
+	if headers["team"] != "header" || len(headers) != 2 {
+		t.Errorf("the previous map was changed in place: %v", headers)
+	}
+
+	empty := &Trace{}
+	empty.MergeDimensions(map[string]string{"team": "vk"})
+	if got := TraceDimensions(empty.Attributes); got["team"] != "vk" {
+		t.Errorf("trace without dimensions = %v, want team=vk", got)
+	}
+	var none *Trace
+	none.MergeDimensions(map[string]string{"team": "vk"})
+}
+
+func TestTraceTraceStateAccessor(t *testing.T) {
+	if got := TraceTraceState(nil); got != "" {
+		t.Errorf("TraceTraceState(nil) = %q, want empty", got)
+	}
+	const ts = "dd=s:2;t.llmobs_ml_app:checkout-agent"
+	if got := TraceTraceState(map[string]any{TraceAttrTraceState: ts}); got != ts {
+		t.Errorf("TraceTraceState() = %q, want %q", got, ts)
+	}
+	// A trace decoded from JSON could carry another type; it must not panic or guess.
+	if got := TraceTraceState(map[string]any{TraceAttrTraceState: 42}); got != "" {
+		t.Errorf("TraceTraceState() with a non-string = %q, want empty", got)
 	}
 }

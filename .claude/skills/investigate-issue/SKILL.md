@@ -753,6 +753,18 @@ This does not apply to Feature or Docs issues -- AGENTS.md scopes "red before gr
 fixes. For those, tests are added per the Test Plan after the implementation, and Step 5f is
 skipped.
 
+### 7a-branch. Branch Name
+
+Before the first commit, check `git branch --show-current`. Branch names are
+`fix/<area>-<noun>` for Bug issues and `feat/<area>-<noun>` for Feature issues (e.g.
+`fix/list-models-aggregate-pagination`): lowercase, hyphenated, describing the change.
+Never put a username or handle in the name (`akshaydeo/...`), and never an issue number
+or the issue title verbatim. Workspace tooling often creates the branch as
+`<user>/<issue-title-slug>`; if so, and no PR exists yet
+(`gh pr list --head "$(git branch --show-current)" --state open` is empty), rename it with
+`gt rename <type>/<area>-<noun>` (or `git branch -m` when the branch is not gt-tracked).
+If a PR already exists, keep the name: renaming strands it.
+
 ### 7b. Create a Todo List
 
 Create a todo item for each change in the plan. For Bug issues the regression test already
@@ -876,10 +888,12 @@ Once all approved changes are applied:
    make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
-   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
    # cross-cutting change: the curated smoke set instead
-   make run-provider-harness-test SMOKE=1
+   make run-provider-harness-test SMOKE=1 BASE_URL=http://localhost:<port>
    ```
+   `<keyword>` is descriptive text that appears in the case or folder names (for example
+   `"sdk fidelity"`), never an issue or PR number; verify it with `filter-collection.mjs` first.
    Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
    which scope ran. See AGENTS.md "Every wire-visible change ships with a provider-harness
    case" and "Every non-exempt wire-visible fix ends with unit tests, then a harness command

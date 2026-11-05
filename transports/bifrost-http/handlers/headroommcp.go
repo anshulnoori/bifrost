@@ -12,7 +12,7 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 const headroomRetrieveTool = "headroom_retrieve"
@@ -76,6 +76,12 @@ func (m *headroomToolManager) GetAvailableMCPTools(context.Context) []schemas.Ch
 		},
 		Annotations: &schemas.MCPToolAnnotations{ReadOnlyHint: &readOnly, DestructiveHint: &destructive, IdempotentHint: &idempotent, OpenWorldHint: &openWorld},
 	}}
+}
+
+// GetMCPServerInstructions reports no instructions: the dedicated retrieval endpoint fronts no
+// upstream MCP server, and its one tool is described by its own schema.
+func (m *headroomToolManager) GetMCPServerInstructions(context.Context) string {
+	return ""
 }
 
 func (m *headroomToolManager) ExecuteChatMCPTool(ctx context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {

@@ -137,8 +137,10 @@ func dashboardCallback(state, browser string) *fasthttp.RequestCtx {
 func TestDashboardOIDCSessionLifecycle(t *testing.T) {
 	f := newDashboardIdPFixture(t)
 	state, browser := f.start(t)
+	// CreateSession encrypts the struct's Token in place, so keep the plaintext token.
+	const previousToken = "previous-authenticated-session"
 	previous := &tables.SessionsTable{
-		Token:       "previous-authenticated-session",
+		Token:       previousToken,
 		ExpiresAt:   time.Now().Add(time.Hour),
 		OIDCIssuer:  f.h.oidc.issuer,
 		OIDCSubject: "12345",
@@ -147,7 +149,8 @@ func TestDashboardOIDCSessionLifecycle(t *testing.T) {
 	f.claims["exp"] = time.Now().Add(5 * time.Minute).Unix()
 	expectedExpiry := time.Now().Add(12 * time.Hour)
 	ctx := dashboardCallback(state, browser)
-	ctx.Request.Header.SetCookie("token", previous.Token)
+	ctx.Request.Header.SetCookie("token", previousToken)
+	require.True(t, validateSession(bgCtx(), f.h.configStore, previousToken))
 	f.h.oidcCallback(ctx)
 	require.Equal(t, "/workspace", string(ctx.Response.Header.Peek("Location")))
 	cookie := &fasthttp.Cookie{}
@@ -157,7 +160,7 @@ func TestDashboardOIDCSessionLifecycle(t *testing.T) {
 	require.True(t, cookie.HTTPOnly())
 	value := string(cookie.Value())
 	require.True(t, validateSession(bgCtx(), f.h.configStore, value))
-	require.False(t, validateSession(bgCtx(), f.h.configStore, previous.Token), "OIDC login must rotate an existing browser session")
+	require.False(t, validateSession(bgCtx(), f.h.configStore, previousToken), "OIDC login must rotate an existing browser session")
 	// Exercise the real admission middleware: verified session, not an identity
 	// header or upstream token, is what confers local-administrator permission.
 	am, err := InitAuthMiddleware(f.h.configStore, nil, nil, "")

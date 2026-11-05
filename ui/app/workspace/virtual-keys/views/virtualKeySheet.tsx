@@ -1,3 +1,5 @@
+import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
+import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { MCPClientConfigsEditor } from "@/components/mcp/mcpClientConfigsEditor";
@@ -25,6 +27,7 @@ import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { ProviderConfigsEditor } from "@/components/ui/providerConfigsEditor";
+import { HeadersTable } from "@/components/ui/headersTable";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -36,12 +39,14 @@ import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getBusinessUnitPicker } from "@/lib/registries/businessUnitPicker";
 import { getUserPicker } from "@/lib/registries/userPicker";
+import { validateVirtualKeyMetadata, virtualKeyMetadataUpdate } from "@/lib/utils/virtualKeyMetadata";
 import {
 	getErrorMessage,
 	useAttachVirtualMCPVirtualKeyMutation,
 	useCreateVirtualKeyMutation,
 	useDetachVirtualMCPVirtualKeyMutation,
 	useGetAllKeysQuery,
+	useGetCoreConfigQuery,
 	useGetProvidersQuery,
 	useGetTeamQuery,
 	useGetVirtualKeyQuery,
@@ -50,8 +55,16 @@ import {
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
+import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
+import { RelayGrantsEditor } from "@/components/relays/relayGrantsEditor";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
-import { diffVmcpAssignments, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
+import {
+	createDeleteAfterExpire,
+	diffVmcpAssignments,
+	resolveOwnerProfileState,
+	updateDeleteAfterExpire,
+	vmcpAssignmentsDirty,
+} from "./virtualKeySheet.utils";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import {
 	type BudgetComparisonEntry,
@@ -163,6 +176,9 @@ const formSchema = z
 		// When true, all providers are allowed; providerConfigs remain optional per-provider overrides.
 		allowAllProviders: z.boolean(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
+		agentGrants: z.array(z.string()).optional(),
+		// Relay access: the relays named, like agent grants.
+		relayGrants: z.array(z.string()).optional(),
 		entityType: z.enum(["team", "customer", "business_unit", "user", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
@@ -172,6 +188,14 @@ const formSchema = z
 		userId: z.string().optional(),
 		isActive: z.boolean(),
 		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
+		// Content logging for this key's traffic: inherit the client setting, force it off, or force it on.
+		contentLogging: z.enum(["inherit", "disabled", "enabled"]),
+		// Custom key/value attribution, validated against the same rules the server applies.
+		metadata: z.record(z.string(), z.string()).superRefine((metadata, ctx) => {
+			const error = validateVirtualKeyMetadata(metadata);
+			if (error) ctx.addIssue({ code: "custom", message: error });
+		}),
+		deleteAfterExpire: z.boolean(), // Only meaningful with an expiry; the daily cleanup job deletes the key once expired
 		// Budget
 		budgetCalendarAligned: z.boolean(),
 		budgets: z
@@ -249,9 +273,14 @@ const EXPIRY_PRESETS = [
 interface ExpiryFieldProps {
 	value: string | null | undefined;
 	onChange: (v: string | null) => void;
+	deleteAfterExpire: boolean;
+	onDeleteAfterExpireChange: (v: boolean) => void;
+	// The client-wide delete_expired_virtual_keys setting; the switch starts there and a
+	// matching value is sent as inherit.
+	deleteExpiredByDefault: boolean;
 }
 
-function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
+function ExpiryPickerField({ value, onChange, deleteAfterExpire, onDeleteAfterExpireChange, deleteExpiredByDefault }: ExpiryFieldProps) {
 	// Preset timestamps are computed from Date.now() at click time, so the picked
 	// preset can't be derived back from the value; track it for highlighting.
 	const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
@@ -267,9 +296,11 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 					type="button"
 					variant={!value ? "default" : "outline"}
 					size="sm"
+					data-testid="vk-expiry-never"
 					onClick={() => {
 						setSelectedPreset(null);
 						onChange(null);
+						onDeleteAfterExpireChange(deleteExpiredByDefault);
 					}}
 				>
 					Never
@@ -280,6 +311,7 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 						type="button"
 						variant={value && selectedPreset === label ? "default" : "outline"}
 						size="sm"
+						data-testid={`vk-expiry-preset-${label.replace(/\s+/g, "-")}`}
 						onClick={() => {
 							setSelectedPreset(label);
 							onChange(presetFromNow(ms));
@@ -299,10 +331,52 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 					}}
 				/>
 			</div>
+			{value && (
+				<div className="flex items-center justify-between gap-4 pt-1">
+					<div className="grid gap-0.5 leading-none">
+						<Label htmlFor="vk-delete-after-expire" className="text-sm font-normal">
+							Delete after expire
+						</Label>
+						<p className="text-muted-foreground text-xs">
+							The key is removed automatically within about a day of expiring.{" "}
+							{deleteAfterExpire === deleteExpiredByDefault
+								? `Follows the workspace default (${deleteExpiredByDefault ? "on" : "off"}), set under Settings → Security.`
+								: "Overrides the workspace default for this key."}
+						</p>
+					</div>
+					<Switch
+						id="vk-delete-after-expire"
+						checked={deleteAfterExpire}
+						onCheckedChange={onDeleteAfterExpireChange}
+						data-testid="vk-delete-after-expire"
+					/>
+				</div>
+			)}
 			<FormMessage />
 		</FormItem>
 	);
 }
+
+type ContentLoggingChoice = "inherit" | "disabled" | "enabled";
+
+// The wire field is tri-state (absent, true, false); the form shows it as three named choices.
+function contentLoggingChoice(disableContentLogging: boolean | null | undefined): ContentLoggingChoice {
+	if (disableContentLogging === true) return "disabled";
+	if (disableContentLogging === false) return "enabled";
+	return "inherit";
+}
+
+function contentLoggingValue(choice: ContentLoggingChoice): boolean | null {
+	if (choice === "disabled") return true;
+	if (choice === "enabled") return false;
+	return null;
+}
+
+const contentLoggingOptions: { value: ContentLoggingChoice; label: string }[] = [
+	{ value: "inherit", label: "Inherit gateway setting" },
+	{ value: "disabled", label: "Off for this key" },
+	{ value: "enabled", label: "On for this key" },
+];
 
 // A key owned by a profile-holding team, customer or business unit is governed by that profile: the
 // server discards the key's own providers, budgets, rate limits and MCP access. The editors for
@@ -311,6 +385,8 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 	const {
 		provider_configs: _providerConfigs,
 		mcp_configs: _mcpConfigs,
+		agent_grants: _agentGrants,
+		relay_grants: _relayGrants,
 		budgets: _budgets,
 		rate_limit: _rateLimit,
 		calendar_aligned: _calendarAligned,
@@ -327,15 +403,28 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
+	// The delete-after-expire switch starts at the client-wide default; a key stores a value only
+	// when it differs, so flipping the default later still reaches keys that never overrode it.
+	// clientDeleteDefault stays undefined until the config loads; the payload helpers then send the
+	// shown value explicitly.
+	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const clientDeleteDefault = coreConfig?.client_config?.delete_expired_virtual_keys;
+	const deleteExpiredByDefault = clientDeleteDefault ?? false;
 
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const hasCreateStandalone = useRbac(RbacResource.VirtualKeys, RbacOperation.CreateStandalone);
+	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const hasKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	// An owner's access profile is read through that owner's own route, so each kind needs its View.
+	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
+	const hasBusinessUnitsAccess = useRbac(RbacResource.BusinessUnits, RbacOperation.View);
 	const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
 
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
-	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
+	const { assignedUsers, isUserProfileManaged, isOwnerGoverned, managingProfile } = useVirtualKeyUsage(virtualKey);
 	// On create, the VK is governed when the role lacks CreateStandalone (the freedom to create
 	// ungoverned keys) *and* vkCreationPolicy resolves a profile to govern with — with no profile
 	// the server creates the key ungoverned. If governed, lock the governance fields up front:
@@ -356,7 +445,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// create: the server governs the key correctly whatever this form shows, so all that is at
 	// stake is whether these fields survive. It says so and offers a retry.
 	const isVkCreationPolicyUnresolved = !isEditing && !hasCreateStandalone && isVkCreationPolicyError;
-	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
+	// The full lock is for a user's managed key. A key its owner's access profile governs is the
+	// owner's key: it is edited, reassigned and unassigned here like any other, and only its
+	// governance fields follow the owner's profile (isGovernedByOwnerProfile below).
+	const isManagedByProfile = (isEditing && isUserProfileManaged) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
 	// Business unit ownership is enterprise-only for the same reason: the option shows only when a
@@ -374,7 +466,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// The banner names the owner. A caller that did not pass a name falls back to the team lookup
 	// (the one owner kind with a plain by-id read here), and then to the id itself.
 	const { data: attachedTeamData } = useGetTeamQuery(attachedTeamId, {
-		skip: !isOwnerLocked || !attachedTeamId || !!lockedOwner?.name,
+		skip: !isOwnerLocked || !attachedTeamId || !!lockedOwner?.name || !hasTeamsAccess,
 	});
 	const lockedOwnerName = lockedOwner?.name || attachedTeamData?.team?.name || lockedOwner?.id || "";
 
@@ -385,9 +477,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		}, 150); // Slightly longer than the 100ms animation duration
 	};
 
-	// RTK Query hooks
-	const { error: providersError } = useGetProvidersQuery();
-	const { error: keysError } = useGetAllKeysQuery();
+	// RTK Query hooks. Skipped without the permission, which also keeps their error toasts quiet.
+	const { error: providersError } = useGetProvidersQuery(undefined, { skip: !hasProvidersAccess });
+	const { error: keysError } = useGetAllKeysQuery(undefined, { skip: !hasKeysAccess });
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
 	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
@@ -517,6 +609,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					})),
 				})) || [],
 			allowAllProviders: virtualKey?.allow_all_providers ?? false,
+			agentGrants: virtualKey?.agent_grants?.map((grant) => grant.agent_name) || [],
+			relayGrants: virtualKey?.relay_grants?.map((grant) => grant.relay_name) || [],
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -536,6 +630,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			// The attached user arrives from a separate request; synced in below once it loads.
 			userId: "",
 			isActive: virtualKey?.is_active ?? true,
+			contentLogging: contentLoggingChoice(virtualKey?.disable_content_logging),
+			metadata: virtualKey?.metadata ?? {},
+			deleteAfterExpire: virtualKey?.delete_after_expire ?? deleteExpiredByDefault,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
 						const d = new Date(virtualKey.expires_at);
@@ -612,6 +709,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		form.setValue("userId", assignedUserId);
 	}, [assignedUserId, isEditing, form]);
 
+	// The client config can arrive after the form was seeded; follow it while the user hasn't
+	// touched the switch and the key has no override of its own.
+	useEffect(() => {
+		if (form.formState.dirtyFields.deleteAfterExpire) return;
+		if (virtualKey?.delete_after_expire != null) return;
+		form.setValue("deleteAfterExpire", deleteExpiredByDefault);
+	}, [deleteExpiredByDefault, virtualKey?.delete_after_expire, form]);
+
 	// Get current provider configs from form
 	const providerConfigs = form.watch("providerConfigs") || [];
 
@@ -625,7 +730,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// the entity owns: the server strips the key's own providers, budgets, rate limits and MCP
 	// access on create or move. Resolve the profile of whichever owner is selected (including the
 	// locked defaultTeamId) so the sheet can lock those fields before Save. A 404 (no profile) or
-	// any other error leaves data undefined, which reads as "not governed".
+	// any other error leaves data undefined, which reads as "not governed". The lookup needs View on
+	// the owner's kind and is skipped without it (see resolveOwnerProfileState).
 	const watchedEntityType = form.watch("entityType");
 	const watchedTeamId = form.watch("teamId");
 	const watchedCustomerId = form.watch("customerId");
@@ -638,23 +744,35 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				: watchedEntityType === "business_unit" && watchedBusinessUnitId
 					? { entityType: "business_unit" as const, entityId: watchedBusinessUnitId, label: "business unit" }
 					: undefined;
+	const canReadOwnerProfile = owner
+		? { team: hasTeamsAccess, customer: hasCustomersAccess, business_unit: hasBusinessUnitsAccess }[owner.entityType]
+		: false;
 	const {
 		data: ownerProfileData,
 		isError: isOwnerProfileError,
 		isFetching: isOwnerProfileFetching,
 		error: ownerProfileError,
 		refetch: refetchOwnerProfile,
-	} = useGetEntityAccessProfileQuery({ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" }, { skip: !owner });
+	} = useGetEntityAccessProfileQuery(
+		{ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" },
+		{ skip: !owner || !canReadOwnerProfile },
+	);
 	// While a newly selected owner's lookup is in flight, data still holds the previous owner's
 	// response; matching the entity keeps that stale profile from locking the form.
 	const ownerProfile =
 		owner &&
+		canReadOwnerProfile &&
 		!isOwnerProfileError &&
 		ownerProfileData?.access_profile?.entity_type === owner.entityType &&
 		ownerProfileData.access_profile?.entity_id === owner.entityId
 			? ownerProfileData.access_profile
 			: undefined;
-	const isGovernedByOwnerProfile = !!ownerProfile;
+	// The key's current owner, as the server stored it, for when the owner's profile cannot be read.
+	const isCurrentOwner =
+		isEditing &&
+		!!owner &&
+		owner.entityId ===
+			{ team: virtualKey?.team_id, customer: virtualKey?.customer_id, business_unit: virtualKey?.business_unit_id }[owner.entityType];
 	// Only a 404 means "this owner holds no profile". Any other failure leaves the answer unknown,
 	// and unknown must not read as ungoverned: the governance editors would unlock, and a save would
 	// send fields the server discards for a governed owner - reporting success while dropping the
@@ -663,14 +781,36 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// Absent data is not "still loading": the OSS build answers this from a stub that has no backend
 	// to ask, and a settled "no profile" has to read as ungoverned or Save would never enable there.
 	// Pending is what isFetching says, and nothing else.
+	// A caller without View on the owner's kind never asks, so it is neither pending nor failed.
 	const ownerProfileStatus = (ownerProfileError as unknown as { status?: number } | null | undefined)?.status;
-	const ownerProfileFailed = !!owner && isOwnerProfileError && ownerProfileStatus !== 404;
-	const isOwnerProfileUnknown = !!owner && (isOwnerProfileFetching || ownerProfileFailed);
+	const {
+		isGoverned: isGovernedByOwnerProfile,
+		failed: ownerProfileFailed,
+		unknown: isOwnerProfileUnknown,
+	} = resolveOwnerProfileState({
+		hasOwner: !!owner,
+		canReadOwnerProfile,
+		isFetching: isOwnerProfileFetching,
+		isError: isOwnerProfileError,
+		errorStatus: ownerProfileStatus,
+		hasOwnerProfile: !!ownerProfile,
+		isServerFlaggedCurrentOwner: isCurrentOwner && isOwnerGoverned,
+	});
+	// An owner-governed key gave its own configuration up to the profile, so taking it off that owner
+	// (unassigning it, or moving it under an owner without a profile) leaves it with nothing
+	// configured until it is set up again here.
+	const originalOwnerId = virtualKey?.team_id || virtualKey?.customer_id || virtualKey?.business_unit_id || "";
+	const leavesGoverningOwner =
+		isEditing && isOwnerGoverned && (owner?.entityId ?? "") !== originalOwnerId && !isGovernedByOwnerProfile && !isOwnerProfileUnknown;
 	const ownerProfileNotice =
 		ownerProfile && owner ? (
 			<p data-testid="vk-owner-profile-notice">
 				Governed by <span className="font-medium">{ownerProfile.name}</span>, the access profile of this {owner.label}. Its budgets, rate
 				limits and providers apply to this key.
+			</p>
+		) : isGovernedByOwnerProfile && owner ? (
+			<p data-testid="vk-owner-profile-notice">
+				Governed by the access profile of this {owner.label}. Its budgets, rate limits and providers apply to this key.
 			</p>
 		) : null;
 
@@ -687,13 +827,23 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const hasAnyAlignableBudget =
 		watchedBudgets &&
 		watchedBudgets.length > 0 &&
-		watchedBudgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration || "1M"));
+		watchedBudgets.some(
+			(b) =>
+				b.max_limit !== undefined &&
+				b.max_limit !== null &&
+				(supportsCalendarAlignment(b.reset_duration || "1M") || isMultiUnitDuration(b.reset_duration || "1M")),
+		);
 	const hasAnyAlignableRateLimit =
-		(watchedTokenMaxLimit !== undefined && watchedTokenMaxLimit !== null && supportsCalendarAlignment(watchedTokenResetDuration || "1h")) ||
+		(watchedTokenMaxLimit !== undefined &&
+			watchedTokenMaxLimit !== null &&
+			(supportsCalendarAlignment(watchedTokenResetDuration || "1h") || isMultiUnitDuration(watchedTokenResetDuration || "1h"))) ||
 		(watchedRequestMaxLimit !== undefined &&
 			watchedRequestMaxLimit !== null &&
-			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
-	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
+			(supportsCalendarAlignment(watchedRequestResetDuration || "1h") || isMultiUnitDuration(watchedRequestResetDuration || "1h")));
+	const showCalendarAlignToggle =
+		hasAnyAlignableBudget ||
+		hasAnyAlignableRateLimit ||
+		calendarWindowDurations(providerConfigs).some((duration) => supportsCalendarAlignment(duration) || isMultiUnitDuration(duration));
 
 	// Handle adding a new MCP client configuration
 	const handleAddMCPClient = (mcpClientName: string) => {
@@ -1006,6 +1156,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					data: {
 						name: data.name,
 						description: data.description,
+						// Content logging is the key's own privacy setting, not profile-governed access, so a
+						// managed key keeps it editable and the save must carry it (null clears to inherit).
+						disable_content_logging: contentLoggingValue(data.contentLogging),
+						// Metadata is attribution on the key itself, not profile-governed access, so it stays editable too.
+						// Sent only when edited: the server replaces it as a whole.
+						...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
 					},
 				}).unwrap();
 				toast.success("Virtual key updated");
@@ -1044,6 +1200,21 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 							? { expires_at: "" }
 							: {}
 					: {};
+				const deleteAfterExpire = updateDeleteAfterExpire({
+					switchTouched: !!form.formState.dirtyFields.deleteAfterExpire,
+					expiryChanged,
+					hasExpiry: !!data.expiresAt,
+					value: data.deleteAfterExpire,
+					clientDefault: clientDeleteDefault,
+					storedOverride: virtualKey.delete_after_expire,
+				});
+				const deleteAfterExpirePayload = deleteAfterExpire !== undefined ? { delete_after_expire: deleteAfterExpire } : {};
+				const agentGrantsPayload = form.formState.dirtyFields.agentGrants
+					? { agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })) }
+					: {};
+				const relayGrantsPayload = form.formState.dirtyFields.relayGrants
+					? { relay_grants: (data.relayGrants ?? []).map((relay_name) => ({ relay_name })) }
+					: {};
 
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
@@ -1057,7 +1228,16 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					calendar_aligned: data.budgetCalendarAligned,
 					allow_all_providers: data.allowAllProviders,
 					reset_budget_usage: resetBudgetUsage,
+					// null clears the key back to inheriting the client setting; the server keeps omitted and
+					// null apart, so this is always sent.
+					disable_content_logging: contentLoggingValue(data.contentLogging),
+					...agentGrantsPayload,
+					...relayGrantsPayload,
+					// Sent only when edited, since it replaces the stored metadata as a whole ({} clears it);
+					// an untouched form copy may be older than what is stored now.
+					...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
 					...expiryPayload,
+					...deleteAfterExpirePayload,
 				};
 
 				// Add budgets if enabled
@@ -1134,11 +1314,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				toast.success("Virtual key updated successfully");
 			} else {
 				// Create new virtual key
+				const createDeleteAfterExpireValue = createDeleteAfterExpire(data.deleteAfterExpire, clientDeleteDefault);
 				const createData: CreateVirtualKeyRequest = {
 					name: data.name,
 					description: data.description || undefined,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
+					agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })),
+					relay_grants: (data.relayGrants ?? []).map((relay_name) => ({ relay_name })),
 					team_id: ownerIdFor("team", data.teamId),
 					customer_id: ownerIdFor("customer", data.customerId),
 					business_unit_id: ownerIdFor("business_unit", data.businessUnitId),
@@ -1146,8 +1329,17 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// VK-level setting that governs both budget and rate-limit calendar alignment.
 					calendar_aligned: data.budgetCalendarAligned,
 					allow_all_providers: data.allowAllProviders,
-					// Optional expiry: send as UTC ISO string, or omit for no expiry
-					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
+					// Optional expiry: send as UTC ISO string, or omit for no expiry. An omitted flag inherits
+					// the workspace default.
+					...(data.expiresAt
+						? {
+								expires_at: new Date(data.expiresAt).toISOString(),
+								...(createDeleteAfterExpireValue !== undefined ? { delete_after_expire: createDeleteAfterExpireValue } : {}),
+							}
+						: {}),
+					// Omitted means inherit on create.
+					...(data.contentLogging !== "inherit" ? { disable_content_logging: data.contentLogging === "disabled" } : {}),
+					...(Object.keys(data.metadata).length > 0 ? { metadata: data.metadata } : {}),
 				};
 
 				// Add budgets if enabled
@@ -1249,6 +1441,20 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="grow space-y-4 px-4 md:px-8">
+							{isVkCreationPolicyUnresolved && (
+								<Alert variant="warning">
+									<AlertTriangle className="h-4 w-4" />
+									<AlertDescription className="flex items-center justify-between gap-4">
+										<span>
+											Couldn&apos;t check whether an access profile governs the keys you create. You can still create one — if a profile
+											does govern it, the profile&apos;s providers, budgets, rate limits and MCP access replace what you set here.
+										</span>
+										<Button type="button" size="sm" variant="outline" onClick={() => refetchVkCreationPolicy()}>
+											Retry
+										</Button>
+									</AlertDescription>
+								</Alert>
+							)}
 							{ownerProfileFailed && (
 								<Alert variant="destructive" data-testid="vk-owner-profile-error">
 									<AlertTriangle className="h-4 w-4" />
@@ -1264,20 +1470,6 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											onClick={() => void refetchOwnerProfile()}
 											data-testid="vk-owner-profile-retry"
 										>
-											Retry
-										</Button>
-									</AlertDescription>
-								</Alert>
-							)}
-							{isVkCreationPolicyUnresolved && (
-								<Alert variant="warning">
-									<AlertTriangle className="h-4 w-4" />
-									<AlertDescription className="flex items-center justify-between gap-4">
-										<span>
-											Couldn&apos;t check whether an access profile governs the keys you create. You can still create one — if a profile
-											does govern it, the profile&apos;s providers, budgets, rate limits and MCP access replace what you set here.
-										</span>
-										<Button type="button" size="sm" variant="outline" onClick={() => refetchVkCreationPolicy()}>
 											Retry
 										</Button>
 									</AlertDescription>
@@ -1356,6 +1548,60 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 										</FormItem>
 									)}
 								/>
+								{/* Content logging is a privacy setting on the key itself, not access governance, so it
+								stays editable for a profile-managed key too. */}
+								<FormField
+									control={form.control}
+									name="contentLogging"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Content logging</FormLabel>
+											{/* FormControl hands the trigger the label's id and aria attributes; hideClear because the
+											choice is an enum with no empty state. */}
+											<FormControl>
+												<ComboboxSelect
+													options={contentLoggingOptions}
+													value={field.value}
+													onValueChange={field.onChange}
+													disableSearch
+													hideClear
+													data-testid="vk-content-logging-select"
+													optionTestId={(value) => `vk-content-logging-option-${value}`}
+												/>
+											</FormControl>
+											<p className="text-muted-foreground text-xs">
+												Whether request and response content is stored in logs for this key&apos;s traffic. &quot;Off&quot; also strips
+												content from OpenTelemetry export. &quot;On&quot; overrides a gateway-wide off for the log store only. The
+												per-request header still applies when per-request overrides are allowed.
+											</p>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								{/* Metadata is attribution on the key itself (cost center, owner, ...), so like content logging it
+								stays editable for a profile-managed key. */}
+								<FormField
+									control={form.control}
+									name="metadata"
+									render={({ field }) => (
+										<FormItem data-testid="vk-metadata-section">
+											<HeadersTable
+												label="Metadata"
+												value={field.value ?? {}}
+												onChange={field.onChange}
+												keyPlaceholder="e.g., cost_center"
+												valuePlaceholder="e.g., cc-1234"
+												useSecretVarInput={false}
+											/>
+											<p className="text-muted-foreground text-xs">
+												Key/value labels for cost attribution. They are copied onto every log entry this key produces, so logs and spend can
+												be filtered by them, and they override request headers with the same name. Keys use letters, digits, &quot;.&quot;,
+												&quot;_&quot; and &quot;-&quot;.
+											</p>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
 							</div>
 							{!isManagedByProfile && (
 								<div className="space-y-4">
@@ -1372,7 +1618,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 										<FormField
 											control={form.control}
 											name="expiresAt"
-											render={({ field }) => <ExpiryPickerField value={field.value} onChange={field.onChange} />}
+											render={({ field }) => (
+												<ExpiryPickerField
+													value={field.value}
+													onChange={field.onChange}
+													deleteAfterExpire={form.watch("deleteAfterExpire")}
+													onDeleteAfterExpireChange={(v) => form.setValue("deleteAfterExpire", v, { shouldDirty: true })}
+													deleteExpiredByDefault={deleteExpiredByDefault}
+												/>
+											)}
 										/>
 									</div>
 									{/* The owner's access profile supplies providers, MCP access, budgets and rate limits,
@@ -1433,6 +1687,18 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
 											    diff before that baseline is in. */}
 											<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
+
+											{/* Agent access grants for the registered agents this key may call. */}
+											<AgentGrantsEditor
+												value={form.watch("agentGrants") ?? []}
+												onChange={(next) => form.setValue("agentGrants", next, { shouldDirty: true })}
+											/>
+
+											{/* Relay access grants for the relays this key may call. */}
+											<RelayGrantsEditor
+												value={form.watch("relayGrants") ?? []}
+												onChange={(next) => form.setValue("relayGrants", next, { shouldDirty: true })}
+											/>
 											<DottedSeparator className="mt-6 mb-5" />
 											{/* Budget Configuration */}
 											<div className="space-y-4">
@@ -1553,6 +1819,23 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 												/>
 											</div>
 											{/* Calendar alignment: VK-wide setting that applies to both budgets and rate limits */}
+											<CalendarAlignmentNotice
+												enabled={watchedBudgetCalendarAligned}
+												durations={[
+													...calendarWindowDurations([
+														{
+															budgets: watchedBudgets,
+															rate_limit: {
+																token_max_limit: watchedTokenMaxLimit,
+																token_reset_duration: watchedTokenResetDuration,
+																request_max_limit: watchedRequestMaxLimit,
+																request_reset_duration: watchedRequestResetDuration,
+															},
+														},
+														...providerConfigs,
+													]),
+												]}
+											/>
 											{showCalendarAlignToggle && (
 												<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 													<div className="space-y-0.5">
@@ -1561,7 +1844,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 														</Label>
 														<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
 															Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
-															date. Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
+															date. Single-unit day, week, month, quarter and year windows align to calendar boundaries. Other durations
+															remain rolling.
 														</p>
 													</div>
 													<Switch
@@ -1649,6 +1933,18 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 									{/* Entity Assignment */}
 									<div className="space-y-4">
 										<Label className="text-sm font-medium">Entity Assignment</Label>
+										{leavesGoverningOwner && (
+											<Alert variant="warning" data-testid="vk-leaves-governing-owner-warning">
+												<AlertTriangle className="h-4 w-4" />
+												<AlertDescription>
+													This key&apos;s providers, budgets and rate limit came from its owner&apos;s access profile, and it has none of
+													its own.{" "}
+													{form.watch("entityType") === "user"
+														? "If the user you assign it to has an access profile, that profile takes the key over and it keeps working; otherwise configure it below, or it will refuse requests."
+														: "Configure it below, or it will refuse requests once it is unassigned."}
+												</AlertDescription>
+											</Alert>
+										)}
 
 										<div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2">
 											<FormField

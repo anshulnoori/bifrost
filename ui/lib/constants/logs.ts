@@ -4,6 +4,7 @@ export const KnownProvidersNames = [
 	"azure",
 	"bedrock",
 	"bedrock_mantle",
+	"sagemaker",
 	"cerebras",
 	"chatgpt",
 	"claude",
@@ -33,10 +34,12 @@ export const KnownProvidersNames = [
 	"fireworks",
 	"sarvam",
 	"wafer",
+	"minimax",
+	"byteplus",
 	"databricks",
+	"cloudflare",
 	"github-copilot",
 	"typesafe",
-	"cloudflare",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -48,8 +51,7 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 // "Add Provider" picker and the first-party-integration nudge so users cannot configure
 // them from the UI. Everything else (types, schemas, icons, labels) still resolves, so a
 // provider configured via config.json continues to render correctly.
-// TODO: remove "github-copilot" once the integration has been tested and released.
-export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>(["github-copilot"]);
+export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>([]);
 
 // Known providers that users can add from the UI.
 export const VisibleProviderNames: readonly ProviderName[] = KnownProvidersNames.filter((name) => !HiddenProviders.has(name));
@@ -68,16 +70,21 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"ollama",
 	"openai",
 	"openrouter",
+	"parasail",
 	"sgl",
 	"vertex",
 	"vllm",
 	"databricks",
+	"cloudflare",
+	"byteplus",
+	"github-copilot",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [
 	"list_models",
+	"model_retrieve",
 	"text_completion",
 	"text_completion_stream",
 	"chat_completion",
@@ -142,6 +149,11 @@ export const RequestTypes = [
 	"websocket_responses",
 	"realtime",
 	"realtime.turn",
+	// GPT Live: one row per session, delegations inside it; a recording download is its own row
+	"live",
+	"live.session",
+	"live_content",
+	"live_sideband",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -153,6 +165,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	azure: "Azure",
 	bedrock: "AWS Bedrock",
 	bedrock_mantle: "AWS Bedrock Mantle",
+	sagemaker: "AWS SageMaker",
 	cohere: "Cohere",
 	deepseek: "DeepSeek",
 	vertex: "Vertex AI",
@@ -178,10 +191,12 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
+	minimax: "MiniMax",
+	byteplus: "BytePlus",
 	databricks: "Databricks",
+	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
-	cloudflare: "Cloudflare Workers AI",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -227,6 +242,8 @@ const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
 	{ identifiers: ["cline"], app: { name: "Cline", icon: "/images/cline.png" } },
 	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: "/images/opencode.png" } },
 	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: "/images/windsurf.png" } },
+	{ identifiers: ["antigravity-cli"], app: { name: "Antigravity CLI", icon: "/images/harness/antigravity.svg" } },
+	{ identifiers: ["antigravity-desktop", "antigravity/"], app: { name: "Antigravity Desktop", icon: "/images/harness/antigravity.svg" } },
 	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: "/images/gemini-cli.png" } },
 	{ identifiers: ["qwencode", "qwen"], app: { name: "Qwen Code" } },
 ];
@@ -295,6 +312,7 @@ export const RequestTypeLabels = {
 
 	// Request Types
 	list_models: "List Models",
+	model_retrieve: "Retrieve Model",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
@@ -366,6 +384,10 @@ export const RequestTypeLabels = {
 	websocket_responses: "WebSocket Responses",
 	realtime: "Realtime",
 	"realtime.turn": "Realtime Turn",
+	live: "Live",
+	"live.session": "Live Session",
+	live_content: "Live Recording",
+	live_sideband: "Live Sideband",
 } as const;
 
 export const RequestTypeColors = {
@@ -383,6 +405,7 @@ export const RequestTypeColors = {
 
 	// Request Types
 	list_models: "bg-green-100 text-green-800",
+	model_retrieve: "bg-green-100 text-green-800",
 	text_completion: "bg-green-100 text-green-800",
 	text_completion_stream: "bg-amber-100 text-amber-800",
 
@@ -457,6 +480,10 @@ export const RequestTypeColors = {
 	websocket_responses: "bg-teal-100 text-teal-800",
 	realtime: "bg-indigo-100 text-indigo-800",
 	"realtime.turn": "bg-cyan-100 text-cyan-800",
+	live: "bg-violet-100 text-violet-800",
+	"live.session": "bg-violet-100 text-violet-800",
+	live_content: "bg-blue-100 text-blue-800",
+	live_sideband: "bg-blue-100 text-blue-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

@@ -215,6 +215,14 @@ client:
       subprocess), and connection_type "http"/"sse" whose connection_string
       resolves to a loopback, private-network, link-local, or CGNAT address.
       Public http/sse targets are unaffected.
+
+      For auth_type "token_exchange", verification and tool discovery run
+      during the create as the signed-in admin: Bifrost exchanges the
+      identity-provider token on the request or, when it carries none, the
+      access token from the admin's own Bifrost sign-in. A request with
+      neither (for example one made with an API key) creates the client in
+      pending_verification; finish it with
+      POST /api/mcp/client/{id}/verify-exchange.
     tags:
       - MCP
     requestBody:
@@ -248,6 +256,17 @@ client:
           is disabled or unconfigured) and connection_type is "stdio", or is
           "http"/"sse" with a connection_string resolving to a loopback,
           private-network, link-local, or CGNAT address.
+      '422':
+        description: |
+          A per-user client failed verification during create, and was not
+          created: per_user_headers sample values were rejected upstream, or
+          for token_exchange the admin credential exchange failed, the
+          admin's Bifrost sign-in has expired (sign in to Bifrost again and
+          retry), or the upstream verification connection failed.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -409,6 +428,12 @@ client-refresh-tools:
 
       The freshly discovered set is persisted and the hosted /mcp surface is
       re-synced automatically, exactly as for every other discovery path.
+      A refresh also re-reads the server's instructions, which costs one extra
+      handshake for a sticky http or sse client because tools/list cannot
+      carry that field. STDIO clients are skipped: Bifrost owns the
+      subprocess, so its instructions cannot change without a reconnect. This
+      is the only way to pick up instructions edited upstream without
+      restarting, since MCP defines no change notification for them.
       Rejected with 400 when the client is not in a state where discovery
       means anything: disabled (enable it first), needs_reauth (reauthorize
       it first), or still pending_verification (complete the one-time admin
@@ -854,15 +879,19 @@ client-verify-exchange:
     description: |
       Completes admin verification for an MCP client with auth_type
       "token_exchange". No request body: the subject of the exchange is
-      always the signed-in admin's own identity-provider token (from an SSO
-      session or an identity-authenticated bearer request) — there is no
-      manual token input. Bifrost exchanges it exactly like a real caller's
+      always the signed-in admin's own identity-provider token, either the
+      one an identity-authenticated bearer request carries or, when the
+      request carries none, the access token from the admin's own Bifrost
+      sign-in (an SSO dashboard session), refreshed first when it has
+      expired or is about to. There is no manual token input. Bifrost
+      exchanges it exactly like a real caller's
       token would be exchanged, opens an upstream connection with the result,
       discovers the tool list, persists it, and transitions the client to
       connected. The exchanged token (and any refresh token the identity
       provider issued alongside it) is retained as the admin discovery
       credential the periodic tool syncer uses to refresh the tool list;
-      end-user tool calls always exchange the caller's own token instead.
+      end-user tool calls always exchange the caller's own token or Bifrost
+      sign-in instead.
       Synchronous; no browser flow.
 
       Serves two situations: the one-time bootstrap verification for a client
@@ -902,14 +931,16 @@ client-verify-exchange:
       '400':
         description: |
           Client is not auth_type "token_exchange", token exchange is
-          unavailable (no identity-provider integration configured), or the
-          request carries no identity-provider token to exchange (sign in
-          with your identity provider and retry)
+          unavailable (no identity-provider integration configured), the
+          request has nothing to exchange (no identity-provider token and no
+          sign-in of the admin's own, as with an API key: sign in with your
+          identity provider and retry), or the admin's Bifrost sign-in has
+          expired (sign in to Bifrost again and retry)
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '422':
-        description: The identity provider rejected the exchange, or the upstream verification connection failed
+        description: The identity provider rejected or failed the exchange, or the upstream verification connection failed
         content:
           application/json:
             schema:
@@ -1209,5 +1240,108 @@ per-user-headers-credential:
         $ref: '../../openapi.yaml#/components/responses/Unauthorized'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-openapi-preview:
+  post:
+    operationId: previewOpenAPISpec
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Preview an OpenAPI spec as MCP tools
+    description: |
+      Parses an OpenAPI or Swagger document (Swagger 2.0, OpenAPI 3.0, 3.1 and
+      3.2, JSON or YAML) and returns the MCP tools Bifrost would synthesize from
+      it, the operations it cannot expose (with the reason), the document's
+      servers and security schemes, and the resolved upstream base URL. Nothing
+      is persisted; the UI's "New MCP Server → OpenAPI" flow calls this before
+      creating the client so the operations can be picked.
+
+      Supply the document inline as `spec`, or as `spec_url` to have Bifrost
+      fetch it (the fetched text is echoed back in `spec` so it can be stored
+      inline on create). Documents are capped at 5 MiB. When dashboard
+      authentication is disabled or unconfigured, `spec_url` must resolve to a
+      public address and is refused with 403 otherwise.
+    tags:
+      - MCP
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/MCPOpenAPIPreviewRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The synthesized tool set and document summary.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPOpenAPIPreviewResponse'
+      '400':
+        description: Neither spec nor spec_url was given, or the document does not parse as a supported OpenAPI/Swagger version, or declares no operations.
+      '403':
+        description: The request was not genuinely authenticated and spec_url resolves to a loopback, private-network, link-local or CGNAT address (or cannot be resolved).
+      '413':
+        description: The document exceeds 5 MiB.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-openapi-spec:
+  get:
+    operationId: getMCPClientOpenAPISpec
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get the stored OpenAPI spec of an MCP client
+    description: |
+      Returns the OpenAPI document an `openapi` connection-type client was
+      created from, as JSON or YAML text. `GET /api/mcp/clients` leaves the
+      document out of `openapi_config` because it can be large; this endpoint
+      serves it on demand (the UI's "Replace spec" flow seeds its editor from
+      it). 404 for clients of other connection types and for openapi clients
+      configured with a `spec_url` only, whose document is fetched at connect
+      time rather than stored.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: MCP client ID
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The stored document.
+        content:
+          application/json:
+            schema:
+              type: string
+              description: The OpenAPI document as it was stored (JSON text).
+          application/yaml:
+            schema:
+              type: string
+              description: The OpenAPI document as it was stored (YAML text).
+      '404':
+        description: No openapi client with this ID, or the client stores no document.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -1,59 +1,45 @@
 import {
 	decodeTurnError,
 	formatWarpUsage,
+	holdPartialWarpTable,
+	holdWarpProvenance,
 	isInternalWarpLink,
 	isPlainLeftClick,
 	splitWarpAnswer,
+	splitWarpCharts,
 	warpErrorDetail,
 	warpToolLabel,
 	warpToolStatusLabel,
 	warpTimeline,
 } from "@/components/warp/warpStream.utils";
 import type { WarpTurn, WarpTurnToolCall } from "@/lib/contexts/warpContext";
+import { Markdown } from "@/components/ui/markdown";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, Brain, Check, ChevronDown, Info, Loader2 } from "lucide-react";
-import { lazy, memo, Suspense, useMemo, useState, type AnchorHTMLAttributes } from "react";
+import { AlertTriangle, Brain, ChevronDown, Info } from "lucide-react";
+import { lazy, memo, Suspense, useMemo, useState, type AnchorHTMLAttributes, type ReactNode } from "react";
 
-// Shiki is heavy and most Warp answers are prose, so the renderer is loaded on
-// demand. This mirrors how the prompt playground handles the same component.
-const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((module) => ({ default: module.Markdown })));
+// Markdown is not lazy: its Suspense fallback showed the raw markdown, which flashed before every answer.
+// Recharts is heavy and most answers have no chart.
+const LazyWarpChart = lazy(() => import("@/components/warp/warpChart"));
 
-/**
- * One completed turn in the transcript.
- *
- * Both roles run the full width of the panel: the question is a bordered block,
- * the answer is plain prose beneath it. Alternating left/right bubbles cost
- * horizontal room the panel does not have - at 400px a right-aligned bubble
- * capped at 85% wraps a one-line question onto three - and the alternation was
- * carrying information the border already carries.
- *
- * Memoized because WarpPanel re-renders on every streamed token (its own
- * useWarpStream state lives at that level), and turn/isLatest are otherwise
- * unchanged for every completed message in between - without this, a long
- * transcript re-runs every past turn's markdown/regex parsing once per token
- * of the answer currently streaming in below it.
- */
+// A light blur clears as each streamed word lands, so the answer resolves into place instead of ticking on.
+const WARP_WORD_ANIMATION = { animation: "blurIn", duration: 260, easing: "cubic-bezier(0.165, 0.84, 0.44, 1)", sep: "word" } as const;
+
+const renderChartLink = (href: string, children: ReactNode) => <WarpAnswerLink href={href}>{children}</WarpAnswerLink>;
+
+/** Memoized: WarpPanel re-renders per streamed token, which would re-parse every past turn. */
 export const WarpMessage = memo(function WarpMessage({ turn, isLatest }: { turn: WarpTurn; isLatest?: boolean }) {
-	// Only the newest turn animates. Turns are keyed by index, so appending never
-	// remounts the ones above - but reopening the panel mounts them all at once,
-	// and a transcript where every message flies in at the same time reads as a
-	// glitch rather than an arrival.
-	const enter = isLatest ? "warp-message-in" : undefined;
-
 	if (turn.role === "user") {
 		return (
-			<div className={cn("space-y-1", enter)} data-testid="warp-message-user">
-				{/* The question this answers, so a bare "-7d" in the transcript stays
-				    legible. On its own it reads as a non sequitur once the card that
-				    prompted it is gone. */}
+			// Only the newest animates, or reopening the panel flies every message in at once.
+			<div className={cn("space-y-1", isLatest && "warp-message-send")} data-testid="warp-message-user">
+				{/* Keeps a bare "-7d" reply legible once the question card is gone. */}
 				{turn.answeredQuestion && (
 					<p className="text-muted-foreground truncate text-[11px]" data-testid="warp-answered-question">
 						{turn.answeredQuestion}
 					</p>
 				)}
-				{/* break-words so an unbroken token - a url, an id - wraps instead of
-				    widening the block past the panel. */}
 				<div className="bg-muted/40 rounded-md border px-3 py-2 text-sm break-words whitespace-pre-wrap">
 					{turn.displayContent ?? turn.content}
 				</div>
@@ -62,38 +48,29 @@ export const WarpMessage = memo(function WarpMessage({ turn, isLatest }: { turn:
 	}
 
 	const usage = formatWarpUsage(turn.usage);
+	// The answer itself has no entrance: the streaming message already brought it in, and replaying it on finish flickers.
+	// The note, usage and error only exist once the turn finishes, so those fade in.
+	const finishIn = isLatest ? "warp-fade-in" : undefined;
 
 	return (
-		// min-w-0 so a wide child cannot stretch this row, and wide content is
-		// given its own horizontal scroller. A markdown table or a long code line
-		// is the one thing in a chat transcript with no natural width limit, and
-		// letting it set the row's width breaks the padding for every message.
+		// min-w-0 plus its own scroller so a wide table or code line cannot widen the row.
 		<div
-			className={cn("min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full", enter)}
+			className="min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full"
 			data-testid="warp-message-assistant"
 		>
-			{turn.partial && <WarpPartialNote />}
+			{turn.partial && <WarpPartialNote className={finishIn} />}
 			{(turn.content || (turn.toolCalls?.length ?? 0) > 0) && <WarpAnswer content={turn.content} toolCalls={turn.toolCalls} />}
-			{/* What this answer cost. Warp's own calls never appear in the logs it
-			    reads - by design, so it does not corrupt the numbers it reports - so
-			    this line is the only place its spend is visible at all. */}
+			{/* Warp's own calls are kept out of the logs, so this is the only place its spend shows. */}
 			{usage && (
-				<p className="text-muted-foreground text-right text-[11px] tabular-nums" data-testid="warp-usage">
+				<p className={cn("text-muted-foreground text-right text-[11px] tabular-nums", finishIn)} data-testid="warp-usage">
 					{usage}
 				</p>
 			)}
-			{turn.error && <WarpTurnError error={turn.error} />}
+			{turn.error && <WarpTurnError error={turn.error} className={finishIn} />}
 		</div>
 	);
 });
 
-/**
- * The answer as it streams in.
- *
- * Rendered separately from WarpMessage because it needs isStreaming on the
- * markdown renderer for the caret, and because it must not be keyed into the
- * completed-turn list until it is actually complete.
- */
 export function WarpStreamingMessage({
 	text,
 	toolCalls,
@@ -104,33 +81,18 @@ export function WarpStreamingMessage({
 	isStreaming: boolean;
 }) {
 	return (
-		// overflow-x-auto on the container, not [&_table]:block. The Warp
-		// ScrollArea renders only a vertical scrollbar, and Radix will not scroll
-		// its viewport horizontally without a horizontal one - so a wide table was
-		// clipped by the viewport and again by the dock's overflow-x-clip. Making
-		// the table a block would scroll it but drops native table layout and
-		// undoes the .no-table viewport fix; a container-level scroller keeps both.
+		// Container scroller, not [&_table]:block: the ScrollArea has no horizontal bar to scroll with.
 		<div
-			className="min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full"
+			className="warp-message-in min-w-0 space-y-2 overflow-x-auto [&_pre]:overflow-x-auto [&_table]:w-full [&_table]:min-w-full"
 			data-testid="warp-message-streaming"
 		>
-			{/* Streamed text is rendered whole: the provenance fence may be
-			    half-written, and folding a partial block away would make the
-			    answer appear to lose its ending mid-stream. */}
-			<WarpTimeline content={text} toolCalls={toolCalls} isStreaming={isStreaming} />
+			{/* Scope block held back: it would render as code, then jump into the toggle when the turn finishes. */}
+			<WarpTimeline content={holdWarpProvenance(text)} toolCalls={toolCalls} isStreaming={isStreaming} />
 		</div>
 	);
 }
 
-/**
- * A turn in the order it happened: narration, the lookups it led to, more
- * narration, more lookups, then the answer.
- *
- * Shared by the live and the completed turn so the transcript does not
- * rearrange itself at the moment a turn finishes. Narration is set back - muted
- * and smaller - so the answer is still the thing the eye lands on; at the same
- * weight, five paragraphs of "let me trace those" bury it.
- */
+/** Shared by live and completed turns so the transcript does not rearrange when a turn finishes. */
 function WarpTimeline({
 	content,
 	toolCalls,
@@ -142,101 +104,104 @@ function WarpTimeline({
 }) {
 	const items = useMemo(() => warpTimeline(content, toolCalls), [content, toolCalls]);
 	const last = items[items.length - 1];
-	// Waiting on the model: nothing yet, or every lookup so far has come back.
-	// That gap is the longest silence in a turn, since it is where the model is
-	// actually thinking, and with nothing moving in it the turn reads as hung.
-	// While a lookup is still running its own spinner says so.
+	// Nothing yet, or every lookup is back: the longest silence, which otherwise reads as hung.
 	const isWaitingOnModel = isStreaming && (!last || (last.kind === "tools" && last.calls.every((call) => call.durationMs !== undefined)));
 
 	return (
 		<>
 			{items.map((item, index) => {
 				if (item.kind === "tools") {
-					return <WarpToolCallList key={`tools-${item.calls[0].id}`} calls={item.calls} />;
+					return <WarpToolCallList key={`tools-${item.calls[0].id}`} calls={item.calls} animate={isStreaming} />;
 				}
 				const isLast = index === items.length - 1;
-				return (
-					// Keyed by position: text items never reorder, and a key taken
-					// from the text would remount the block on every streamed change.
-					<Suspense key={`text-${index}`} fallback={<div className="text-muted-foreground text-sm">{item.text}</div>}>
-						<LazyMarkdown
-							content={item.text}
+				const isLiveTail = isStreaming && isLast;
+				const segments = splitWarpCharts(isLiveTail ? holdPartialWarpTable(item.text) : item.text, isLiveTail);
+				return segments.map((segment, segmentIndex) => {
+					// Keyed by position: a text-derived key would remount on every streamed change.
+					const key = `text-${index}-${segmentIndex}`;
+					const isLastSegment = isLast && segmentIndex === segments.length - 1;
+					if (segment.kind === "chart") {
+						return (
+							<Suspense key={key} fallback={<WarpChartPlaceholder />}>
+								{/* Inside the boundary, so the chart reveals when it has loaded rather than behind the placeholder. */}
+								<div className={isStreaming ? "warp-reveal" : undefined}>
+									<LazyWarpChart spec={segment.spec} renderLink={renderChartLink} />
+								</div>
+							</Suspense>
+						);
+					}
+					if (segment.kind === "chart-pending") return <WarpChartPlaceholder key={key} />;
+					if (segment.kind === "chart-invalid") {
+						return (
+							<div
+								key={key}
+								className="text-muted-foreground my-3 rounded-sm border border-dashed p-3 text-xs"
+								data-testid="warp-chart-invalid"
+							>
+								Chart unavailable.
+							</div>
+						);
+					}
+					return (
+						<Markdown
+							key={key}
+							content={segment.text}
 							components={{ a: WarpAnswerLink }}
 							className={item.final ? undefined : "text-muted-foreground text-[13px]"}
-							isStreaming={isStreaming && isLast}
-							caret={isStreaming && isLast ? "block" : undefined}
+							isStreaming={isStreaming && isLastSegment}
+							caret={isStreaming && isLastSegment ? "block" : undefined}
+							// Only the live tail: words already on screen keep their nodes, so just new ones fade in.
+							animated={isStreaming && isLastSegment ? WARP_WORD_ANIMATION : false}
 						/>
-					</Suspense>
-				);
+					);
+				});
 			})}
 			{isWaitingOnModel && <WarpThinking />}
 		</>
 	);
 }
 
-/**
- * Tool calls shown as compact rows.
- *
- * These exist so the wait is legible: without them a multi-second research pause
- * looks like the app has hung. They show what was queried and how long it took,
- * never the result - the model consumed that, and dumping rows of JSON into the
- * transcript would bury the answer.
- */
-function WarpToolCallList({ calls }: { calls: WarpTurnToolCall[] }) {
+function WarpChartPlaceholder() {
+	return <div className="bg-muted/40 my-3 h-[240px] animate-pulse rounded-sm border" data-testid="warp-chart-pending" />;
+}
+
+/** Shows what was queried and how long it took, never the result, which would bury the answer. */
+function WarpToolCallList({ calls, animate = false }: { calls: WarpTurnToolCall[]; animate?: boolean }) {
 	return (
 		<ul className="space-y-1" data-testid="warp-tool-calls">
 			{calls.map((call, index) => (
-				<WarpToolCallRow key={`${call.id}-${index}`} call={call} />
+				<WarpToolCallRow key={`${call.id}-${index}`} call={call} animate={animate} />
 			))}
 		</ul>
 	);
 }
 
 /**
- * One step, expandable when it failed.
- *
- * A failed step with no account of itself makes a retry look like the same
- * query running four times for no reason. The message says which - a result
- * that was too large reads very differently from a filter that did not exist,
- * and only one of them is worth changing the question over.
- *
- * Memoized: useWarpStream's tool_call_end handler only replaces the one call
- * object that finished (`toolCalls.map((c) => c.id === id ? {...} : c)`), so
- * every other row's `call` prop keeps its old reference on that update - this
- * is what lets memo actually skip them instead of re-rendering the whole list
- * on every tool call that finishes during a multi-tool step.
+ * Memoized: tool_call_end replaces only the finished call object, so other rows keep their reference.
+ * animate is for live turns only; a finished turn remounts these rows and must not replay them.
  */
-const WarpToolCallRow = memo(function WarpToolCallRow({ call }: { call: WarpTurnToolCall }) {
+const WarpToolCallRow = memo(function WarpToolCallRow({ call, animate }: { call: WarpTurnToolCall; animate: boolean }) {
 	const [expanded, setExpanded] = useState(false);
 	const canExpand = !!call.failed && !!call.error;
+	const isRunning = call.durationMs === undefined;
 
-	// Shared so the interactive and static rows cannot drift apart.
 	const summary = (
 		<>
-			{/* aria-hidden on the icons and an sr-only label beside them: the
-			    running/failed/completed state is otherwise carried only by icon
-			    shape and color, which a screen reader cannot see. */}
-			{call.durationMs === undefined ? (
-				<Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin motion-reduce:animate-none" />
-			) : call.failed ? (
-				<AlertTriangle aria-hidden="true" className="size-3 shrink-0 text-amber-500" />
+			{/* Icons carry state only by shape and color, so the sr-only label says it for screen readers. */}
+			{call.failed ? (
+				<AlertTriangle aria-hidden="true" className={cn("size-3 shrink-0 text-amber-500", animate && "warp-pop")} />
 			) : (
-				<Check aria-hidden="true" className="size-3 shrink-0 text-emerald-500" />
+				<WarpToolStatusIcon isRunning={isRunning} animate={animate} />
 			)}
 			<span className="sr-only">{warpToolStatusLabel(call)}</span>
-			<span className={cn("truncate", call.durationMs === undefined && "warp-shimmer")}>
-				{warpToolLabel(call.name, call.durationMs === undefined)}
-			</span>
-			{call.durationMs !== undefined && <span className="shrink-0 tabular-nums opacity-60">{call.durationMs}ms</span>}
+			<span className={cn("truncate", isRunning && "warp-shimmer")}>{warpToolLabel(call.name, isRunning)}</span>
+			{!isRunning && <span className={cn("shrink-0 tabular-nums opacity-60", animate && "warp-fade-in")}>{call.durationMs}ms</span>}
 		</>
 	);
 
 	return (
-		<li className="text-muted-foreground text-xs" data-testid={`warp-tool-call-${call.name}`}>
-			{/* A button when it can expand, a plain div when it cannot. A div with
-			    onClick is unreachable by keyboard and announces nothing, so the only
-			    account a failed step gives of itself was mouse-only - while a row
-			    with nothing to expand must not become a focus stop either. */}
+		<li className={cn("text-muted-foreground text-xs", animate && "warp-reveal")} data-testid={`warp-tool-call-${call.name}`}>
+			{/* A real button for keyboard access; a row with nothing to expand stays out of the tab order. */}
 			{canExpand ? (
 				<button
 					type="button"
@@ -246,33 +211,86 @@ const WarpToolCallRow = memo(function WarpToolCallRow({ call }: { call: WarpTurn
 					data-testid={`warp-tool-call-toggle-${call.name}`}
 				>
 					{summary}
-					<ChevronDown className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-180")} />
+					<WarpChevron open={expanded} className="size-3" />
 				</button>
 			) : (
 				<div className="flex items-center gap-2">{summary}</div>
 			)}
-			{expanded && call.error && (
-				<pre
-					className="bg-muted/60 mt-1 ml-5 overflow-x-auto rounded px-2 py-1 text-[11px] whitespace-pre-wrap"
-					data-testid="warp-tool-call-error"
-				>
-					{call.error}
-				</pre>
+			{call.error && (
+				<WarpCollapse open={expanded}>
+					<pre
+						className="bg-muted/60 mt-1 ml-5 overflow-x-auto rounded px-2 py-1 text-[11px] whitespace-pre-wrap"
+						data-testid="warp-tool-call-error"
+					>
+						{call.error}
+					</pre>
+				</WarpCollapse>
 			)}
 		</li>
 	);
 });
 
 /**
- * A link inside an answer.
- *
- * Warp's tools give the model root-relative links into the Logs view - a row's
- * detail sheet, or the same filters it just counted. The markdown renderer
- * opens every anchor in a new tab, which for those would mean a second copy of
- * the dashboard; they are followed with the router instead, so the Logs page
- * opens beside the tray with the conversation still there. External links keep
- * the new-tab behaviour.
+ * The spinner stays in the row's muted color and the check lands in green as it draws.
+ * Spinner and check share one 16px grid and stroke width, so the swap reads as one mark resolving.
  */
+function WarpToolStatusIcon({ isRunning, animate }: { isRunning: boolean; animate: boolean }) {
+	if (isRunning) {
+		return (
+			<svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="size-3 shrink-0 animate-spin motion-reduce:animate-none">
+				<circle cx="8" cy="8" r="6" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1.75" />
+				<path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+			</svg>
+		);
+	}
+	return (
+		<svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="size-3 shrink-0 text-emerald-500">
+			{/* pathLength 1 lets the draw-on animation use unit dash values whatever the path's real length. */}
+			<path
+				d="M3 8.5l3.25 3.25L13 5"
+				pathLength={1}
+				stroke="currentColor"
+				strokeWidth="1.75"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				className={animate ? "warp-check-draw" : undefined}
+			/>
+		</svg>
+	);
+}
+
+/**
+ * Animates open and closed by easing the grid row from 0fr to 1fr, which reaches the content's natural height without measuring it.
+ * The content stays mounted so it can animate out; inert keeps it out of focus and the accessibility tree while closed.
+ */
+function WarpCollapse({ open, children }: { open: boolean; children: ReactNode }) {
+	return (
+		<div
+			inert={!open}
+			className={cn(
+				"grid transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.645,0.045,0.355,1)] motion-reduce:transition-none",
+				open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+			)}
+		>
+			<div className="min-h-0 overflow-hidden">{children}</div>
+		</div>
+	);
+}
+
+/** Turns with the same timing as WarpCollapse, so the chevron and the panel move as one. */
+function WarpChevron({ open, className }: { open: boolean; className?: string }) {
+	return (
+		<ChevronDown
+			className={cn(
+				"shrink-0 transition-transform duration-200 ease-[cubic-bezier(0.645,0.045,0.355,1)] motion-reduce:transition-none",
+				open && "rotate-180",
+				className,
+			)}
+		/>
+	);
+}
+
+/** Internal links go through the router so the conversation stays open; external ones open a new tab. */
 function WarpAnswerLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
 	const navigate = useNavigate();
 	// `node` is the markdown AST element; it must not reach the DOM.
@@ -285,9 +303,7 @@ function WarpAnswerLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAn
 				className="text-primary underline underline-offset-2"
 				data-testid="warp-answer-link"
 				onClick={(event) => {
-					// A modified or middle click is the browser's to handle: it is how
-					// someone opens a cited link in a new tab without losing the answer
-					// they are reading.
+					// Leave modified and middle clicks to the browser so "open in new tab" still works.
 					if (!isPlainLeftClick(event)) return;
 					event.preventDefault();
 					void navigate({ href: href! });
@@ -304,18 +320,9 @@ function WarpAnswerLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAn
 	);
 }
 
-/**
- * An answer, with its provenance folded away.
- *
- * The window, scope and filters are what make a number checkable, so they must
- * be available - but they are reference material, not the answer. Inline they
- * push the next question off screen and get re-read on every scroll. Collapsed,
- * they are one click away for the one time someone doubts a figure.
- */
 function WarpAnswer({ content, toolCalls }: { content: string; toolCalls?: WarpTurnToolCall[] }) {
 	const [expanded, setExpanded] = useState(false);
-	// The provenance block is the last thing in an answer, so folding it away
-	// leaves every tool call's offset pointing where it did.
+	// Provenance is always last, so removing it leaves every tool call's offset valid.
 	const { answer, provenance } = splitWarpAnswer(content);
 
 	return (
@@ -333,40 +340,26 @@ function WarpAnswer({ content, toolCalls }: { content: string; toolCalls?: WarpT
 					>
 						<Info className="size-3 shrink-0" />
 						<span>What this covers</span>
-						<ChevronDown className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-180")} />
+						<WarpChevron open={expanded} className="size-3" />
 					</button>
-					{expanded && (
+					<WarpCollapse open={expanded}>
 						<pre
 							className="bg-muted/50 mt-1.5 overflow-x-auto rounded px-2 py-1.5 text-[11px] whitespace-pre-wrap"
 							data-testid="warp-provenance"
 						>
 							{provenance}
 						</pre>
-					)}
+					</WarpCollapse>
 				</div>
 			)}
 		</div>
 	);
 }
 
-/**
- * A failed turn, expandable.
- *
- * The summary alone tells someone it failed but not what to do, so the only
- * move left is retyping the same question and hoping. Expanding gives the cause
- * and the specific things that change the outcome - and it stays collapsed by
- * default because most failures are self-explanatory in one line.
- */
-/**
- * Sits above an answer Warp gave on its last research step. The model was told
- * to stop querying and say what it had, so the text below is honest but may not
- * cover everything asked; the note is what keeps a reader from quoting it as
- * settled.
- */
-function WarpPartialNote() {
+function WarpPartialNote({ className }: { className?: string }) {
 	return (
 		<div
-			className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs"
+			className={cn("flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs", className)}
 			data-testid="warp-partial-answer"
 		>
 			<Info className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
@@ -381,16 +374,14 @@ function WarpPartialNote() {
 	);
 }
 
-function WarpTurnError({ error }: { error: string }) {
+function WarpTurnError({ error, className }: { error: string; className?: string }) {
 	const [expanded, setExpanded] = useState(false);
-	// decodeTurnError rather than a bare split: a message with no colon is a
-	// message, not a code. Reading it as a code matched nothing and replaced the
-	// status line or network error with the generic fallback.
+	// Not a bare split: a message with no colon is a message, not a code.
 	const { code, message } = decodeTurnError(error);
 	const detail = warpErrorDetail(code, message);
 
 	return (
-		<div className="border-destructive/30 bg-destructive/5 space-y-2 rounded-md border p-2.5" data-testid="warp-turn-error">
+		<div className={cn("border-destructive/30 bg-destructive/5 rounded-md border p-2.5", className)} data-testid="warp-turn-error">
 			<button
 				type="button"
 				onClick={() => setExpanded((current) => !current)}
@@ -400,11 +391,12 @@ function WarpTurnError({ error }: { error: string }) {
 			>
 				<AlertTriangle className="text-destructive mt-0.5 size-3.5 shrink-0" />
 				<span className="text-destructive min-w-0 flex-1 text-xs font-normal">{detail.summary}</span>
-				<ChevronDown className={cn("text-muted-foreground mt-0.5 size-3.5 shrink-0 transition-transform", expanded && "rotate-180")} />
+				<WarpChevron open={expanded} className="text-muted-foreground mt-0.5 size-3.5" />
 			</button>
 
-			{expanded && (
-				<div className="text-muted-foreground space-y-2 pl-5.5 text-xs" data-testid="warp-turn-error-detail">
+			{/* Spacing sits inside the collapse, so a closed card has no gap under its summary. */}
+			<WarpCollapse open={expanded}>
+				<div className="text-muted-foreground space-y-2 pt-2 pl-5.5 text-xs" data-testid="warp-turn-error-detail">
 					<p>{detail.cause}</p>
 					{detail.suggestions.length > 0 && (
 						<div className="space-y-1">
@@ -416,22 +408,18 @@ function WarpTurnError({ error }: { error: string }) {
 							</ul>
 						</div>
 					)}
-					{/* The server's own words, kept verbatim and last. It is the only part
-					    worth pasting into a bug report, and paraphrasing it would lose the
-					    detail that makes it useful. */}
 					{detail.raw && detail.raw !== detail.summary && (
 						<p className="bg-muted/60 rounded px-2 py-1 font-mono break-words">{detail.raw}</p>
 					)}
 				</div>
-			)}
+			</WarpCollapse>
 		</div>
 	);
 }
 
-/** Placeholder shown between sending and the first token. */
 function WarpThinking() {
 	return (
-		<p className="text-muted-foreground flex items-center gap-1.5 text-xs" data-testid="warp-thinking">
+		<p className="warp-thinking-in text-muted-foreground flex items-center gap-1.5 text-xs" data-testid="warp-thinking">
 			<Brain className="size-3.5 shrink-0" />
 			<span className="warp-shimmer">Thinking</span>
 		</p>
