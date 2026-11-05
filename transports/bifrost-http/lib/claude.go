@@ -10,16 +10,13 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 )
 
-// claudeAboveReserve reads usage through the bridge, which shares one cached
-// reading per account (refreshed at most once a minute, with 429 backoff), so
-// routing checks do not add upstream usage calls. Any failure fails closed.
-func claudeAboveReserve(ctx context.Context, store configstore.ConfigStore, key *schemas.Key) bool {
-	if key.CodexReservePercent == nil {
-		return true
-	}
+// claudeUsage reads usage through the bridge, which shares one cached reading per
+// account (refreshed at most once a minute, with 429 backoff), so routing checks do
+// not add upstream usage calls. The status is 409 for a disconnected account.
+func claudeUsage(ctx context.Context, store configstore.ConfigStore, key *schemas.Key) (*claude.Usage, int, error) {
 	config, err := store.GetProvider(ctx, schemas.Claude)
 	if err != nil || config == nil {
-		return false
+		return nil, 502, errors.New("Claude provider unavailable")
 	}
 	base := ""
 	if config.NetworkConfig != nil {
@@ -27,10 +24,35 @@ func claudeAboveReserve(ctx context.Context, store configstore.ConfigStore, key 
 	}
 	client, err := claude.NewClient(base)
 	if err != nil {
+		return nil, 502, err
+	}
+	return client.Usage(ctx, key.ID)
+}
+
+// claudeAboveReserve enforces the operator's reserve. Any failure fails closed.
+func claudeAboveReserve(ctx context.Context, store configstore.ConfigStore, key *schemas.Key) bool {
+	if key.CodexReservePercent == nil {
+		return true
+	}
+	usage, _, err := claudeUsage(ctx, store, key)
+	return err == nil && usage.AboveReserve(*key.CodexReservePercent)
+}
+
+// claudeRoutable reports whether routing should offer the account for the model: it
+// is connected, has usage left in every window that governs the model, and is above
+// its reserve. Without a reserve, an unreadable reading admits the account; an
+// upstream rejection then moves the request to the next account.
+func claudeRoutable(ctx context.Context, store configstore.ConfigStore, key *schemas.Key, model string) bool {
+	usage, status, err := claudeUsage(ctx, store, key)
+	switch {
+	case status == 409:
+		return false
+	case err != nil:
+		return key.CodexReservePercent == nil
+	case usage.Exhausted(model, time.Now()):
 		return false
 	}
-	usage, _, err := client.Usage(ctx, key.ID)
-	return err == nil && usage.AboveReserve(*key.CodexReservePercent)
+	return key.CodexReservePercent == nil || usage.AboveReserve(*key.CodexReservePercent)
 }
 
 func claudeAccount(store configstore.ConfigStore) func(*schemas.BifrostContext, schemas.Key, string) error {

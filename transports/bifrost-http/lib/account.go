@@ -116,6 +116,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	}
 	if providerKey == schemas.Claude {
 		providerConfig.ClaudeAccount = claudeAccount(baseAccount.store.ConfigStore)
+		// Each account is a separate subscription, and Anthropic rejects an account that
+		// is out of usage before any inference runs: move on to the next account.
+		providerConfig.RotateOnKeyRejection = true
 	}
 	return providerConfig, nil
 }

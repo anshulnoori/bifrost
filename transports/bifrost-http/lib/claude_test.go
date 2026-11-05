@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -69,12 +70,63 @@ func TestClaudeReserveFiltersAccountsByWeeklyUsage(t *testing.T) {
 	for _, key := range got {
 		ids = append(ids, key.ID)
 	}
-	// 60% remaining clears a 25% reserve; 10% does not; unreadable usage fails closed;
-	// an account without a reserve is never checked.
+	// 60% remaining clears a 25% reserve; 10% does not; unreadable usage fails closed
+	// with a reserve and open without one.
 	if strings.Join(ids, ",") != "roomy,unlimited" {
 		t.Fatalf("eligible accounts %v", ids)
 	}
-	if reads.Load() != 3 {
-		t.Fatalf("usage reads %d, want 3 (accounts without a reserve are not read)", reads.Load())
+	if reads.Load() != 4 {
+		t.Fatalf("usage reads %d, want 4 (every account is checked for exhaustion)", reads.Load())
+	}
+}
+
+func TestClaudePoolSkipsAccountsWithoutUsageLeft(t *testing.T) {
+	const token = "synthetic-bridge-token-for-tests-only"
+	t.Setenv("CLAUDE_BRIDGE_TOKEN", token)
+	later := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	earlier := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	window := func(used float64, resets string) map[string]any {
+		return map[string]any{"utilization": used, "resets_at": resets}
+	}
+	readings := map[string]map[string]any{
+		"fresh":         {"five_hour": window(20, later), "seven_day": window(30, later)},
+		"session-spent": {"five_hour": window(100, later), "seven_day": window(30, later)},
+		"week-spent":    {"five_hour": window(0, later), "seven_day": window(100, later)},
+		"reset-since":   {"five_hour": window(100, earlier), "seven_day": window(30, later)},
+	}
+	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		account := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/accounts/"), "/usage")
+		if account == "disconnected" {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		reading, ok := readings[account]
+		if !ok {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(reading)
+	}))
+	defer bridge.Close()
+	enabled := true
+	keys := map[string]*schemas.Key{}
+	pool := []schemas.Key{}
+	for _, id := range []string{"fresh", "session-spent", "week-spent", "reset-since", "disconnected", "unreadable"} {
+		keys[id] = &schemas.Key{ID: id, Enabled: &enabled}
+		pool = append(pool, schemas.Key{ID: id})
+	}
+	filter := CodexKeyPoolFilter(claudeReserveStore{base: bridge.URL, keys: keys})
+	got, err := filter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Claude, "claude-sonnet-4-6", pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(got))
+	for _, key := range got {
+		ids = append(ids, key.ID)
+	}
+	// No reserve is configured: a spent window or a disconnected account still leaves the
+	// pool, and an unreadable reading stays in it because a rejection rotates anyway.
+	if strings.Join(ids, ",") != "fresh,reset-since,unreadable" {
+		t.Fatalf("eligible accounts %v", ids)
 	}
 }

@@ -61,7 +61,16 @@ func New(config *schemas.ProviderConfig, logger schemas.Logger) (*ClaudeProvider
 		IsKeyLess:       false,
 		AllowedRequests: &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true, ListModels: true},
 	}
-	return &ClaudeProvider{AnthropicProvider: anthropic.NewAnthropicProvider(config, logger), token: token, account: config.ClaudeAccount}, nil
+	native := anthropic.NewAnthropicProvider(config, logger)
+	// An account that is out of usage, disconnected or refused is rejected before any
+	// inference runs. Report it as an error so the gateway tries the next account; the
+	// client sees the upstream rejection only when no account can serve.
+	native.RejectPassthrough = accountRejected
+	return &ClaudeProvider{AnthropicProvider: native, token: token, account: config.ClaudeAccount}, nil
+}
+
+func accountRejected(status int) bool {
+	return status == 401 || status == 402 || status == 403 || status == 429
 }
 
 func failure(message string) *schemas.BifrostError {

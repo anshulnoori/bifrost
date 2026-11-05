@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	provider "github.com/maximhq/bifrost/core/providers/claude"
@@ -98,6 +99,37 @@ func (u *Usage) AboveReserve(reserve float64) bool {
 		return false
 	}
 	return 100-used > reserve
+}
+
+// Exhausted reports whether a window that governs the model is fully used and has
+// not reset yet. The five-hour session window counts here, unlike for the reserve.
+// Missing windows are not evidence of exhaustion: Anthropic still rejects such an
+// account, and the gateway then moves the request to another account.
+func (u *Usage) Exhausted(model string, now time.Time) bool {
+	if u == nil {
+		return false
+	}
+	windows := []*UsageWindow{u.FiveHour, u.SevenDay}
+	model = strings.ToLower(model)
+	if strings.Contains(model, "opus") {
+		windows = append(windows, u.SevenDayOpus)
+	}
+	if strings.Contains(model, "sonnet") {
+		windows = append(windows, u.SevenDaySonnet)
+	}
+	for _, w := range windows {
+		if w == nil || w.Utilization == nil || *w.Utilization < 100 {
+			continue
+		}
+		// A reading can outlive its window; a window past its reset has capacity again.
+		if w.ResetsAt != nil {
+			if resets, err := time.Parse(time.RFC3339, *w.ResetsAt); err == nil && !resets.After(now) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // Usage reads one account's subscription allowance through its native worker.

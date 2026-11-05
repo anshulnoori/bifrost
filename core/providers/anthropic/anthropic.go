@@ -32,6 +32,10 @@ type AnthropicProvider struct {
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
+	// RejectPassthrough, when set, returns a passthrough response whose status it accepts
+	// as a BifrostError instead of relaying it, so the request can move to another key.
+	// The upstream's response headers still reach the client if no key serves.
+	RejectPassthrough func(status int) bool
 }
 
 // anthropicMessageResponsePool provides a pool for Anthropic chat response objects.
@@ -3173,6 +3177,10 @@ func (provider *AnthropicProvider) Passthrough(
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
+	if provider.RejectPassthrough != nil && provider.RejectPassthrough(resp.StatusCode()) {
+		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
+	}
+
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
@@ -3265,6 +3273,11 @@ func (provider *AnthropicProvider) PassthroughStream(
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
+
+	if provider.RejectPassthrough != nil && provider.RejectPassthrough(resp.StatusCode()) {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
+	}
 
 	bodyStream := resp.BodyStream()
 	if bodyStream == nil {

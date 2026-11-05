@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -197,12 +198,20 @@ func CodexKeyPoolFilter(store configstore.ConfigStore) schemas.KeyPoolFilter {
 			return eligible, nil
 		}
 		if provider == schemas.Claude {
-			for _, candidate := range keys {
-				key, err := store.GetProviderKey(ctx, provider, candidate.ID)
-				if err != nil || key == nil || key.Enabled != nil && !*key.Enabled || !claudeAboveReserve(ctx, store, key) {
-					continue
+			// Accounts are checked concurrently: a stale reading can wait on a native refresh.
+			routable := make([]bool, len(keys))
+			var wg sync.WaitGroup
+			for i, candidate := range keys {
+				wg.Go(func() {
+					key, err := store.GetProviderKey(ctx, provider, candidate.ID)
+					routable[i] = err == nil && key != nil && (key.Enabled == nil || *key.Enabled) && claudeRoutable(ctx, store, key, model)
+				})
+			}
+			wg.Wait()
+			for i, candidate := range keys {
+				if routable[i] {
+					eligible = append(eligible, candidate)
 				}
-				eligible = append(eligible, candidate)
 			}
 			return eligible, nil
 		}

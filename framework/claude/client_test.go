@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUsageIsAccountScopedAndSanitized(t *testing.T) {
@@ -96,6 +97,40 @@ func TestAboveReserveUsesOnlyTheWeeklyWindow(t *testing.T) {
 		{"invalid reserve", &Usage{SevenDay: window(10)}, 101, false},
 	} {
 		if got := tc.usage.AboveReserve(tc.reserve); got != tc.want {
+			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestExhaustedCountsEveryWindowThatGovernsTheModel(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	window := func(used float64, resets string) *UsageWindow {
+		w := &UsageWindow{Utilization: &used}
+		if resets != "" {
+			w.ResetsAt = &resets
+		}
+		return w
+	}
+	later, earlier := "2026-10-02T15:00:00Z", "2026-10-02T11:00:00Z"
+	for _, tc := range []struct {
+		name  string
+		usage *Usage
+		model string
+		want  bool
+	}{
+		{"room in every window", &Usage{FiveHour: window(99.5, later), SevenDay: window(60, later)}, "claude-sonnet-4-6", false},
+		{"session used up", &Usage{FiveHour: window(100, later), SevenDay: window(10, later)}, "claude-sonnet-4-6", true},
+		{"week used up", &Usage{FiveHour: window(0, later), SevenDay: window(100, later)}, "claude-haiku-4-5", true},
+		// A cached reading can outlive the window it describes.
+		{"session reset since the reading", &Usage{FiveHour: window(100, earlier), SevenDay: window(10, later)}, "claude-sonnet-4-6", false},
+		{"no reset time", &Usage{FiveHour: window(100, "")}, "claude-sonnet-4-6", true},
+		{"opus week used up, opus model", &Usage{SevenDayOpus: window(100, later)}, "claude-opus-4-5", true},
+		{"opus week used up, sonnet model", &Usage{SevenDayOpus: window(100, later)}, "claude-sonnet-4-6", false},
+		{"sonnet week used up, sonnet model", &Usage{SevenDaySonnet: window(100, later)}, "claude-sonnet-4-6", true},
+		{"no windows", &Usage{}, "claude-sonnet-4-6", false},
+		{"nil usage", nil, "claude-sonnet-4-6", false},
+	} {
+		if got := tc.usage.Exhausted(tc.model, now); got != tc.want {
 			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
 		}
 	}

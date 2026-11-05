@@ -576,6 +576,12 @@ type ProviderConfig struct {
 	// ClaudeAccount rechecks mutable account and virtual-key policy after selection.
 	// Native OAuth credentials remain in the account-isolated bridge worker.
 	ClaudeAccount func(*BifrostContext, Key, string) error `json:"-"`
+	// RotateOnKeyRejection moves a request to another key after a per-key rejection
+	// (401/402/403/429), even when MaxRetries is 0, and also away from a session's
+	// sticky key. Each key is tried at most once and without backoff. Set it only for
+	// providers whose keys are independent accounts and whose rejections precede
+	// inference, so that rotation never replays a request after an ambiguous failure.
+	RotateOnKeyRejection bool `json:"-"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for

@@ -125,7 +125,18 @@ Do not configure `ANTHROPIC_API_KEY` for subscription use.
 The bridge binds loopback, accepts up to 32 MiB (Anthropic's Messages API limit), and applies a five-minute
 deadline. It aborts inference on client disconnect. It has no local concurrency
 cap or queue: simultaneous requests all run at once. Anthropic enforces each
-subscription's real limits, and its errors reach the caller unchanged.
+subscription's real limits.
+
+The gateway routes only to accounts that are connected and have usage left in
+every window that governs the model: the 5-hour session, the 7-day window, and
+the 7-day Opus or Sonnet window. A window past its reset time counts as fresh.
+Session stickiness yields to this check. When an account still rejects a request
+(401, 402, 403 or 429), which happens before any inference, the gateway tries each
+remaining account once, without backoff and outside `max_retries`. Other failures
+are never retried. The caller sees the last account's rejection, with its status
+and rate-limit headers, only when no account can serve. A configured reserve
+still fails closed when usage cannot be read; without a reserve, an unreadable
+reading keeps the account in the pool.
 There are no bridge retries or stored conversations. The old
 `x-bifrost-claude-session-id` header is rejected. Unknown request fields are
 left for upstream validation; the SDK-only `betas` body field is rejected in

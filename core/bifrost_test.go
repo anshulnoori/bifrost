@@ -1706,6 +1706,76 @@ func TestExecuteRequestWithRetries_KeyRotation(t *testing.T) {
 		}
 	})
 
+	t.Run("RotateOnKeyRejectionTriesEachKeyOnceOutsideRetryBudget", func(t *testing.T) {
+		// MaxRetries=0 as on Claude; an hour of backoff would hang the test if a
+		// rotation waited.
+		rotating := createTestConfig(0, time.Hour, time.Hour)
+		rotating.RotateOnKeyRejection = true
+		keyProvider := func(usedKeyIDs, deadKeyIDs map[string]bool) (schemas.Key, error) {
+			for _, k := range keys {
+				if !usedKeyIDs[k.ID] && !deadKeyIDs[k.ID] {
+					return k, nil
+				}
+			}
+			for id := range usedKeyIDs {
+				delete(usedKeyIDs, id)
+			}
+			return keys[0], nil
+		}
+		run := func(config *schemas.ProviderConfig, outcome func(schemas.Key) *schemas.BifrostError) ([]string, *schemas.BifrostError) {
+			var tried []string
+			_, err := executeRequestWithRetries(ctx, config, func(k schemas.Key) (string, *schemas.BifrostError) {
+				tried = append(tried, k.ID)
+				if failure := outcome(k); failure != nil {
+					return "", failure
+				}
+				return "served by " + k.ID, nil
+			}, keyProvider, schemas.PassthroughRequest, schemas.Claude, "claude-sonnet-4-6", nil, logger)
+			return tried, err
+		}
+
+		// An out-of-usage account moves the request to the next one; a revoked one too.
+		tried, err := run(rotating, func(k schemas.Key) *schemas.BifrostError {
+			switch k.ID {
+			case "k1":
+				return createBifrostError("usage limit reached", Ptr(429), nil, false)
+			case "k2":
+				return createBifrostError("reconnect this account", Ptr(401), nil, false)
+			}
+			return nil
+		})
+		if err != nil || strings.Join(tried, ",") != "k1,k2,k3" {
+			t.Fatalf("tried %v, err %v; want k1,k2,k3 then success", tried, err)
+		}
+
+		// When every account rejects, each is tried once and the last rejection is returned.
+		tried, err = run(rotating, func(k schemas.Key) *schemas.BifrostError {
+			return createBifrostError("usage limit reached on "+k.ID, Ptr(429), nil, false)
+		})
+		if strings.Join(tried, ",") != "k1,k2,k3" || err == nil || err.Error.Message != "usage limit reached on k3" || *err.StatusCode != 429 {
+			t.Fatalf("tried %v, err %+v; want each key once and k3's rejection", tried, err)
+		}
+
+		// Only rejections rotate: an ambiguous failure is never replayed on another key.
+		tried, _ = run(rotating, func(k schemas.Key) *schemas.BifrostError {
+			if k.ID == "k1" {
+				return createBifrostError("usage limit reached", Ptr(429), nil, false)
+			}
+			return createBifrostError(schemas.ErrProviderDoRequest, nil, nil, false)
+		})
+		if strings.Join(tried, ",") != "k1,k2" {
+			t.Fatalf("tried %v; want k1 then a single attempt on k2", tried)
+		}
+
+		// Without the flag, MaxRetries=0 still means one attempt.
+		tried, _ = run(createTestConfig(0, 0, 0), func(schemas.Key) *schemas.BifrostError {
+			return createBifrostError("usage limit reached", Ptr(429), nil, false)
+		})
+		if len(tried) != 1 {
+			t.Fatalf("tried %v; want one attempt without RotateOnKeyRejection", tried)
+		}
+	})
+
 	t.Run("NilKeyProviderUsesZeroKey", func(t *testing.T) {
 		cleanCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		cleanCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})

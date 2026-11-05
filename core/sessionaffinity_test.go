@@ -2,9 +2,12 @@ package bifrost
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1204,5 +1207,124 @@ func TestSessionAffinityLeavesAnExplicitProviderAlone(t *testing.T) {
 	}
 	if slices.Contains(enginesUsed(ctx), schemas.RoutingEngineSessionAffinity) {
 		t.Fatal("the session was recorded as deciding a route the caller named")
+	}
+}
+
+// A session's sticky key that rejects the request gives way to another key on a provider that
+// rotates on key rejections, and the session then stays on the key that served it.
+func TestStickyKeyRejectionRotatesWhenTheProviderAllowsIt(t *testing.T) {
+	var limited atomic.Value // the key whose account is out of usage
+	limited.Store("")
+	var served []string
+	var mu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		served = append(served, key)
+		mu.Unlock()
+		if key == limited.Load().(string) {
+			writeJSON(w, http.StatusTooManyRequests, `{"error":{"message":"usage limit reached","type":"rate_limit_error"}}`)
+			return
+		}
+		writeJSON(w, http.StatusOK, `{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffInitial = time.Hour
+	account.configs[schemas.OpenAI].NetworkConfig.RetryBackoffMax = time.Hour
+	account.configs[schemas.OpenAI].RotateOnKeyRejection = true
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "key-b", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: newMockKVStore(),
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	send := func() (string, *schemas.BifrostError) {
+		mu.Lock()
+		served = nil
+		mu.Unlock()
+		_, bifrostErr := client.ChatCompletionRequest(sessionCtx("session-1"), &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		})
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(served, ","), bifrostErr
+	}
+
+	first, bifrostErr := send()
+	if bifrostErr != nil {
+		t.Fatalf("first request: %v", bifrostErr.Error.Message)
+	}
+	other := map[string]string{"sk-a": "sk-b", "sk-b": "sk-a"}[first]
+	// The session's account runs out: the next request must still be served, by the other key.
+	limited.Store(first)
+	done := make(chan struct{})
+	var tried string
+	go func() { tried, bifrostErr = send(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rotation waited out a backoff")
+	}
+	if bifrostErr != nil || tried != first+","+other {
+		t.Fatalf("tried %q err %v; want the sticky key then %s", tried, bifrostErr, other)
+	}
+	// The session moved with the request that served it.
+	limited.Store("")
+	if tried, bifrostErr = send(); bifrostErr != nil || tried != other {
+		t.Fatalf("tried %q err %v; want the session to stay on %s", tried, bifrostErr, other)
+	}
+}
+
+// namedKeyAffinity always names one key for the session.
+type namedKeyAffinity struct{ id string }
+
+func (namedKeyAffinity) ResolveRoute(_ *schemas.BifrostContext, _ schemas.Route, chain []schemas.Route) []schemas.Route {
+	return chain
+}
+
+func (a namedKeyAffinity) ResolveKey(*schemas.BifrostContext, schemas.ModelProvider, string, []schemas.Key) (schemas.Key, bool) {
+	return schemas.Key{ID: a.id}, true
+}
+
+func (namedKeyAffinity) Observe(*schemas.BifrostContext, schemas.Route, schemas.RouteOutcome) {}
+
+func TestKeyPoolFilterVetoesAStickyKey(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 5, 1000)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	exhausted := "key-a"
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewDefaultLogger(schemas.LogLevelError), KVStore: newMockKVStore(),
+		SessionAffinity: namedKeyAffinity{id: "key-a"},
+		KeyPoolFilter: func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, keys []schemas.Key) ([]schemas.Key, error) {
+			return slices.DeleteFunc(slices.Clone(keys), func(k schemas.Key) bool { return k.ID == exhausted }), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	keys, canRotate, err := client.selectKeyFromProviderForModelWithPool(sessionCtx("s"), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	if err != nil || !canRotate || len(keys) != 2 {
+		t.Fatalf("got %d keys canRotate=%v err=%v; want the rotating pool when the filter vetoes the sticky key", len(keys), canRotate, err)
+	}
+	exhausted = ""
+	keys, canRotate, err = client.selectKeyFromProviderForModelWithPool(sessionCtx("s"), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
+	if err != nil || canRotate || len(keys) != 1 || keys[0].ID != "key-a" {
+		t.Fatalf("got %v canRotate=%v err=%v; want the sticky key while the filter admits it", keys, canRotate, err)
 	}
 }

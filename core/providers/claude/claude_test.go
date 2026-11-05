@@ -135,3 +135,43 @@ func TestClaudeReserveRejectionIsDistinctAndNeverReachesTheBridge(t *testing.T) 
 		t.Fatal("a reserved account must not reach the bridge")
 	}
 }
+
+func TestClaudeAccountRejectionIsAnErrorSoTheGatewayCanRotate(t *testing.T) {
+	t.Setenv("CLAUDE_BRIDGE_TOKEN", "synthetic-bridge-token-for-tests-only")
+	status := http.StatusTooManyRequests
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "1800")
+		w.WriteHeader(status)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"usage limit reached"}}`)
+	}))
+	defer server.Close()
+	p, err := New(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}, ClaudeAccount: func(*schemas.BifrostContext, schemas.Key, string) error { return nil }}, testLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := &schemas.BifrostPassthroughRequest{Provider: schemas.Claude, Model: "claude-sonnet-4-6", Method: "POST", Path: "/v1/messages", Body: []byte(`{"model":"claude-sonnet-4-6","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)}
+	check := func(name string, ctx *schemas.BifrostContext, failure *schemas.BifrostError) {
+		t.Helper()
+		// Not a gateway-internal error: core must classify it as a per-account failure.
+		if failure == nil || failure.IsBifrostError || *failure.StatusCode != 429 || failure.Error.Message != "usage limit reached" || *failure.Error.Type != "rate_limit_error" {
+			t.Fatalf("%s: rejection %+v", name, failure)
+		}
+		if headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); headers["retry-after"] != "1800" && headers["Retry-After"] != "1800" {
+			t.Fatalf("%s: upstream headers for the client lost: %v", name, headers)
+		}
+	}
+	ctx := newContext()
+	_, failure := p.Passthrough(ctx, schemas.Key{ID: "account-a"}, req)
+	check("unary", ctx, failure)
+	ctx = newContext()
+	_, failure = p.PassthroughStream(ctx, nil, nil, schemas.Key{ID: "account-a"}, req)
+	check("stream", ctx, failure)
+
+	// A request-bound error is the caller's to see and is relayed natively.
+	status = http.StatusBadRequest
+	resp, failure := p.Passthrough(newContext(), schemas.Key{ID: "account-a"}, req)
+	if failure != nil || resp.StatusCode != 400 {
+		t.Fatalf("400 relay: %+v %+v", resp, failure)
+	}
+}
