@@ -1220,6 +1220,9 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 			if resourceNamed {
 				bodyModel = bareResourceModel(bodyModel)
 			}
+			// A body may name the model as Bifrost does, "<provider>/<model>"; under this
+			// request's provider that is the same model as the bare id.
+			bodyModel = strings.TrimPrefix(bodyModel, string(provider)+"/")
 			if bodyModel == model {
 				continue
 			}
