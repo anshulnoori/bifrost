@@ -3,10 +3,12 @@ package claude
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -90,6 +92,72 @@ func TestClaudeNativePassthroughAndIsolation(t *testing.T) {
 	if _, failure := p.ChatCompletion(newContext(), schemas.Key{}, &schemas.BifrostChatRequest{}); failure == nil {
 		t.Fatal("chat completions accepted")
 	}
+}
+
+// default_request_timeout_in_seconds must not cap Claude requests: a long
+// generation ends when the caller or Anthropic ends it. The bridge delays its
+// response headers past the configured timeout on both the unary and stream paths.
+func TestClaudeRequestsOutliveTheRequestTimeout(t *testing.T) {
+	t.Setenv("CLAUDE_BRIDGE_TOKEN", "synthetic-bridge-token-for-tests-only")
+	const delay = 1500 * time.Millisecond
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		if gjson.GetBytes(mustRead(t, r), "stream").Bool() {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_slow","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	p, err := New(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 1},
+		ClaudeAccount: func(*schemas.BifrostContext, schemas.Key, string) error { return nil },
+	}, testLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unary := &schemas.BifrostPassthroughRequest{Provider: schemas.Claude, Model: "claude-sonnet-4-6", Method: "POST", Path: "/v1/messages",
+		Body: []byte(`{"model":"claude-sonnet-4-6","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)}
+	resp, failure := p.Passthrough(newContext(), schemas.Key{ID: "account-a"}, unary)
+	if failure != nil {
+		t.Fatalf("unary request was cut at the request timeout: %+v", failure.Error)
+	}
+	if resp.StatusCode != 200 || !strings.Contains(string(resp.Body), `"text":"done"`) {
+		t.Fatalf("unexpected unary response: %d %s", resp.StatusCode, resp.Body)
+	}
+
+	stream := *unary
+	stream.Body = []byte(`{"model":"claude-sonnet-4-6","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	chunks, failure := p.PassthroughStream(newContext(), runner, func(context.Context) {}, schemas.Key{ID: "account-a"}, &stream)
+	if failure != nil {
+		t.Fatalf("stream was cut at the request timeout: %+v", failure.Error)
+	}
+	var body strings.Builder
+	for chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+		}
+		if chunk.BifrostPassthroughResponse != nil {
+			body.Write(chunk.BifrostPassthroughResponse.Body)
+		}
+	}
+	if !strings.Contains(body.String(), "message_stop") {
+		t.Fatalf("stream body missing: %q", body.String())
+	}
+}
+
+func mustRead(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func TestClaudeRejectsRemoteBridgeAndProviderOverrides(t *testing.T) {

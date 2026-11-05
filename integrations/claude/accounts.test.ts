@@ -11,7 +11,8 @@ function fakeWorker(dir: string) {
   writeFileSync(path, `#!/usr/bin/env node
 import { createServer } from "node:http";
 const server = createServer((req, res) => {
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ state: "connected", home: process.env.CLAUDE_CONFIG_DIR }));
+  const { CLAUDE_CONFIG_DIR: home, API_TIMEOUT_MS: apiTimeout, API_FORCE_IDLE_TIMEOUT: forceIdle } = process.env;
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ state: "connected", home, apiTimeout, forceIdle }));
 });
 server.listen(0, "127.0.0.1", () => console.log(JSON.stringify({ port: server.address().port })));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
@@ -36,4 +37,22 @@ test("every connected account gets its own worker, with no local account cap", {
   }));
   // Each account runs in its own isolated credential directory.
   assert.deepEqual(homes, ids.map((id) => join(dir, "accounts", id)));
+});
+
+test("workers run without the native client's request deadline or Bun's fetch timeout", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "claude-accounts-test-"));
+  // A deployment value must not reintroduce a deadline.
+  const previous = process.env.API_TIMEOUT_MS;
+  process.env.API_TIMEOUT_MS = "300000";
+  const accounts = createAccounts(dir, fakeWorker(dir));
+  t.after(async () => {
+    await accounts.close();
+    if (previous === undefined) delete process.env.API_TIMEOUT_MS;
+    else process.env.API_TIMEOUT_MS = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const response = await accounts.manage("GET", "/accounts/account-a", {});
+  const { apiTimeout, forceIdle } = await response.json();
+  assert.equal(apiTimeout, "2147483647");
+  assert.equal(forceIdle, "0");
 });

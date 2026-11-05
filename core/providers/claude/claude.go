@@ -61,7 +61,9 @@ func New(config *schemas.ProviderConfig, logger schemas.Logger) (*ClaudeProvider
 		IsKeyLess:       false,
 		AllowedRequests: &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true, ListModels: true},
 	}
-	native := anthropic.NewAnthropicProvider(config, logger)
+	// Subscription generations can run far longer than the request timeout. The
+	// caller's cancellation and the stream idle timeout still end abandoned work.
+	native := anthropic.NewAnthropicProvider(config, logger).WithoutResponseDeadline()
 	// An account that is out of usage, disconnected or refused is rejected before any
 	// inference runs. Report it as an error so the gateway tries the next account; the
 	// client sees the upstream rejection only when no account can serve.

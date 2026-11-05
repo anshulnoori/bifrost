@@ -432,3 +432,67 @@ for (const authentication of ["api-key", "oauth-token"]) {
     },
   );
 }
+
+// Workers get API_TIMEOUT_MS=2147483647 (accounts.ts). This pins that the pinned
+// binary's native client really is bounded by that variable: a short value fails
+// a slow unary response, and the worker value lets the same response complete.
+test("the native client's request deadline is API_TIMEOUT_MS, which workers lift", { timeout: 40000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "claude-deadline-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const patched = join(dir, "claude-deadline");
+  patchBinary(process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/claude") : nativeBinary, patched);
+  const executable = process.env.BIFROST_PACKAGE ? join(process.env.BIFROST_PACKAGE, "bin/bifrost-claude") : patched;
+  const upstream = createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text);
+    // A non-streamed generation sends no bytes until it is complete.
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (res.destroyed) return;
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+      id: "msg_slow", type: "message", role: "assistant", model: body.model,
+      content: [{ type: "text", text: "SLOW_DONE" }], stop_reason: "end_turn", stop_sequence: null,
+      usage: { input_tokens: 3, output_tokens: 1 },
+    }));
+  });
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  t.after(() => { upstream.closeAllConnections(); upstream.close(); });
+  const send = async (apiTimeout) => {
+    const child = spawn(executable, [], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH, HOME: dir, CLAUDE_CONFIG_DIR: dir,
+        CLAUDE_BRIDGE_TOKEN: "synthetic-bridge-token-for-tests-only", CLAUDE_BRIDGE_PORT: "0", CLAUDE_BRIDGE_WORKER: "1",
+        ANTHROPIC_API_KEY: "synthetic-deadline-fixture-only",
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstream.address().port}`,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        API_TIMEOUT_MS: apiTimeout, API_FORCE_IDLE_TIMEOUT: "0",
+      },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const lines = createInterface({ input: child.stdout });
+    try {
+      const [line] = await Promise.race([
+        once(lines, "line"),
+        once(child, "exit").then(([code]) => { throw new Error(`binary exit ${code}`); }),
+      ]);
+      const response = await fetch(`http://127.0.0.1:${JSON.parse(line).port}/v1/messages`, {
+        method: "POST",
+        headers: { "x-claude-bridge-token": "synthetic-bridge-token-for-tests-only", "x-claude-bridge-owner": "owner-a", "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 8, messages: [{ role: "user", content: "slow" }], stream: false }),
+      });
+      return { status: response.status, text: await response.text() };
+    } finally {
+      lines.close();
+      const exited = child.exitCode !== null ? Promise.resolve() : once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+    }
+  };
+  const cut = await send("1500");
+  assert.equal(cut.status, 502, cut.text);
+  const lifted = await send("2147483647");
+  assert.equal(lifted.status, 200, lifted.text);
+  assert.match(lifted.text, /SLOW_DONE/);
+});

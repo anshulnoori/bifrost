@@ -60,7 +60,7 @@ function sendError(res: ServerResponse, status: number, message: string) {
 }
 
 export function createBridge(
-  config: { token: string; timeoutMs?: number; manage?: Manage; requireAccount?: boolean },
+  config: { token: string; manage?: Manage; requireAccount?: boolean },
   run: Run,
 ) {
   if (config.token.length < 32)
@@ -105,16 +105,10 @@ export function createBridge(
       sendError(res, 404, "not found");
       return;
     }
-    // No local admission cap: each request runs as soon as it arrives. Anthropic
+    // No local admission cap or deadline: each request runs as soon as it arrives
+    // and lasts until Anthropic finishes or the caller disconnects. Anthropic
     // enforces the account's real limits and those errors pass through unchanged.
     const controller = new AbortController();
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-      sendError(res, 504, "Claude request timed out");
-      if (!req.complete) req.destroy();
-    }, config.timeoutMs ?? 300000);
     const cancel = () => {
       if (!res.writableEnded) controller.abort();
     };
@@ -168,15 +162,10 @@ export function createBridge(
       controller.abort();
       sendError(
         res,
-        timedOut ? 504 : error instanceof RequestError ? error.status : 502,
-        timedOut
-          ? "Claude request timed out"
-          : error instanceof RequestError
-            ? error.message
-            : "Claude inference failed",
+        error instanceof RequestError ? error.status : 502,
+        error instanceof RequestError ? error.message : "Claude inference failed",
       );
     } finally {
-      clearTimeout(timer);
       res.off("close", cancel);
     }
   });

@@ -39,6 +39,11 @@ export function createAccounts(root: string, executable: string) {
       for (const name of Object.keys(env))
         if (/^(ANTHROPIC_|CLAUDE_CODE_)/.test(name)) delete (env as Record<string, string | undefined>)[name];
       (env as Record<string, string>).CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+      // No artificial deadline on inference. The native client otherwise aborts at
+      // API_TIMEOUT_MS (default 10 minutes); 2147483647 is the largest timer value,
+      // which the binary also uses as its own cap. A false API_FORCE_IDLE_TIMEOUT
+      // makes the native client pass `timeout: false` to Bun's fetch for Anthropic.
+      Object.assign(env, { API_TIMEOUT_MS: "2147483647", API_FORCE_IDLE_TIMEOUT: "0" });
       child = spawn(executable, [], { env, cwd: directory, stdio: ["ignore", "pipe", "ignore"] });
       return await new Promise<string>((resolve, reject) => {
         let text = "";

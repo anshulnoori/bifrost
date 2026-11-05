@@ -44,6 +44,8 @@ test(
         }));
         return;
       }
+      // Longer than the provider's 1-second default_request_timeout_in_seconds.
+      if (body.messages[0].content === "SLOW_GENERATION") await delay(2500);
       const message = {
         id: "msg_native",
         type: "message",
@@ -144,7 +146,8 @@ test(
         providers: {
           claude: {
             keys: [{ id: "account-a", name: "Claude fixture", weight: 1, models: ["*"], enabled: true }],
-            network_config: { base_url: `http://127.0.0.1:${bridgePort}`, max_retries: 0 },
+            // The request timeout must not cap Claude; SLOW_GENERATION outlasts it.
+            network_config: { base_url: `http://127.0.0.1:${bridgePort}`, max_retries: 0, default_request_timeout_in_seconds: 1 },
           },
         },
         governance: {
@@ -315,5 +318,8 @@ test(
     assert.match(secondSystem[0].text, /^x-anthropic-billing-header: cc_version=2\.1\.287\.642;/);
     assert.deepEqual(secondBody, { ...second, model: "claude-sonnet-4-6" });
     assert.equal(captured.length, 2, "no hidden inference or tool execution");
+    const slow = await send({ model: first.model, max_tokens: 31, messages: [{ role: "user", content: "SLOW_GENERATION" }] });
+    assert.equal(slow.status, 200, await slow.clone().text());
+    assert.equal((await slow.json()).stop_reason, "tool_use");
   },
 );
