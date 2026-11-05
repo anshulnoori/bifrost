@@ -106,6 +106,8 @@ in
         *;'
             substituteInPlace submodules/CMakeLists.txt \
               --replace-fail 'file(READ "/etc/os-release" OS_RELEASE)' 'set(OS_RELEASE "NAME=NixOS")'
+            # GCC 16 no longer pulls <mutex> in transitively.
+            sed -i '1i #include <mutex>' src/indexes/text/text_index.h
             substituteInPlace cmake/Modules/linux_utils.cmake \
               --replace-fail 'target_link_libraries(absl::all INTERFACE ''${ABSL_TARGET})' \
                 'if(TARGET ''${ABSL_TARGET})
@@ -115,12 +117,13 @@ in
     preConfigure = ''
       mkdir -p build/icu
       ln -s ${icu} build/icu/install
+      # cmakeFlags entries are split on whitespace; keep this one value whole.
+      cmakeFlagsArray+=("-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++ -Wl,--exclude-libs,ALL")
     '';
     cmakeFlags = [
       "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
       "-DBUILD_UNIT_TESTS=OFF"
       "-DWITH_SUBMODULES_SYSTEM=ON"
-      "-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++ -Wl,--exclude-libs,ALL"
     ];
     ninjaFlags = ["libsearch"];
     installPhase = ''
