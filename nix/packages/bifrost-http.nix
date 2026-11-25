@@ -37,7 +37,7 @@ buildGoModule {
 
   modRoot = "transports";
   subPackages = [ "bifrost-http" ];
-  vendorHash = "sha256-Ck1cwv/DYI9EXmp7U2ZSNXlU+Qok8BFn5bcN1Pv7Nmc=";
+  vendorHash = "sha256-rsU2G4t6JarM86xQPRj49GBQczHlWbm1AFsucqZC68I=";
 
   doCheck = false;
 
@@ -71,7 +71,7 @@ buildGoModule {
   ldflags = [
     "-s"
     "-w"
-    "-X main.Version=${version}"
+    "-X main.Version=v${version}"
   ];
 
   meta = {

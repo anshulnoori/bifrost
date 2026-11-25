@@ -9,7 +9,7 @@ pkgs.buildNpmPackage {
   inherit src;
   sourceRoot = "source/ui";
 
-  npmDepsHash = "sha256-cOswnT4ZahWX66h9oiw4t3r5GZeOH/yjbnTCAsjVgnw=";
+  npmDepsHash = "sha256-GBxwxHmvAlMMS9WtTC7ITLvLNuLjcE8IxaHbHXd7qM8=";
 
   # Vite builds offline. Do not replace the router layout with an old Next shell.
   # Avoid the build script's copy step (writes outside $PWD).
